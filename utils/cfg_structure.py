@@ -19,17 +19,87 @@ class BlockNode:
         self.start_pc = base_block.start_pc
         self.end_pc = base_block.end_pc
         self.terminator = base_block.terminator
-        self.total_gas: int = 0 # 节点内所有指令的总gas消耗
+        self.total_gas: int = 0  # 节点内所有指令的总gas消耗
         self.instructions = base_block.instructions
+
+        # 新增：actions 字段，用于记录该节点的操作（可能有多个）
+        # 每个 action 是一个 Dict，包含 action_type, operation, participants, send_eth, from, to, value 等键
+        self.actions: List[Dict[str, Any]] = []
 
     def __repr__(self) -> str:
         return (f"BlockNode(addr={self.address[:8]}..., start_pc={self.start_pc}, "
-                f"instr_count={len(self.instructions)}, total_gas={self.total_gas})") 
+                f"instr_count={len(self.instructions)}, total_gas={self.total_gas}, "
+                f"actions={len(self.actions)})")
 
     def get_instructions_str(self) -> str:
         """将所有指令转换为字符串"""
         return "\n".join([f"{pc}: {opcode}" for pc, opcode in self.instructions])
 
+    # ---------- actions 相关辅助方法 ----------
+    def add_action(
+        self,
+        action_type: str,
+        participants: Optional[List[Dict[str, str]]] = None,
+        send_eth: str = "NO",
+        from_addr: Optional[str] = None,
+        to_addr: Optional[str] = None,
+        value: Optional[int] = 0,
+    ) -> None:
+        """
+        添加一个 action 到本节点。
+
+        参数示例：
+        action_type: "read" / "write" / "read&write"
+        participants: [{ "address": "0x...", "balance": "0x...", "token_address": "0x..." }, ...]
+        send_eth: "YES" / "NO"
+        from_addr / to_addr: 发起/接收地址
+        value: 转账金额（整数或0）
+        """
+        if participants is None:
+            participants = []
+
+        action = {
+            "action_type": action_type,
+            "participants": participants,
+            "send_eth": send_eth,
+            "from": from_addr or "",
+            "to": to_addr or "",
+            "value": value or 0,
+        }
+        # 简单验证（可根据需要扩展）
+        if action["send_eth"] not in ("YES", "NO"):
+            action["send_eth"] = "NO"
+        self.actions.append(action)
+
+    def get_actions(self) -> List[Dict[str, Any]]:
+        """返回 actions 列表（引用）"""
+        return self.actions
+
+    def get_actions_str(self) -> str:
+        """将 actions 格式化为可读的字符串（用于日志/调试）"""
+        parts = []
+        for i, a in enumerate(self.actions, 1):
+            participants = ", ".join(
+                [p.get("address", "") for p in a.get("participants", [])]
+            ) or "none"
+            parts.append(
+                f"Action[{i}]: type={a.get('action_type')} op={a.get('operation')} "
+                f"participants={participants} send_eth={a.get('send_eth')} "
+                f"from={a.get('from')} to={a.get('to')} value={hex(a.get('value')) if isinstance(a.get('value'), int) else a.get('value')}"
+            )
+        return "\n".join(parts)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """将节点序列化为字典，包含 actions"""
+        return {
+            "address": self.address,
+            "start_pc": self.start_pc,
+            "end_pc": self.end_pc,
+            "terminator": self.terminator,
+            "total_gas": self.total_gas,
+            "instructions": list(self.instructions),
+            "actions": self.actions,
+        }
 
 class Edge:
     """CFG中的边（带编号和类型）"""
