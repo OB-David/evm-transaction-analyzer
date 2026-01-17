@@ -1,0 +1,14 @@
+[project]
+name = "evm-cfg-py"
+version = "0.1.0"
+description = "Creating Control Flow Graph (CFG) for Ethereum Smart Contract and Transaction execution path"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pyevmasm",
+    "python-dotenv>=1.1.1",
+    "web3>=7.13.0",
+]
+
+[tool.uv.sources]
+pyevmasm = { git = "https://github.com/crytic/pyevmasm" }
