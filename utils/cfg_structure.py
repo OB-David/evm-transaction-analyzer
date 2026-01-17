@@ -4,6 +4,12 @@ from typing import List
 from utils.basic_block import Block
 
 
+# cfg_structures.py负责定义CFG图的核心数据结构
+
+from typing import List, Optional, Dict
+from utils.basic_block import Block
+
+
 class BlockNode:
     """CFG中的节点（对应唯一的basic_block）"""
     def __init__(self, base_block: Block):
@@ -13,16 +19,16 @@ class BlockNode:
         self.start_pc = base_block.start_pc
         self.end_pc = base_block.end_pc
         self.terminator = base_block.terminator
+        self.total_gas: int = 0 # 节点内所有指令的总gas消耗
         self.instructions = base_block.instructions
 
     def __repr__(self) -> str:
         return (f"BlockNode(addr={self.address[:8]}..., start_pc={self.start_pc}, "
-                f"instr_count={len(self.instructions)})") 
-# 上面这段代码定义了一个名为`BlockNode`的类，它表示CFG图中的一个节点。这个类有一个构造函数`__init__`，它接收一个`base_block`参数，表示与这个节点关联的基础块。
-# 这个类还有一个`__repr__`方法，它返回一个字符串，表示这个节点的地址、起始PC和指令数量。
+                f"instr_count={len(self.instructions)}, total_gas={self.total_gas})") 
+
     def get_instructions_str(self) -> str:
         """将所有指令转换为字符串"""
-        return "\n".join([f"{pc}: {opcode}" for pc, opcode in self.instructions]) # 上面这段代码定义了一个名为`get_instructions_str`的方法，它返回一个字符串，表示这个节点中所有指令的PC和操作码。
+        return "\n".join([f"{pc}: {opcode}" for pc, opcode in self.instructions])
 
 
 class Edge:

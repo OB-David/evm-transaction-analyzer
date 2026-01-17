@@ -39,6 +39,21 @@ class CFGConstructor:
                 return block
         return None
 
+    def _get_step_gas_decimal(self, step: StandardizedStep) -> int:
+        """
+        从 step 中读取十进制 gas 值（只支持十进制 int 或十进制字符串）。
+        如果不存在或无法解析，返回 0。
+        仅支持字段名：'gascost'
+        """
+        raw = step.get("gascost")
+        if raw is None:
+            return 0
+
+        if isinstance(raw, int):
+            return raw
+
+        return 0
+
     def construct_cfg(self, trace: StandardizedTrace) -> CFG:
         cfg = CFG(tx_hash=trace["tx_hash"])
         steps = trace["steps"]
@@ -69,61 +84,69 @@ class CFGConstructor:
             current_step = steps[current_step_idx]
             current_opcode = current_step["opcode"]
 
-            # 处理JUMPDEST：检查上一步是否为JUMP/JUMPI
+            # 特殊处理：如果当前指令是 JUMPDEST，则应先切换到目标块（块以 JUMPDEST 为起点），
+            # 然后再把该 step 的 gas 累加到目标块中。
             if current_opcode == "JUMPDEST":
-                # 确保不是第一步，有上一个step可以检查
-                if current_step_idx > 0:
-                    prev_step = steps[current_step_idx - 1]
-                    prev_opcode = prev_step["opcode"]
-                    
-                    # 如果上一步不是JUMP/JUMPI，需要添加连接
-                    if prev_opcode not in self.jump_opcodes:
-                        # 查找上一步所在块（以上一步pc为结束pc的块）
-                        prev_block = self._find_block_by_end_pc(
-                            address=prev_step["address"],
-                            end_pc=prev_step["pc"]
-                        )
-                        
-                        # 查找当前JUMPDEST所在的块
-                        try:
-                            current_jumpdest_block = self._find_base_block(
-                                address=current_step["address"],
-                                pc=current_step["pc"]
-                            )
-                        except ValueError as e:
-                            print(f"警告：JUMPDEST对应的块未找到：{e}")
-                            current_step_idx += 1
-                            continue
-                        
-                        if prev_block:
-                            # 获取或创建前后节点
-                            prev_node_key = (prev_block.address, prev_block.start_pc)
-                            if prev_node_key in processed_nodes:
-                                prev_node = processed_nodes[prev_node_key]
-                            else:
-                                prev_node = BlockNode(prev_block)
-                                processed_nodes[prev_node_key] = prev_node
-                                cfg.add_node(prev_node)
-                            
-                            current_jumpdest_node_key = (current_jumpdest_block.address, current_jumpdest_block.start_pc)
-                            if current_jumpdest_node_key in processed_nodes:
-                                jumpdest_node = processed_nodes[current_jumpdest_node_key]
-                            else:
-                                jumpdest_node = BlockNode(current_jumpdest_block)
-                                processed_nodes[current_jumpdest_node_key] = jumpdest_node
-                                cfg.add_node(jumpdest_node)
-                            
-                            # 创建连接边，使用自动编号的add_edge方法
-                            cfg.add_edge(
-                                source=prev_node,
-                                target=jumpdest_node,
-                                edge_type="NOTJUMP" # 这两个块之间的连接不是由JUMP造成
-                            )
-                            
-                            # 更新当前节点为JUMPDEST所在的节点，保持控制流连续性
-                            current_node = jumpdest_node
+                # 尝试找到对应的基础块并切换 current_node
+                try:
+                    current_jumpdest_block = self._find_base_block(
+                        address=current_step["address"],
+                        pc=current_step["pc"]
+                    )
+                except ValueError as e:
+                    # 找不到对应的基础块，打印警告并继续（该 step 的 gas 将计入当前已有节点）
+                    print(f"警告：JUMPDEST 对应的块未找到：{e}")
+                    # 不做节点切换，继续按当前节点累加 gas
+                    current_jumpdest_block = None
 
-            # 遇到分块触发指令时，切换到下一个块
+                if current_jumpdest_block:
+                    current_jumpdest_node_key = (current_jumpdest_block.address, current_jumpdest_block.start_pc)
+                    if current_jumpdest_node_key in processed_nodes:
+                        jumpdest_node = processed_nodes[current_jumpdest_node_key]
+                    else:
+                        jumpdest_node = BlockNode(current_jumpdest_block)
+                        processed_nodes[current_jumpdest_node_key] = jumpdest_node
+                        cfg.add_node(jumpdest_node)
+
+                    # 如果上一步不是通过 JUMP/JUMPI 到达的，则保持原有逻辑：为 prev_block -> jumpdest 创建 NOTJUMP 边
+                    if current_step_idx > 0:
+                        prev_step = steps[current_step_idx - 1]
+                        prev_opcode = prev_step["opcode"]
+                        if prev_opcode not in self.jump_opcodes:
+                            prev_block = self._find_block_by_end_pc(
+                                address=prev_step["address"],
+                                end_pc=prev_step["pc"]
+                            )
+                            if prev_block:
+                                prev_node_key = (prev_block.address, prev_block.start_pc)
+                                if prev_node_key in processed_nodes:
+                                    prev_node = processed_nodes[prev_node_key]
+                                else:
+                                    prev_node = BlockNode(prev_block)
+                                    processed_nodes[prev_node_key] = prev_node
+                                    cfg.add_node(prev_node)
+
+                                # 创建 NOTJUMP 边（表示控制流从 prev_block 连到 jumpdest_block，但不是由 JUMP 指令引起）
+                                cfg.add_edge(
+                                    source=prev_node,
+                                    target=jumpdest_node,
+                                    edge_type="NOTJUMP"
+                                )
+
+                    # 切换当前节点到 JUMPDEST 所在节点
+                    current_node = jumpdest_node
+
+            # 将当前 step 的 gas 累加到 current_node（只按十进制处理）
+            step_gas = 0
+            try:
+                step_gas = self._get_step_gas_decimal(current_step)
+            except Exception:
+                step_gas = 0
+
+            if current_node is not None:
+                current_node.total_gas += step_gas
+
+            # 遇到分块触发指令时，切换到下一个块（分块触发指令本身的 gas 已累加到当前节点）
             if current_opcode in self.split_opcodes:
                 if current_step_idx + 1 >= len(steps):
                     break  # 已到 trace 末尾
@@ -134,28 +157,35 @@ class CFGConstructor:
                         address=next_step["address"],
                         pc=next_step["pc"]
                     )
-                except ValueError as e:
-                    print(f"警告：步骤 {current_step_idx + 1} 对应的下一个块未找到：{e}")
+                except ValueError:
+                    # 无法找到下一个基础块，则继续
                     current_step_idx += 1
                     continue
 
-                # 复用或创建下一个节点（包含完整指令列表）
                 next_node_key = (next_base_block.address, next_base_block.start_pc)
                 if next_node_key in processed_nodes:
                     next_node = processed_nodes[next_node_key]
                 else:
-                    next_node = BlockNode(next_base_block)  # 指令列表自动包含
+                    next_node = BlockNode(next_base_block)
                     processed_nodes[next_node_key] = next_node
                     cfg.add_node(next_node)
 
-                # 创建边，使用自动编号的add_edge方法
-                edge_type = self._get_edge_type(current_opcode)
+                # 创建边：从 current_node 到 next_node（edge_type 根据当前 opcode 决定）
+                edge_type = "NORMAL"
+                if current_opcode in self.jump_opcodes:
+                    edge_type = "JUMP"
+                elif current_opcode in {"CALL", "CALLCODE", "DELEGATECALL", "STATICCALL"}:
+                    edge_type = "CALL"
+                elif current_opcode in {"RETURN", "STOP", "REVERT", "INVALID", "SELFDESTRUCT"}:
+                    edge_type = "TERMINATE"
+
                 cfg.add_edge(
                     source=current_node,
                     target=next_node,
                     edge_type=edge_type
                 )
 
+                # 切换当前节点到 next_node（后续 step 的 gas 会累加到 next_node）
                 current_node = next_node
 
             current_step_idx += 1
@@ -242,6 +272,7 @@ def render_transaction(cfg: CFG, output_path: str, rankdir: str = "TB") -> None:
             node_label = (f"{node.address[:8]}...\n"
                          f"start: {node.start_pc} | end: {node.end_pc}\n"
                          f"terminator: {node.terminator}\n"
+                         f"total_gas: {node.total_gas}\n"
                          f"---------\n"
                          f"{node.get_instructions_str()}")
             node_label = node_label.replace('"', '\\"')
