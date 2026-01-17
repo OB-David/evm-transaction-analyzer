@@ -20,6 +20,7 @@ class StandardizedStep(TypedDict):
     address: str  # 0x开头的十六进制字符串
     pc: str       # 0x开头的十六进制字符串
     opcode: str   # 操作码名称
+    gascost: int  # gas消耗
     stack: List[str]  # 0x开头的十六进制字符串
 
 class StandardizedTrace(TypedDict):
@@ -173,6 +174,13 @@ class TraceFormatter:
                 pc = step.get("pc", 0)
                 opcode = step.get("op", "").upper()
                 raw_stack = step.get("stack", [])
+                # gascost是该step的gasleft减去下一step的gasleft
+                if i < len(struct_logs) - 1:
+                    gasleft = step.get("gas", 0)
+                    next_gasleft = struct_logs[i + 1].get("gas", 0)
+                    gascost = gasleft - next_gasleft
+                else:
+                    gascost = 0  # 最后一步一定是终止指令，gascost固定是0
 
                 # CALL 类指令,增加地址分类逻辑
                 if opcode in {"CALL", "CALLCODE", "DELEGATECALL", "STATICCALL"}:
@@ -254,6 +262,7 @@ class TraceFormatter:
                     "address": current_address,
                     "pc": self._normalize_pc(pc),
                     "opcode": opcode,
+                    "gascost": gascost,
                     "stack": self._normalize_stack(raw_stack)
                 })
 
