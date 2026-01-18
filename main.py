@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from utils.evm_information import TraceFormatter
 from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor, render_transaction
+from utils.token_table import generate_table_excel
 
 load_dotenv()
 
@@ -59,6 +60,10 @@ def main():
         tx_cfg = cfg_constructor.construct_cfg(standardized_trace,slot_map)
         print(f"成功构建交易级CFG，包含 {len(tx_cfg.nodes)} 个节点和 {len(tx_cfg.edges)} 条边\n")
 
+        # 6. 生成交易操作表格Excel
+        print("正在生成交易操作表格Excel...")
+        table = cfg_constructor.table
+
         # 8. 保存轨迹数据（包含 contracts_addresses、slot_map、users_addresses）
         trace_path = os.path.join(result_dir, "trace.json")
         with open(trace_path, "w") as f:
@@ -84,6 +89,11 @@ def main():
         tx_dot_path = os.path.join(result_dir, "transaction_cfg.dot")
         render_transaction(tx_cfg, tx_dot_path)
         print(f"交易级CFG DOT文件已保存到: {tx_dot_path}")
+
+        # 11. 保存交易操作表格Excel文件
+        table_excel_path = os.path.join(result_dir, "transaction_table.xlsx")
+        generate_table_excel(cfg_constructor, output_path=table_excel_path)
+        print(f"交易操作表格Excel已保存到: {table_excel_path}")
         
         print("\n===== 处理完成 =====")
         print(f"所有结果已保存到: {os.path.abspath(result_dir)}")

@@ -7,7 +7,6 @@ from utils.evm_information import StandardizedTrace, StandardizedStep
 from utils.basic_block import Block, BasicBlockProcessor
 from utils.cfg_structure import CFG, BlockNode, Edge
 
-
 class CFGConstructor:
     def __init__(self, all_base_blocks: List[Block]):
         # 基础块索引：(address, start_pc) -> 基础块（包含完整指令列表）
@@ -24,6 +23,9 @@ class CFGConstructor:
         
         # 跳转相关的opcode
         self.jump_opcodes = {"JUMP", "JUMPI"}
+
+        # 用于存储表格数据
+        self.table = []  #  pc, opcode, from, to, token, balance/amount
 
     def _find_base_block(self, address: str, pc: str) -> Block:
         """通过 address 和 start_pc 查找基础块（确保返回包含完整指令的块）"""
@@ -113,6 +115,7 @@ class CFGConstructor:
         # 遍历 trace，按块处理
         while current_step_idx < len(steps):
             current_step = steps[current_step_idx]
+            current_pc = current_step.get("pc", "")
             current_opcode = current_step["opcode"]
             current_stack = current_step.get("stack", [])
             current_address = current_step["address"]
@@ -185,7 +188,7 @@ class CFGConstructor:
                     value_hex = current_stack[-3]
                     
                     # 提取接收地址（to）：stack[-1]
-                    to_addr_raw = current_stack[-1]
+                    to_addr_raw = current_stack[-2]
                     to_addr = self._normalize_hex_value(to_addr_raw)
                     
                     # 判断value是否非0x0
@@ -200,6 +203,17 @@ class CFGConstructor:
                         }
                         block_temp_data[current_node_key]["eth_events"].append(eth_event)
 
+                        # 维护表格数据
+                        self.table.append({
+                            "pc": current_pc,
+                            "op": "CALL",
+                            "from": current_address, 
+                            "to": to_addr, 
+                            "token": "ETH",  
+                            "balance/amount": value_hex
+                        })
+
+
             # 3. 处理SSTORE（write/ERC20 write事件）
             if current_opcode == "SSTORE":
                 block_temp_data[current_node_key]["action_type"].add("write")
@@ -213,13 +227,26 @@ class CFGConstructor:
                     # 查slot_map找对应地址
                     if slot_hex in slot_map:
                         erc20_addr = slot_map[slot_hex]
+                        balance_normalized = self._normalize_hex_value(balance_hex)
                         # 记录ERC20event（write）
                         erc20_event = {
                             "type": "write",
                             "address": erc20_addr,
-                            "balance": self._normalize_hex_value(balance_hex)
+                            "balance": balance_normalized
                         }
                         block_temp_data[current_node_key]["erc20_events"].append(erc20_event)
+
+                        # 维护表格数据
+                        self.table.append({
+                            "pc": current_pc,
+                            "op": "SSTORE",
+                            "from": None, 
+                            "to": erc20_addr,  
+                            "token": current_address,  
+                            "balance/amount": balance_normalized  
+                        })
+
+                    
 
             # 4. 处理SLOAD（read/ERC20 read事件）
             if current_opcode == "SLOAD":
@@ -239,14 +266,24 @@ class CFGConstructor:
                             next_stack = next_step.get("stack", [])
                             if len(next_stack) >= 1:
                                 balance_hex = next_stack[-1]
-                        
+                        balance_normalized = self._normalize_hex_value(balance_hex)
                         # 记录ERC20event（read）
                         erc20_event = {
                             "type": "read",
                             "address": erc20_addr,
-                            "balance": self._normalize_hex_value(balance_hex)
+                            "balance": balance_normalized
                         }
                         block_temp_data[current_node_key]["erc20_events"].append(erc20_event)
+
+                        # 维护表格数据
+                        self.table.append({
+                            "pc": current_pc,
+                            "op": "SLOAD",
+                            "from": erc20_addr, 
+                            "to": None, 
+                            "token": current_address, 
+                            "balance/amount": balance_normalized
+                        })
 
             # 5. 累加gas（原有逻辑）
             step_gas = 0
@@ -447,8 +484,6 @@ def render_transaction(cfg: CFG, output_path: str, rankdir: str = "TB") -> None:
         # ========== 核心修改：添加Action字段渲染 ==========
         # 1. 获取格式化的Action字符串（改造后，空则返回""）
         actions_str = node.get_actions_str()
-        if actions_str:
-            print(f"Rendering actions for node {node.address[:8]}...: \n{actions_str}")
 
         # 2. 初始化基础标签行
         label_lines = [
@@ -498,3 +533,5 @@ def render_transaction(cfg: CFG, output_path: str, rankdir: str = "TB") -> None:
         f.write("\n".join(dot_content))
     
     print(f"CFG已渲染至: {output_path}")
+
+
