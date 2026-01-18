@@ -1,29 +1,27 @@
 # cfg_structures.py负责定义CFG图的核心数据结构
 
-from typing import List
-from utils.basic_block import Block
-
-
-# cfg_structures.py负责定义CFG图的核心数据结构
-
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from utils.basic_block import Block
 
 
 class BlockNode:
-    """CFG中的节点（对应唯一的basic_block）"""
+    """CFG 中的节点（对应唯一的 basic_block）。
+    简洁版：ERC20event 为列表项，顶层键为 "read" 或 "write"，balance 必须为十六进制字符串 (e.g. "0x1f4")。
+    ETHevent 为单个字典，包含 "from", "to", "value"（value 保留为整数）。"""
+
     def __init__(self, base_block: Block):
-        self.base_block = base_block  # 关联的基础块（保留完整引用）
-        # 基础块标识信息
+        self.base_block = base_block
         self.address = base_block.address
         self.start_pc = base_block.start_pc
         self.end_pc = base_block.end_pc
         self.terminator = base_block.terminator
-        self.total_gas: int = 0  # 节点内所有指令的总gas消耗
+        self.total_gas: int = 0
         self.instructions = base_block.instructions
 
-        # 新增：actions 字段，用于记录该节点的操作（可能有多个）
-        # 每个 action 是一个 Dict，包含 action_type, operation, participants, send_eth, from, to, value 等键
+        # actions: 每个 action 包含 action_type, ERC20event, ETHevent, send_eth
+        # ERC20event: List[{"read":  {"address": "0x...", "balance": "0x..."}},
+        #               {"write": {"address": "0x...", "balance": "0x..."}}]
+        # ETHevent: {"from": "0x...", "to": "0x...", "value": 12345}
         self.actions: List[Dict[str, Any]] = []
 
     def __repr__(self) -> str:
@@ -32,65 +30,77 @@ class BlockNode:
                 f"actions={len(self.actions)})")
 
     def get_instructions_str(self) -> str:
-        """将所有指令转换为字符串"""
         return "\n".join([f"{pc}: {opcode}" for pc, opcode in self.instructions])
 
-    # ---------- actions 相关辅助方法 ----------
     def add_action(
         self,
         action_type: str,
-        participants: Optional[List[Dict[str, str]]] = None,
+        ERC20event: Optional[List[Dict[str, Any]]] = None,
+        ETHevent: Optional[Dict[str, Any]] = None,
         send_eth: str = "NO",
-        from_addr: Optional[str] = None,
-        to_addr: Optional[str] = None,
-        value: Optional[int] = 0,
     ) -> None:
         """
-        添加一个 action 到本节点。
+        添加 action（不做额外归一化，假定调用方保证格式正确）。
 
-        参数示例：
-        action_type: "read" / "write" / "read&write"
-        participants: [{ "address": "0x...", "balance": "0x...", "token_address": "0x..." }, ...]
-        send_eth: "YES" / "NO"
-        from_addr / to_addr: 发起/接收地址
-        value: 转账金额（整数或0）
+        ERC20event 示例:
+          [{"read":  {"address": "0xAa...", "balance": "0x1f4"}},
+           {"write": {"address": "0xBb...", "balance": "0x0"}}]
+
+        ETHevent 示例:
+          {"from": "0xSender...", "to": "0xReceiver...", "value": 1000000000000000000}
         """
-        if participants is None:
-            participants = []
+        if ERC20event is None:
+            ERC20event = []
 
         action = {
             "action_type": action_type,
-            "participants": participants,
+            "ERC20event": ERC20event,
             "send_eth": send_eth,
-            "from": from_addr or "",
-            "to": to_addr or "",
-            "value": value or 0,
+            "ETHevent": ETHevent or {},
+            
         }
-        # 简单验证（可根据需要扩展）
         if action["send_eth"] not in ("YES", "NO"):
             action["send_eth"] = "NO"
         self.actions.append(action)
 
     def get_actions(self) -> List[Dict[str, Any]]:
-        """返回 actions 列表（引用）"""
         return self.actions
 
     def get_actions_str(self) -> str:
-        """将 actions 格式化为可读的字符串（用于日志/调试）"""
         parts = []
         for i, a in enumerate(self.actions, 1):
-            participants = ", ".join(
-                [p.get("address", "") for p in a.get("participants", [])]
-            ) or "none"
+            # ERC20 events
+            erc_events = a.get("ERC20event", []) or []
+            if erc_events:
+                erc_strs = []
+                for e in erc_events:
+                    k = list(e.keys())[0]
+                    inner = e[k]
+                    addr = inner.get("address", "")
+                    bal = inner.get("balance", "")
+                    erc_strs.append(f"[{k} addr={addr} balance={bal}]")
+                erc_summary = ", ".join(erc_strs)
+            else:
+                erc_summary = "none"
+
+            # ETH event
+            eth = a.get("ETHevent") or {}
+            if eth:
+                fr = eth.get("from", "")
+                to = eth.get("to", "")
+                val = eth.get("value", "")
+                val_str = hex(val) if isinstance(val, int) else str(val)
+                eth_summary = f"[from={fr} to={to} value={val_str}]"
+            else:
+                eth_summary = "none"
+
             parts.append(
-                f"Action[{i}]: type={a.get('action_type')} op={a.get('operation')} "
-                f"participants={participants} send_eth={a.get('send_eth')} "
-                f"from={a.get('from')} to={a.get('to')} value={hex(a.get('value')) if isinstance(a.get('value'), int) else a.get('value')}"
+                f"Action[{i}]: type={a.get('action_type')} ERC20event={erc_summary} "
+                f"ETHevent={eth_summary} send_eth={a.get('send_eth')}"
             )
         return "\n".join(parts)
 
     def to_dict(self) -> Dict[str, Any]:
-        """将节点序列化为字典，包含 actions"""
         return {
             "address": self.address,
             "start_pc": self.start_pc,
