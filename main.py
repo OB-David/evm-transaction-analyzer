@@ -56,7 +56,7 @@ def main():
         # 5. 构建交易级控制流图(CFG)
         print("正在构建交易级控制流图...")
         cfg_constructor = CFGConstructor(all_blocks)
-        tx_cfg = cfg_constructor.construct_cfg(standardized_trace)
+        tx_cfg = cfg_constructor.construct_cfg(standardized_trace,slot_map)
         print(f"成功构建交易级CFG，包含 {len(tx_cfg.nodes)} 个节点和 {len(tx_cfg.edges)} 条边\n")
 
         # 8. 保存轨迹数据（包含 contracts_addresses、slot_map、users_addresses）

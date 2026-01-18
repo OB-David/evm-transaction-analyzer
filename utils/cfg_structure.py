@@ -16,13 +16,13 @@ class BlockNode:
         self.end_pc = base_block.end_pc
         self.terminator = base_block.terminator
         self.total_gas: int = 0
-        self.instructions = base_block.instructions
-
         # actions: 每个 action 包含 action_type, ERC20event, ETHevent, send_eth
         # ERC20event: List[{"read":  {"address": "0x...", "balance": "0x..."}},
         #               {"write": {"address": "0x...", "balance": "0x..."}}]
         # ETHevent: {"from": "0x...", "to": "0x...", "value": 12345}
         self.actions: List[Dict[str, Any]] = []
+        self.instructions = base_block.instructions
+
 
     def __repr__(self) -> str:
         return (f"BlockNode(addr={self.address[:8]}..., start_pc={self.start_pc}, "
@@ -36,8 +36,9 @@ class BlockNode:
         self,
         action_type: str,
         ERC20event: Optional[List[Dict[str, Any]]] = None,
-        ETHevent: Optional[Dict[str, Any]] = None,
         send_eth: str = "NO",
+        ETHevent: Optional[Dict[str, Any]] = None,
+        
     ) -> None:
         """
         添加 action（不做额外归一化，假定调用方保证格式正确）。
@@ -69,35 +70,46 @@ class BlockNode:
     def get_actions_str(self) -> str:
         parts = []
         for i, a in enumerate(self.actions, 1):
-            # ERC20 events
+            # 1. 处理ERC20事件（过滤空值，无有效信息则为空）
             erc_events = a.get("ERC20event", []) or []
+            erc_strs = []
             if erc_events:
-                erc_strs = []
                 for e in erc_events:
                     k = list(e.keys())[0]
                     inner = e[k]
                     addr = inner.get("address", "")
                     bal = inner.get("balance", "")
-                    erc_strs.append(f"[{k} addr={addr} balance={bal}]")
-                erc_summary = ", ".join(erc_strs)
-            else:
-                erc_summary = "none"
+                    if addr or bal:  # 仅保留有有效信息的ERC20事件
+                        erc_strs.append(f"[{k} addr={addr} balance={bal}]")
+            erc_summary = ", ".join(erc_strs) if erc_strs else ""
 
-            # ETH event
+            # 2. 处理ETH事件（过滤空值，无有效信息则为空）
             eth = a.get("ETHevent") or {}
+            eth_summary = ""
             if eth:
                 fr = eth.get("from", "")
                 to = eth.get("to", "")
                 val = eth.get("value", "")
                 val_str = hex(val) if isinstance(val, int) else str(val)
-                eth_summary = f"[from={fr} to={to} value={val_str}]"
-            else:
-                eth_summary = "none"
+                if fr or to or val:  # 仅保留有有效信息的ETH事件
+                    eth_summary = f"[from={fr} to={to} value={val_str}]"
 
-            parts.append(
-                f"Action[{i}]: type={a.get('action_type')} ERC20event={erc_summary} "
-                f"ETHevent={eth_summary} send_eth={a.get('send_eth')}"
-            )
+            # 3. 构建单条Action（只保留有效字段，过滤none/空）
+            action_parts = []
+            if a.get("action_type") != "none":  # 过滤none类型
+                action_parts.append(f"type={a.get('action_type')}")
+            if erc_summary:  # 过滤空ERC20事件
+                action_parts.append(f"ERC20event={erc_summary}")
+            if eth_summary:  # 过滤空ETH事件
+                action_parts.append(f"ETHevent={eth_summary}")
+            if a.get("send_eth") == "YES":  # 仅显示YES，NO不展示
+                action_parts.append(f"send_eth=YES")
+
+            # 4. 仅当有有效内容时，添加这条Action
+            if action_parts:
+                parts.append(f"Action[{i}]: {' '.join(action_parts)}")
+
+        # 无有效Action则返回空字符串（而非none）
         return "\n".join(parts)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -150,16 +162,6 @@ class CFG:
         self.edges.append(edge)
         self._next_edge_id += 1  # 编号递增
 
-    def get_node_by_key(self, address: str, start_pc: str) -> BlockNode:
-        """通过address和start_pc查找节点"""
-        for node in self.nodes:
-            if node.address == address and node.start_pc == start_pc:
-                return node
-        raise ValueError(f"未找到节点: address={address}, start_pc={start_pc}")
-
-    def remove_node(self, node: BlockNode) -> None:
-        """移除节点"""
-        self.nodes.remove(node)
 
     def __repr__(self) -> str:
         return f"CFG(tx_hash={self.tx_hash}, nodes={len(self.nodes)}, edges={len(self.edges)})"
