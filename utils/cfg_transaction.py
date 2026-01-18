@@ -1,7 +1,3 @@
-# transaction.py负责构建整个transaction的CFG图
-# 包含连接逻辑
-# 包含Transaction Execution CFG渲染
-
 from typing import List, Dict, Tuple, Optional, Set, Any
 from utils.evm_information import StandardizedTrace, StandardizedStep
 from utils.basic_block import Block, BasicBlockProcessor
@@ -71,13 +67,26 @@ class CFGConstructor:
             return int(self._normalize_hex_value(hex_str).lstrip("0x"), 16)
         except (ValueError, TypeError):
             return None
-
-    def construct_cfg(self, trace: Dict[str, Any], slot_map: Dict[str, str]) -> CFG:
+    
+    def _get_token_name_by_address(self, address: str, erc20_token_map: Dict[str, str]) -> str:
         """
-        构建CFG（新增slot_map参数，用于解析SSTORE/SLOAD的ERC20事件）
-        :param trace: 标准化trace（包含tx_hash、steps等，来自evm_information的get_standardized_trace）
-        :param slot_map: slot->address映射（来自evm_information的extract_slot_address_map）
-        :return: 填充完整字段的CFG
+        根据合约地址从erc20_token_map匹配token名称（仅SLOAD/SSTORE使用）
+        :param address: 合约地址（标准化）
+        :param erc20_token_map: 地址->token名称映射
+        :return: token名称（未匹配到返回空字符串）
+        """
+        if not address or not erc20_token_map:
+            return ""
+        norm_addr = address.lower()
+        return erc20_token_map.get(norm_addr, "")
+
+    def construct_cfg(self, trace: Dict[str, Any], slot_map: Dict[str, str], erc20_token_map: Dict[str, str]) -> CFG:
+        """
+        构建CFG（仅新增erc20_token_map参数，用于SLOAD/SSTORE的token匹配）
+        :param trace: 标准化trace
+        :param slot_map: slot->address映射
+        :param erc20_token_map: ERC20地址->token名称映射（仅SLOAD/SSTORE使用）
+        :return: CFG
         """
         cfg = CFG(tx_hash=trace["tx_hash"])
         steps = trace["steps"]
@@ -87,7 +96,7 @@ class CFGConstructor:
         processed_nodes: Dict[Tuple[str, str], BlockNode] = {}  # 复用节点
         current_step_idx = 0  # 当前处理的 step 索引
 
-        # 块级临时存储（用于收集当前块的action_type、ETHevent、ERC20event等）
+        # 块级临时存储
         block_temp_data: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
         # 处理第一个块
@@ -100,7 +109,7 @@ class CFGConstructor:
         except ValueError as e:
             raise RuntimeError(f"初始化第一个块失败：{e}")
 
-        # 初始化第一个节点和临时数据
+        # 初始化第一个节点和临时数据（ ）
         current_node_key = (current_base_block.address, current_base_block.start_pc)
         current_node = BlockNode(current_base_block)
         processed_nodes[current_node_key] = current_node
@@ -112,7 +121,7 @@ class CFGConstructor:
             "erc20_events": []     # ERC20事件列表
         }
 
-        # 遍历 trace，按块处理
+        # 遍历 trace，按块处理（ ，仅修改SLOAD/SSTORE部分）
         while current_step_idx < len(steps):
             current_step = steps[current_step_idx]
             current_pc = current_step.get("pc", "")
@@ -120,7 +129,7 @@ class CFGConstructor:
             current_stack = current_step.get("stack", [])
             current_address = current_step["address"]
 
-            # 1. 特殊处理JUMPDEST（原有逻辑）
+            # 1. 特殊处理JUMPDEST
             if current_opcode == "JUMPDEST":
                 try:
                     current_jumpdest_block = self._find_base_block(
@@ -133,7 +142,7 @@ class CFGConstructor:
 
                 if current_jumpdest_block:
                     current_jumpdest_node_key = (current_jumpdest_block.address, current_jumpdest_block.start_pc)
-                    # 初始化新块的临时数据
+                    # 初始化新块的临时数据（ ）
                     if current_jumpdest_node_key not in processed_nodes:
                         jumpdest_node = BlockNode(current_jumpdest_block)
                         processed_nodes[current_jumpdest_node_key] = jumpdest_node
@@ -181,7 +190,7 @@ class CFGConstructor:
                     current_node = jumpdest_node
                     current_node_key = current_jumpdest_node_key
 
-            # 2. 处理CALL指令（ETH事件）
+            # 2. 处理CALL指令（原有逻辑完全不变，token仍为ETH）
             if current_opcode in {"CALL"}:  # 仅处理CALL
                 # CALL栈参数（栈底→栈顶）：gas, to, value...
                     # 提取栈顶第三个值（value）：对应stack[-3]（按用户说的“栈顶第三个”确认索引，若不符可调整）
@@ -213,12 +222,10 @@ class CFGConstructor:
                             "balance/amount": value_hex
                         })
 
-
-            # 3. 处理SSTORE（write/ERC20 write事件）
+            # 3. 处理SSTORE
             if current_opcode == "SSTORE":
                 block_temp_data[current_node_key]["action_type"].add("write")
 
-                    
                 # 解析栈顶（slot）：SSTORE栈顶是slot（stack[-1]），第二个值是value（stack[-2]）
                 if len(current_stack) >= 2:
                     slot_hex = current_stack[-1].lower()
@@ -227,28 +234,31 @@ class CFGConstructor:
                     # 查slot_map找对应地址
                     if slot_hex in slot_map:
                         erc20_addr = slot_map[slot_hex]
+                        token_name = self._get_token_name_by_address(current_address, erc20_token_map)
+                        # 未匹配到则用地址兜底
+                        token_name = token_name if token_name else erc20_addr
+                        
                         balance_normalized = self._normalize_hex_value(balance_hex)
-                        # 记录ERC20event（write）
+                        # 记录ERC20event
                         erc20_event = {
                             "type": "write",
                             "address": erc20_addr,
+                            "token": token_name, 
                             "balance": balance_normalized
                         }
                         block_temp_data[current_node_key]["erc20_events"].append(erc20_event)
 
-                        # 维护表格数据
+                        # 维护表格数据（token字段改为匹配的名称）
                         self.table.append({
                             "pc": current_pc,
                             "op": "SSTORE",
                             "from": None, 
                             "to": erc20_addr,  
-                            "token": current_address,  
+                            "token": token_name,
                             "balance/amount": balance_normalized  
                         })
 
-                    
-
-            # 4. 处理SLOAD（read/ERC20 read事件）
+            # 4. 处理SLOAD（仅此处添加token名称匹配）
             if current_opcode == "SLOAD":
                 block_temp_data[current_node_key]["action_type"].add("read")
                 
@@ -259,6 +269,10 @@ class CFGConstructor:
                     # 查slot_map找对应地址
                     if slot_hex in slot_map:
                         erc20_addr = slot_map[slot_hex]
+                        token_name = self._get_token_name_by_address(current_address, erc20_token_map)
+                        # 未匹配到则用地址兜底
+                        token_name = token_name if token_name else erc20_addr
+                        
                         # 提取下一个step的栈顶作为balance
                         balance_hex = "0x0"
                         if current_step_idx + 1 < len(steps):
@@ -267,10 +281,11 @@ class CFGConstructor:
                             if len(next_stack) >= 1:
                                 balance_hex = next_stack[-1]
                         balance_normalized = self._normalize_hex_value(balance_hex)
-                        # 记录ERC20event（read）
+                        # 记录ERC20event
                         erc20_event = {
                             "type": "read",
                             "address": erc20_addr,
+                            "token": token_name,  
                             "balance": balance_normalized
                         }
                         block_temp_data[current_node_key]["erc20_events"].append(erc20_event)
@@ -281,11 +296,11 @@ class CFGConstructor:
                             "op": "SLOAD",
                             "from": erc20_addr, 
                             "to": None, 
-                            "token": current_address, 
+                            "token": token_name,  
                             "balance/amount": balance_normalized
                         })
 
-            # 5. 累加gas（原有逻辑）
+            # 5. 累加gas（ ）
             step_gas = 0
             try:
                 step_gas = self._get_step_gas_decimal(current_step)
@@ -294,7 +309,7 @@ class CFGConstructor:
             if current_node is not None:
                 current_node.total_gas += step_gas
 
-            # 6. 处理分块触发指令（原有逻辑）
+            # 6. 处理分块触发指令（ ）
             if current_opcode in self.split_opcodes:
                 if current_step_idx + 1 >= len(steps):
                     break
@@ -314,13 +329,12 @@ class CFGConstructor:
                     next_node = BlockNode(next_base_block)
                     processed_nodes[next_node_key] = next_node
                     cfg.add_node(next_node)
-                    # 初始化新块临时数据
+                    # 初始化新块临时数据（ ）
                     block_temp_data[next_node_key] = {
                         "action_type": set(),
                         "erc20_events": [],
                         "send_eth": "no",
                         "eth_events": []
-
                     }
                 else:
                     next_node = processed_nodes[next_node_key]
@@ -346,11 +360,11 @@ class CFGConstructor:
 
             current_step_idx += 1
 
-        # 7. 将temp_data写入原有actions列表（复用add_action，兼容原有get_actions_str）
+        # 7. 将temp_data写入原有actions列表
         for node_key, temp_data in block_temp_data.items():
             node = processed_nodes[node_key]
             
-            #  处理action_type（合并为read/write/read&write/none）
+            #  处理action_type（ ）
             action_type_set = temp_data["action_type"]
             if not action_type_set:
                 action_type = "none"
@@ -359,37 +373,33 @@ class CFGConstructor:
             else:
                 action_type = next(iter(action_type_set))  # 取唯一值
             
-            #  提取ERC20event（适配add_action的格式要求）
-            # 确保格式：List[{"read/write": {"address":..., "balance":...}}]
+            #  提取ERC20event
             erc20_events = temp_data.get("erc20_events", []) or []
-
-            # 修正后的格式转换逻辑（适配原始数据结构）
             valid_erc20 = []
             for e in erc20_events:
-                # 1. 过滤空字典 + 检查是否有'type'字段 + 'type'值为read/write
                 if not e or "type" not in e or e["type"] not in ("read", "write"):
                     continue
-                # 2. 提取type/address/balance字段（兼容空值）
-                action_type = e["type"]
+                action_type_erc20 = e["type"]
                 addr = e.get("address", "")
+                token = e.get("token", "")
                 bal = e.get("balance", "")
-                # 3. 转换为add_action要求的格式：[{"read/write": {"address":..., "balance":...}}]
                 valid_erc20.append({
-                    action_type: {
+                    action_type_erc20: {
                         "address": addr,
+                        "token": token, 
                         "balance": bal
                     }
                 })
             
-            #  提取ETHevent（适配add_action的格式：单个字典，取第一个有效项）
+            #  提取ETHevent
             eth_events = temp_data.get("eth_events", []) or []
             eth_event = eth_events[0] if (eth_events and eth_events[0]) else None
             
-            #  处理send_eth（强制YES/NO）
+            #  处理send_eth
             send_eth = temp_data.get("send_eth", "NO").upper()
             send_eth = "YES" if send_eth == "YES" else "NO"
             
-            # 5. 核心：调用add_action写入原有actions列表
+            # 调用add_action
             node.add_action(
                 action_type=action_type,
                 ERC20event=valid_erc20,
@@ -400,7 +410,7 @@ class CFGConstructor:
         return cfg
 
     def _get_edge_type(self, opcode: str) -> str:
-        """根据终止 opcode 确定边类型"""
+        """根据终止 opcode 确定边类型）"""
         if opcode in {"JUMP"}:
             return "JUMP"
         elif opcode in {"JUMPI"}:
@@ -425,12 +435,10 @@ class CFGConstructor:
             return "UNKNOWN"
 
 
-# 渲染CFG为DOT文件（显示所有指令并按合约染色）【原有逻辑完全未改 + 新增Action渲染】
+# 渲染CFG为DOT文件
 def render_transaction(cfg: CFG, output_path: str, rankdir: str = "TB") -> None:
     """
-    将CFG渲染为DOT文件，显示所有指令，并为不同合约的块自动分配不同颜色
-    包含MUL或DIV指令的块会有加粗边框，同时为不同类型的边添加颜色
-    新增：渲染BlockNode的Action字段（action_type/ERC20event/ETHevent/send_eth）
+    将CFG渲染为DOT文件（仅在Action中显示SLOAD/SSTORE的token名称）
     """
     # 合约颜色映射
     contract_colors = [
@@ -473,45 +481,36 @@ def render_transaction(cfg: CFG, output_path: str, rankdir: str = "TB") -> None:
     # 添加节点
     for node in cfg.nodes:
         block = node.base_block
-        # 检查是否包含MUL/DIV指令
-        # 若不想解构，用索引 [1] 取 opcode（元组的第二个元素）
+        # 检查是否包含MUL/DIV指令（ ）
         has_mul_div = any(item[1] in {"MUL", "DIV"} for item in block.instructions)
-        # 节点样式
         style = "rounded,filled"
         if has_mul_div:
             style += ",bold"
         
-        # ========== 核心修改：添加Action字段渲染 ==========
-        # 1. 获取格式化的Action字符串（改造后，空则返回""）
-        actions_str = node.get_actions_str()
-
-        # 2. 初始化基础标签行
+        # 构建标签
         label_lines = [
             f"Address: {node.address}",
             f"Start PC: {node.start_pc}",
             f"Total BlockGas: {node.total_gas}",
         ]
 
-        # 3. 仅当Action有有效内容时，才添加Actions模块
+        # 获取Action字符串
+        actions_str = node.get_actions_str()
         if actions_str:
             label_lines += [
-                "--- Actions ---",  # Action标题
-                actions_str         # Action内容（无none、无冗余）
+                "--- Actions ---",
+                actions_str
             ]
 
-        # 4. 添加指令模块（无指令则不显示）
+        # 添加指令
         instructions_lines = [f"{pc}: {opcode}" for pc, opcode in node.instructions]
         if instructions_lines:
             label_lines += [
-                "--- Instructions ---"  # 指令标题
+                "--- Instructions ---"
             ] + instructions_lines
-        # ========== 核心修改结束 ==========
         
-        # 拼接label（DOT语言用\\n表示换行）
         label = "\\n".join(label_lines)
-        # 节点颜色
         color = contract_color_assignment[block.address]
-        # 添加节点定义
         node_id = f"node_{id(node)}"
         dot_content.append(
             f'  {node_id} [label="{label}", style="{style}", fillcolor="{color}"];'
@@ -533,5 +532,3 @@ def render_transaction(cfg: CFG, output_path: str, rankdir: str = "TB") -> None:
         f.write("\n".join(dot_content))
     
     print(f"CFG已渲染至: {output_path}")
-
-

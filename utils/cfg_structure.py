@@ -1,5 +1,3 @@
-# cfg_structures.py负责定义CFG图的核心数据结构
-
 from typing import List, Optional, Dict, Any
 from utils.basic_block import Block
 
@@ -7,7 +5,9 @@ from utils.basic_block import Block
 class BlockNode:
     """CFG 中的节点（对应唯一的 basic_block）。
     简洁版：ERC20event 为列表项，顶层键为 "read" 或 "write"，balance 必须为十六进制字符串 (e.g. "0x1f4")。
-    ETHevent 为单个字典，包含 "from", "to", "value"（value 保留为整数）。"""
+    ETHevent 为单个字典，包含 "from", "to", "value"（value 保留为整数）。
+    【新增】ERC20event 中新增 token 字段，用于标识代币地址/符号
+    """
 
     def __init__(self, base_block: Block):
         self.base_block = base_block
@@ -17,12 +17,12 @@ class BlockNode:
         self.terminator = base_block.terminator
         self.total_gas: int = 0
         # actions: 每个 action 包含 action_type, ERC20event, ETHevent, send_eth
-        # ERC20event: List[{"read":  {"address": "0x...", "balance": "0x..."}},
-        #               {"write": {"address": "0x...", "balance": "0x..."}}]
+        # 【修改】ERC20event 新增 token 字段
+        # ERC20event: List[{"read":  {"address": "0x...", "token": "0x...", "balance": "0x..."}},
+        #               {"write": {"address": "0x...", "token": "0x...", "balance": "0x..."}}]
         # ETHevent: {"from": "0x...", "to": "0x...", "value": 12345}
         self.actions: List[Dict[str, Any]] = []
         self.instructions = base_block.instructions
-
 
     def __repr__(self) -> str:
         return (f"BlockNode(addr={self.address[:8]}..., start_pc={self.start_pc}, "
@@ -38,14 +38,12 @@ class BlockNode:
         ERC20event: Optional[List[Dict[str, Any]]] = None,
         send_eth: str = "NO",
         ETHevent: Optional[Dict[str, Any]] = None,
-        
     ) -> None:
         """
         添加 action（不做额外归一化，假定调用方保证格式正确）。
-
-        ERC20event 示例:
-          [{"read":  {"address": "0xAa...", "balance": "0x1f4"}},
-           {"write": {"address": "0xBb...", "balance": "0x0"}}]
+        示例新增 token 字段:
+          [{"read":  {"address": "0xAa...", "token": "TOWER", "balance": "0x1f4"}},
+           {"write": {"address": "0xBb...", "token": "Wrapped Ether", "balance": "0x0"}}]
 
         ETHevent 示例:
           {"from": "0xSender...", "to": "0xReceiver...", "value": 1000000000000000000}
@@ -58,7 +56,6 @@ class BlockNode:
             "ERC20event": ERC20event,
             "send_eth": send_eth,
             "ETHevent": ETHevent or {},
-            
         }
         if action["send_eth"] not in ("YES", "NO"):
             action["send_eth"] = "NO"
@@ -78,9 +75,10 @@ class BlockNode:
                     k = list(e.keys())[0]
                     inner = e[k]
                     addr = inner.get("address", "")
+                    token = inner.get("token", "")
                     bal = inner.get("balance", "")
-                    if addr or bal:  # 仅保留有有效信息的ERC20事件
-                        erc_strs.append(f"[{k} addr={addr} balance={bal}]")
+                    if addr or bal or token:
+                        erc_strs.append(f"[{k} addr={addr} token={token} balance={bal}]")
             erc_summary = ", ".join(erc_strs) if erc_strs else ""
 
             # 2. 处理ETH事件（过滤空值，无有效信息则为空）
@@ -123,6 +121,7 @@ class BlockNode:
             "actions": self.actions,
         }
 
+
 class Edge:
     """CFG中的边（带编号和类型）"""
     def __init__(self, edge_id: int, source: BlockNode, target: BlockNode, edge_type: str):
@@ -148,7 +147,7 @@ class CFG:
         node_key = (node.address, node.start_pc)
         for existing_node in self.nodes:
             if (existing_node.address, existing_node.start_pc) == node_key:
-                return 
+                return
         self.nodes.append(node)
 
     def add_edge(self, source: BlockNode, target: BlockNode, edge_type: str) -> None:
@@ -161,7 +160,6 @@ class CFG:
         )
         self.edges.append(edge)
         self._next_edge_id += 1  # 编号递增
-
 
     def __repr__(self) -> str:
         return f"CFG(tx_hash={self.tx_hash}, nodes={len(self.nodes)}, edges={len(self.edges)})"
