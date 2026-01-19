@@ -5,8 +5,13 @@ from utils.evm_information import TraceFormatter
 from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor, render_transaction
 from utils.token_table import generate_table_excel
+from utils.extract_token_changes import extract_token_changes
 
 load_dotenv()
+try:
+    load_dotenv('.env')
+except Exception:
+    pass
 
 def create_result_directory(tx_hash: str) -> str:
     """创建结果目录结构: Result/交易哈希/"""
@@ -71,6 +76,18 @@ def main():
         with open(trace_path, "w") as f:
             json.dump(standardized_trace, f, indent=2)
         print(f"\n轨迹数据（含 addresses 与 slot_map）已保存到: {trace_path}")
+        # 7.5. 新增：分析并保存 ERC20 余额变动
+        print("\n[分析] 正在基于 Slot 还原计算 ERC20 余额变动...")
+        try:
+            extract_token_changes(
+                standardized_trace, 
+                erc20_token_map, 
+                slot_map, 
+                result_dir
+            )
+            print(f"✅ ERC20 余额逻辑分析完成。")
+        except Exception as e:
+            print(f"❌ 余额分析失败: {e}")
 
         # 8. 保存基本块数据
         blocks_path = os.path.join(result_dir, "blocks.json")
@@ -99,6 +116,8 @@ def main():
         
         print("\n===== 处理完成 =====")
         print(f"所有结果已保存到: {os.path.abspath(result_dir)}")
+
+        
         
     except Exception as e:
         print(f"执行失败: {str(e)}")
