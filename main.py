@@ -1,3 +1,7 @@
+import shutil
+print("cast path:", shutil.which("cast"))
+
+
 import json
 import os
 from dotenv import load_dotenv
@@ -76,6 +80,7 @@ def main():
         with open(trace_path, "w") as f:
             json.dump(standardized_trace, f, indent=2)
         print(f"\n轨迹数据（含 addresses 与 slot_map）已保存到: {trace_path}")
+        
         # 7.5. 新增：分析并保存 ERC20 余额变动
         print("\n[分析] 正在基于 Slot 还原计算 ERC20 余额变动...")
         try:

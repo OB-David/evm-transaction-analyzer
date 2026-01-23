@@ -38,7 +38,7 @@ def generate_table_excel(self, output_path: str = "transaction_table.xlsx") -> N
     ws.title = "Transaction Table"
     
     # 定义表头（与table字段对应）
-    headers = ["pc", "op", "from", "to", "token", "balance/amount"]
+    headers = ["pc", "op", "from", "to", "token_name", "token_address", "balance/amount"]
     # 设置表头样式
     header_font = Font(bold=True, size=11)
     header_align = Alignment(horizontal="center", vertical="center")
@@ -73,8 +73,8 @@ def generate_table_excel(self, output_path: str = "transaction_table.xlsx") -> N
                 # 应用颜色
                 cell.fill = address_color_map[cell_value]
     
-    # ===================== 修复：列宽匹配（原代码多了1个值） =====================
-    col_widths = [10, 10, 45, 45, 45, 25]  # 对应6个表头：pc,op,from,to,token,balance/amount
+    # ===================== 列宽匹配  =====================
+    col_widths = [10, 10, 45, 45, 20, 45, 25]  # 对应7个表头：pc,op,from,to,token_name,token_address,balance/amount
     for col_idx, width in enumerate(col_widths, 1):
         col_letter = openpyxl.utils.get_column_letter(col_idx)
         ws.column_dimensions[col_letter].width = width

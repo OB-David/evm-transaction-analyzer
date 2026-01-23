@@ -218,7 +218,8 @@ class CFGConstructor:
                             "op": "CALL",
                             "from": current_address, 
                             "to": to_addr, 
-                            "token": "ETH",  
+                            "token_name": "ETH",  
+                            "token_address": "ETH",
                             "balance/amount": value_hex
                         })
 
@@ -233,16 +234,16 @@ class CFGConstructor:
                     
                     # 查slot_map找对应地址
                     if slot_hex in slot_map:
-                        erc20_addr = slot_map[slot_hex]
+                        to_addr = slot_map[slot_hex]
                         token_name = self._get_token_name_by_address(current_address, erc20_token_map)
                         # 未匹配到则用地址兜底
-                        token_name = token_name if token_name else erc20_addr
+                        token_name = token_name if token_name else current_address
                         
                         balance_normalized = self._normalize_hex_value(balance_hex)
                         # 记录ERC20event
                         erc20_event = {
                             "type": "write",
-                            "address": erc20_addr,
+                            "address": to_addr,
                             "token": token_name, 
                             "balance": balance_normalized
                         }
@@ -253,8 +254,9 @@ class CFGConstructor:
                             "pc": current_pc,
                             "op": "SSTORE",
                             "from": None, 
-                            "to": erc20_addr,  
-                            "token": token_name,
+                            "to": to_addr,  
+                            "token_name": token_name,
+                            "token_address": current_address,
                             "balance/amount": balance_normalized  
                         })
 
@@ -268,10 +270,10 @@ class CFGConstructor:
                     
                     # 查slot_map找对应地址
                     if slot_hex in slot_map:
-                        erc20_addr = slot_map[slot_hex]
+                        to_addr = slot_map[slot_hex]
                         token_name = self._get_token_name_by_address(current_address, erc20_token_map)
                         # 未匹配到则用地址兜底
-                        token_name = token_name if token_name else erc20_addr
+                        token_name = token_name if token_name else current_address
                         
                         # 提取下一个step的栈顶作为balance
                         balance_hex = "0x0"
@@ -284,8 +286,9 @@ class CFGConstructor:
                         # 记录ERC20event
                         erc20_event = {
                             "type": "read",
-                            "address": erc20_addr,
-                            "token": token_name,  
+                            "address": to_addr,
+                            "token_name": token_name,
+                            "token_address": current_address,
                             "balance": balance_normalized
                         }
                         block_temp_data[current_node_key]["erc20_events"].append(erc20_event)
@@ -294,9 +297,10 @@ class CFGConstructor:
                         self.table.append({
                             "pc": current_pc,
                             "op": "SLOAD",
-                            "from": erc20_addr, 
+                            "from": to_addr, 
                             "to": None, 
-                            "token": token_name,  
+                            "token_name": token_name,
+                            "token_address": current_address,  
                             "balance/amount": balance_normalized
                         })
 
