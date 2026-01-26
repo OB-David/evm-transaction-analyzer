@@ -1,3 +1,8 @@
+# cfg_transaction.py负责构建整个transaction的CFG图
+# 包含连接逻辑
+# 包含TransactionCFG渲染
+# 包含根据SLOAD/SSTORE/CALL生成余额变化表格
+
 from typing import List, Dict, Tuple, Optional, Set, Any
 from utils.evm_information import StandardizedTrace, StandardizedStep
 from utils.basic_block import Block, BasicBlockProcessor
@@ -20,8 +25,8 @@ class CFGConstructor:
         # 跳转相关的opcode
         self.jump_opcodes = {"JUMP", "JUMPI"}
 
-        # 用于存储表格数据
-        self.table = []  #  pc, opcode, from, to, token, balance/amount
+        # 用于存储token表格数据
+        self.table = []  #  pc, opcode, from, to, token_name, token_address, balance/amount
 
     def _find_base_block(self, address: str, pc: str) -> Block:
         """通过 address 和 start_pc 查找基础块（确保返回包含完整指令的块）"""

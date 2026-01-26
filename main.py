@@ -1,7 +1,3 @@
-import shutil
-print("cast path:", shutil.which("cast"))
-
-
 import json
 import os
 from dotenv import load_dotenv
@@ -31,7 +27,7 @@ def create_result_directory(tx_hash: str) -> str:
 def main():
     # 配置参数
     PROVIDER_URL = os.environ.get("GETH_API")
-    TX_HASH = "0xed545a57f352451fd1cf9afa68b54a136169f2c9baa64f9c09e2b5cb477326e8"
+    TX_HASH = "0xd76d6cf2885323fbe0b9d1795763f8f9d30be648dcf0df4a524f7c3fe5c37177"
 
     try:
         # 创建结果目录
@@ -116,8 +112,8 @@ def main():
         # 12. 保存代币交易流图的DOT文件
         token_flow_dot_path = os.path.join(result_dir, "asset_flow")
         render_asset_flow(pairs,annotations,users_addresses,token_flow_dot_path)
+        print(f"代币交易流图DOT文件已保存到: {token_flow_dot_path}.dot")
 
-        
         print("\n===== 处理完成 =====")
         print(f"所有结果已保存到: {os.path.abspath(result_dir)}")
 

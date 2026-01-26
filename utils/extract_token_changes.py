@@ -1,3 +1,6 @@
+# extract_token_changes.py 负责从余额变化表格中提取代币转移事件
+# 生成资产流向图的 DOT 文件
+
 import os
 from collections import defaultdict
 from graphviz import Digraph
