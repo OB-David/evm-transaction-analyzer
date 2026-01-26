@@ -9,7 +9,8 @@ from utils.evm_information import TraceFormatter
 from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor, render_transaction
 from utils.token_table import generate_table_excel
-from utils.extract_token_changes import extract_token_changes
+from utils.extract_token_changes import balance_change, pair_transactions, render_asset_flow
+from collections import defaultdict
 
 load_dotenv()
 try:
@@ -30,7 +31,7 @@ def create_result_directory(tx_hash: str) -> str:
 def main():
     # 配置参数
     PROVIDER_URL = os.environ.get("GETH_API")
-    TX_HASH = "0x9892c131bebccdaa65af46d8016d2ac4f6ad2dbfe03ca4af55a7b7a711dc6630"
+    TX_HASH = "0xed545a57f352451fd1cf9afa68b54a136169f2c9baa64f9c09e2b5cb477326e8"
 
     try:
         # 创建结果目录
@@ -71,30 +72,23 @@ def main():
         tx_cfg = cfg_constructor.construct_cfg(standardized_trace,slot_map,erc20_token_map)
         print(f"成功构建交易级CFG，包含 {len(tx_cfg.nodes)} 个节点和 {len(tx_cfg.edges)} 条边\n")
 
-        # 6. 生成交易操作表格Excel
+        # 6. 生成交易操作表格数据
         print("正在生成交易操作表格Excel...")
         table = cfg_constructor.table
 
-        # 7. 保存轨迹数据（包含 contracts_addresses、slot_map、users_addresses）
+        # 7. 构建代币交易流
+        print("正在提取代币交易流...")
+        all_changes = balance_change(table)
+        pairs, annotations = pair_transactions(all_changes)
+        print(f"共提取到 {len(all_changes)} 条资产变更事件，配对成功 {len(pairs)} 对交易流,存在孤立变动{len(annotations)}条\n")
+
+        # 8. 保存轨迹数据（包含 contracts_addresses、slot_map、users_addresses）
         trace_path = os.path.join(result_dir, "trace.json")
         with open(trace_path, "w") as f:
             json.dump(standardized_trace, f, indent=2)
         print(f"\n轨迹数据（含 addresses 与 slot_map）已保存到: {trace_path}")
         
-        # 7.5. 新增：分析并保存 ERC20 余额变动
-        print("\n[分析] 正在基于 Slot 还原计算 ERC20 余额变动...")
-        try:
-            extract_token_changes(
-                standardized_trace, 
-                erc20_token_map, 
-                slot_map, 
-                result_dir
-            )
-            print(f"✅ ERC20 余额逻辑分析完成。")
-        except Exception as e:
-            print(f"❌ 余额分析失败: {e}")
-
-        # 8. 保存基本块数据
+        # 9. 保存基本块数据
         blocks_path = os.path.join(result_dir, "blocks.json")
         with open(blocks_path, "w") as f:
             blocks_data = []
@@ -109,15 +103,20 @@ def main():
             json.dump(blocks_data, f, indent=2)
         print(f"基本块数据已保存到: {blocks_path}")
         
-        # 9. 保存交易级CFG的DOT文件
+        # 10. 保存交易级CFG的DOT文件
         tx_dot_path = os.path.join(result_dir, "transaction_cfg.dot")
         render_transaction(tx_cfg, tx_dot_path)
         print(f"交易级CFG DOT文件已保存到: {tx_dot_path}")
 
-        # 10. 保存交易操作表格Excel文件
+        # 11. 保存交易操作表格Excel文件
         table_excel_path = os.path.join(result_dir, "transaction_table.xlsx")
         generate_table_excel(cfg_constructor, output_path=table_excel_path)
         print(f"交易操作表格Excel已保存到: {table_excel_path}")
+
+        # 12. 保存代币交易流图的DOT文件
+        token_flow_dot_path = os.path.join(result_dir, "asset_flow")
+        render_asset_flow(pairs,annotations,users_addresses,token_flow_dot_path)
+
         
         print("\n===== 处理完成 =====")
         print(f"所有结果已保存到: {os.path.abspath(result_dir)}")
