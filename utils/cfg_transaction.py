@@ -8,6 +8,19 @@ from utils.evm_information import StandardizedTrace, StandardizedStep
 from utils.basic_block import Block, BasicBlockProcessor
 from utils.cfg_structure import CFG, BlockNode, Edge
 
+def normalize_address(address: str) -> str:
+    address_str = str(address).strip().lower().replace("0x0x", "0x")
+    body = address_str[2:] if address_str.startswith("0x") else address_str
+
+    if len(body) > 40:
+        body = body[-40:]
+    if len(body) < 40:
+        body = body.zfill(40)
+
+    full_address = "0x" + body
+    return full_address
+
+
 class CFGConstructor:
     def __init__(self, all_base_blocks: List[Block]):
         # 基础块索引：(address, start_pc) -> 基础块（包含完整指令列表）
@@ -203,7 +216,7 @@ class CFGConstructor:
                     
                     # 提取接收地址（to）：stack[-1]
                     to_addr_raw = current_stack[-2]
-                    to_addr = self._normalize_hex_value(to_addr_raw)
+                    to_addr = normalize_address(to_addr_raw)
                     
                     # 判断value是否非0x0
                     if value_hex != "0x0":
@@ -213,7 +226,7 @@ class CFGConstructor:
                         eth_event = {
                             "sender": current_address,  # 当前块所属合约
                             "to": to_addr,              # 栈顶的合约地址
-                            "value": value_hex         # 栈顶第三个值（ETH数量）
+                            "value": value_hex         #    栈顶第三个值（ETH数量）
                         }
                         block_temp_data[current_node_key]["eth_events"].append(eth_event)
 
@@ -242,28 +255,27 @@ class CFGConstructor:
                         to_addr = slot_map[slot_hex]
                         token_name = self._get_token_name_by_address(current_address, erc20_token_map)
                         # 未匹配到则用地址兜底
-                        token_name = token_name if token_name else current_address
-                        
-                        balance_normalized = self._normalize_hex_value(balance_hex)
-                        # 记录ERC20event
-                        erc20_event = {
-                            "type": "write",
-                            "address": to_addr,
-                            "token": token_name, 
-                            "balance": balance_normalized
-                        }
-                        block_temp_data[current_node_key]["erc20_events"].append(erc20_event)
+                        if token_name:
+                            balance_normalized = self._normalize_hex_value(balance_hex)
+                            # 记录ERC20event
+                            erc20_event = {
+                                "type": "write",
+                                "address": to_addr,
+                                "token": token_name, 
+                                "balance": balance_normalized
+                            }
+                            block_temp_data[current_node_key]["erc20_events"].append(erc20_event)
 
-                        # 维护表格数据（token字段改为匹配的名称）
-                        self.table.append({
-                            "pc": current_pc,
-                            "op": "SSTORE",
-                            "from": None, 
-                            "to": to_addr,  
-                            "token_name": token_name,
-                            "token_address": current_address,
-                            "balance/amount": balance_normalized  
-                        })
+                            # 维护表格数据（token字段改为匹配的名称）
+                            self.table.append({
+                                "pc": current_pc,
+                                "op": "SSTORE",
+                                "from": None, 
+                                "to": to_addr,  
+                                "token_name": token_name,
+                                "token_address": current_address,
+                                "balance/amount": balance_normalized  
+                            })
 
             # 4. 处理SLOAD（仅此处添加token名称匹配）
             if current_opcode == "SLOAD":
@@ -278,36 +290,36 @@ class CFGConstructor:
                         to_addr = slot_map[slot_hex]
                         token_name = self._get_token_name_by_address(current_address, erc20_token_map)
                         # 未匹配到则用地址兜底
-                        token_name = token_name if token_name else current_address
+                        if token_name:
                         
-                        # 提取下一个step的栈顶作为balance
-                        balance_hex = "0x0"
-                        if current_step_idx + 1 < len(steps):
-                            next_step = steps[current_step_idx + 1]
-                            next_stack = next_step.get("stack", [])
-                            if len(next_stack) >= 1:
-                                balance_hex = next_stack[-1]
-                        balance_normalized = self._normalize_hex_value(balance_hex)
-                        # 记录ERC20event
-                        erc20_event = {
-                            "type": "read",
-                            "address": to_addr,
-                            "token_name": token_name,
-                            "token_address": current_address,
-                            "balance": balance_normalized
-                        }
-                        block_temp_data[current_node_key]["erc20_events"].append(erc20_event)
+                            # 提取下一个step的栈顶作为balance
+                            balance_hex = "0x0"
+                            if current_step_idx + 1 < len(steps):
+                                next_step = steps[current_step_idx + 1]
+                                next_stack = next_step.get("stack", [])
+                                if len(next_stack) >= 1:
+                                    balance_hex = next_stack[-1]
+                            balance_normalized = self._normalize_hex_value(balance_hex)
+                            # 记录ERC20event
+                            erc20_event = {
+                                "type": "read",
+                                "address": to_addr,
+                                "token_name": token_name,
+                                "token_address": current_address,
+                                "balance": balance_normalized
+                            }
+                            block_temp_data[current_node_key]["erc20_events"].append(erc20_event)
 
-                        # 维护表格数据
-                        self.table.append({
-                            "pc": current_pc,
-                            "op": "SLOAD",
-                            "from": to_addr, 
-                            "to": None, 
-                            "token_name": token_name,
-                            "token_address": current_address,  
-                            "balance/amount": balance_normalized
-                        })
+                            # 维护表格数据
+                            self.table.append({
+                                "pc": current_pc,
+                                "op": "SLOAD",
+                                "from": to_addr, 
+                                "to": None, 
+                                "token_name": token_name,
+                                "token_address": current_address,  
+                                "balance/amount": balance_normalized
+                            })
 
             # 5. 累加gas（ ）
             step_gas = 0

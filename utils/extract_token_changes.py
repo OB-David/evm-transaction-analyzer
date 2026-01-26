@@ -187,7 +187,6 @@ def render_asset_flow(paired, node_annotations, users_addresses, output_file="as
 
         edge_label = (
             f"({p['order']}) {p['token']}: {p['amount']}\n"
-            f"{p['token_addr']}"
         )
 
         dot.edge(
@@ -200,5 +199,3 @@ def render_asset_flow(paired, node_annotations, users_addresses, output_file="as
 
     dot.save(output_file)
     return dot
-
-
