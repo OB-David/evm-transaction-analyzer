@@ -1,4 +1,4 @@
-# token_table.py负责渲染余额变动表格为Excel文件
+# render_token_table.py负责渲染余额变动表格为Excel文件
 
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill

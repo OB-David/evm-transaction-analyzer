@@ -1,68 +1,18 @@
 # extract_token_changes.py 负责从余额变化表格中提取代币转移事件
 # 生成资产流向图的 DOT 文件
 
-import os
 from collections import defaultdict
 from graphviz import Digraph
+from utils.cfg_transaction import CFGConstructor
+from utils.cfg_structure import CFG
+from utils.basic_block import Block
+import json
 
 def hex_to_int_safe(x: str) -> int:
     try:
         return int(x, 16)
     except Exception:
         return 0
-
-def balance_change(table):
-    """
-    从 CFGConstructor.table 构造语义级资产事件
-    """
-    all_changes = []
-    balance_traces = defaultdict(lambda: {"SLOAD": None, "SSTORE": None})
-    for row in table:
-        op = row["op"]
-        token_addr = row.get("token_address")
-        token_name = row.get("token_name")
-        user = row.get("from") if op == "SLOAD" else row.get("to")
-        balance = hex_to_int_safe(row.get("balance/amount"))
-
-        # 1. 处理 ETH 转账
-        if op == "CALL" and token_name == "ETH":
-            eth_value = balance
-            if eth_value > 0:
-                all_changes.append({
-                    "type": "ETH_TRANSFER",
-                    "from_address": row["from"],
-                    "to_address": row["to"],
-                    "eth_value": str(eth_value),
-                    "pc": row["pc"]
-                })
-
-        # 2. 处理 ERC20 余额变化（SLOAD / SSTORE）
-        if token_addr and user:
-            if op in {"SLOAD", "SSTORE"}:
-                # 更新相应的 SLOAD 或 SSTORE
-                if op == "SLOAD":
-                    balance_traces[(token_addr, user)]["SLOAD"] = balance
-                elif op == "SSTORE":
-                    balance_traces[(token_addr, user)]["SSTORE"] = balance
-
-                # 如果两个操作都有了，计算余额差异
-                if balance_traces[(token_addr, user)]["SLOAD"] is not None and balance_traces[(token_addr, user)]["SSTORE"] is not None:
-                    diff = balance_traces[(token_addr, user)]["SSTORE"] - balance_traces[(token_addr, user)]["SLOAD"]
-                    if diff != 0:
-                        all_changes.append({
-                            "type": "ERC20_BALANCE_CHANGE",
-                            "erc20_token_address": token_addr,
-                            "token_name": token_name,
-                            "user_address": user,
-                            "changed_balance": str(diff),
-                            "pc": row["pc"]
-                        })
-                    # 重置状态，避免重复计算
-                    balance_traces[(token_addr, user)]["SLOAD"] = None
-                    balance_traces[(token_addr, user)]["SSTORE"] = None
-
-    return all_changes
-
 
 def pair_transactions(all_changes):
     """
@@ -86,7 +36,8 @@ def pair_transactions(all_changes):
                 "to": c["to_address"],
                 "amount": int(c["eth_value"]),
                 "token": "ETH",
-                "token_addr": "ETH"
+                "token_addr": "ETH",
+                "source_pcs": [c["pc"]],
             })
             continue
 
@@ -107,22 +58,25 @@ def pair_transactions(all_changes):
                 "user": user,
                 "value": val,
                 "token": token_name,
-                "token_addr": token_addr
+                "token_addr": token_addr,
+                "source_pcs": [c["SLOAD_pc"], c["SSTORE_pc"]]
             }
         else:
             prev = pending_erc20[token_addr]
 
             if prev["value"] + val == 0:
-                sender = prev["user"] if prev["value"] < 0 else user
-                receiver = user if prev["value"] < 0 else prev["user"]
+                sender = prev if prev["value"] < 0 else user
+                receiver = c if prev["value"] < 0 else prev["user"]
 
                 paired.append({
                     "order": prev["order"],
-                    "from": sender,
-                    "to": receiver,
+                    "from": sender["user"],
+                    "to": receiver["user_address"],
                     "amount": abs(val),
                     "token": token_name,
-                    "token_addr": token_addr
+                    "token_addr": token_addr,
+                    "source_pcs": {"sender_sload_pc": sender["source_pcs"][0], "sender_sstore_pc": sender["source_pcs"][1], 
+                                   "receiver_sload_pc": receiver["SLOAD_pc"], "receiver_sstore_pc": receiver["SSTORE_pc"]}
                 })
 
                 del pending_erc20[token_addr]
@@ -138,7 +92,7 @@ def pair_transactions(all_changes):
 
     paired.sort(key=lambda x: x["order"])
 
-    return paired, node_annotations
+    return paired, node_annotations, pending_erc20
 
 
 def render_asset_flow(paired, node_annotations, users_addresses, output_file="asset_flow.dot"):
@@ -199,3 +153,83 @@ def render_asset_flow(paired, node_annotations, users_addresses, output_file="as
 
     dot.save(output_file)
     return dot
+
+def afg_to_cfg(paired, pending_erc20, cfg_constructor: CFGConstructor, tx_cfg: CFG):
+    edge_link = []
+    for p in paired:
+        if p["token"] == "ETH":
+            matched_block = cfg_constructor.find_node_by_pc_address(tx_cfg, p["from"], p["source_pcs"][0])
+            if matched_block:
+               edge_link.append({
+                   "edge_id": p["order"],
+                   "type": "ETH_TRANSFER",
+                   "matched_blocks": matched_block
+               })
+        else:
+            sender_sload_block = cfg_constructor.find_node_by_pc_address(tx_cfg, p["token_addr"], p["source_pcs"]["sender_sload_pc"])
+            sender_sstore_block = cfg_constructor.find_node_by_pc_address(tx_cfg, p["token_addr"], p["source_pcs"]["sender_sstore_pc"])
+            receiver_sload_block = cfg_constructor.find_node_by_pc_address(tx_cfg, p["token_addr"], p["source_pcs"]["receiver_sload_pc"])
+            receiver_sstore_block = cfg_constructor.find_node_by_pc_address(tx_cfg, p["token_addr"], p["source_pcs"]["receiver_sstore_pc"])
+
+            if sender_sload_block and sender_sstore_block and receiver_sload_block and receiver_sstore_block:
+                edge_link.append({
+                    "edge_id": p["order"],
+                    "type": "ERC20_TOKEN_TRANSFER",
+                    "matched_blocks": {
+                        "sender": (sender_sload_block, sender_sstore_block),
+                        "receiver": (receiver_sload_block, receiver_sstore_block)
+                    }
+                })  
+
+    for v in pending_erc20.values():
+        sload_block = cfg_constructor.find_node_by_pc_address(tx_cfg, v["token_addr"], v["source_pcs"][0])
+        sstore_block = cfg_constructor.find_node_by_pc_address(tx_cfg, v["token_addr"], v["source_pcs"][1])
+        edge_link.append({
+            "edge_id": v["order"],
+            "type": "ERC20_BALANCE_CHANGE",
+            "matched_blocks": [sload_block, sstore_block]
+        })
+
+    edge_link.sort(key=lambda x: x["edge_id"])
+    return edge_link
+
+def serialize_block_node(node):
+    """将 BlockNode 转换为可 JSON 序列化的字典"""
+    if node is None:
+        return None
+    return {
+        "BlockID": node.id
+    }
+
+def edge_link_to_json(edge_link):
+    """处理 edge_link 列表中的嵌套逻辑并转为字典列表"""
+    serializable_list = []
+    
+    for item in edge_link:
+        # 深拷贝基础字段
+        entry = {
+            "edge_id": item["edge_id"],
+            "type": item["type"]
+        }
+        
+        raw_blocks = item["matched_blocks"]
+        
+        # 根据不同类型的 matched_blocks 进行处理
+        if item["type"] == "ETH_TRANSFER":
+            # 单个 BlockNode
+            entry["matched_blocks"] = serialize_block_node(raw_blocks)
+            
+        elif item["type"] == "ERC20_TOKEN_TRANSFER":
+            # 嵌套字典: {"sender": (node1, node2), "receiver": (node3, node4)}
+            entry["matched_blocks"] = {
+                "sender": [serialize_block_node(n) for n in raw_blocks["sender"]],
+                "receiver": [serialize_block_node(n) for n in raw_blocks["receiver"]]
+            }
+            
+        elif item["type"] == "ERC20_BALANCE_CHANGE":
+            entry["matched_blocks"] = [serialize_block_node(n) for n in raw_blocks]
+            
+        serializable_list.append(entry)
+    
+    # 转换为格式化的 JSON 字符串
+    return json.dumps(serializable_list, indent=4, ensure_ascii=False)
