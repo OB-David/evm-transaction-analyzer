@@ -267,13 +267,16 @@ class TraceFormatter:
                 pc = step.get("pc", 0)
                 opcode = step.get("op", "").upper()
                 raw_stack = step.get("stack", [])
-                # gascost是该step的gasleft减去下一step的gasleft
+                # gascost是该step的gasleft减去下一step的gasleft, 除非遇到终止指令
                 if i < len(struct_logs) - 1:
                     gasleft = step.get("gas", 0)
                     next_gasleft = struct_logs[i + 1].get("gas", 0)
                     gascost = gasleft - next_gasleft
                 else:
                     gascost = 0  # 最后一步一定是终止指令，gascost固定是0
+                # gas计算补丁
+                if opcode in {"STOP", "RETURN", "REVERT"}:
+                    gascost = 0  # 终止指令的gascost固定为0
 
                 # CALL 类指令,增加地址分类逻辑
                 if opcode in {"CALL", "CALLCODE", "DELEGATECALL", "STATICCALL"}:
