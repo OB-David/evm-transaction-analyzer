@@ -14,27 +14,44 @@ def hex_to_int_safe(x: str) -> int:
     except Exception:
         return 0
 
-def pair_transactions(all_changes):
+def format_scientific_html(value: float, precision: int = 2, sup_size: int = 8) -> str:
+    """
+    将浮点数格式化为 HTML 科学计数法，指数部分使用较小的字体
+    :param value: 要格式化的浮点数
+    :param precision: 尾数小数位数
+    :param sup_size: 指数部分的字体大小（点）
+    """
+    if value == 0:
+        return "0"
+    s = f"{value:.{precision}e}"
+    mantissa, exp = s.split('e')
+    exp = int(exp)
+    # 在 <sup> 内再套一层 <font> 控制字体大小
+    return f"{mantissa}×10<sup><font point-size='{sup_size}'>{exp}</font></sup>"
+
+def pair_transactions(all_changes, token_decimals_map=None):
     """
     按 all_changes 顺序配对余额变化并确定交易顺序
+    :param all_changes: 所有余额变化列表
+    :param token_decimals_map: 代币地址到精度的映射，用于格式化孤立余额
     """
     paired = []
     node_annotations = defaultdict(list)
 
     order_counter = 0
-    # 建一个工作区，记录未配对的 ERC20 变化
     pending_erc20 = {}
 
     for c in all_changes:
 
         # -------- ETH --------
         if c["type"] == "ETH_TRANSFER":
+            formatted_val = abs(int(c["eth_value"])) / (10 ** 18)
             order_counter += 1
             paired.append({
                 "order": order_counter,
                 "from": c["from_address"],
                 "to": c["to_address"],
-                "amount": int(c["eth_value"]),
+                "amount": formatted_val,
                 "token": "ETH",
                 "token_addr": "ETH",
                 "source_pcs": [c["pc"]],
@@ -50,6 +67,11 @@ def pair_transactions(all_changes):
         user = c["user_address"]
         val = int(c["changed_balance"])
 
+        # 获取该代币的精度，默认为 18
+        decimals = 18
+        if token_decimals_map and token_addr in token_decimals_map:
+            decimals = token_decimals_map[token_addr]
+
         if token_addr not in pending_erc20:
             # 第一次出现，占一个顺序
             order_counter += 1
@@ -59,98 +81,169 @@ def pair_transactions(all_changes):
                 "value": val,
                 "token": token_name,
                 "token_addr": token_addr,
-                "source_pcs": [c["SLOAD_pc"], c["SSTORE_pc"]]
+                "source_pcs": [c["SLOAD_pc"], c["SSTORE_pc"]],
+                "decimals": decimals,  # 保存精度，用于后续格式化
             }
         else:
             prev = pending_erc20[token_addr]
 
+            # 配对条件：两次变化金额之和为 0（即一正一负）
             if prev["value"] + val == 0:
-                sender = prev if prev["value"] < 0 else user
-                receiver = c if prev["value"] < 0 else prev["user"]
+                # 确定发送方和接收方
+                if prev["value"] < 0:
+                    sender = prev
+                    receiver = c
+                else:
+                    sender = c
+                    receiver = prev
 
+                formatted_val = abs(val) / (10 ** decimals)
                 paired.append({
                     "order": prev["order"],
                     "from": sender["user"],
                     "to": receiver["user_address"],
-                    "amount": abs(val),
+                    "amount": formatted_val,
                     "token": token_name,
                     "token_addr": token_addr,
-                    "source_pcs": {"sender_sload_pc": sender["source_pcs"][0], "sender_sstore_pc": sender["source_pcs"][1], 
-                                   "receiver_sload_pc": receiver["SLOAD_pc"], "receiver_sstore_pc": receiver["SSTORE_pc"]}
+                    "source_pcs": {
+                        "sender_sload_pc": sender["source_pcs"][0],
+                        "sender_sstore_pc": sender["source_pcs"][1],
+                        "receiver_sload_pc": receiver["SLOAD_pc"],
+                        "receiver_sstore_pc": receiver["SSTORE_pc"],
+                    }
                 })
 
                 del pending_erc20[token_addr]
             else:
+                # 未配对，暂时保留（可根据业务决定是否合并累积，此处简单跳过）
                 pass
 
-    # -------- 遍历结束，剩余是孤立变化 --------
+    # 遍历结束，剩余的是孤立变化
     for v in pending_erc20.values():
-        sign = "+" if v["value"] > 0 else ""
+        # --- 新增：跳过 WETH 的注释，避免与后续绘制的边重复 ---
+        if v["token"].lower() == "weth" or v["token"].lower() == "wrapped ether":
+            continue
+        sign = "+" if v["value"] > 0 else "-"
+        raw = abs(v["value"])
+        # 格式化数值
+        formatted_val = raw / (10 ** v["decimals"])
+        amount_str = format_scientific_html(formatted_val)
         node_annotations[v["user"]].append(
-            f"({v['order']}) {v['token']}: {sign}{v['value']}"
+            f"({v['order']}) {v['token']}: {sign}{amount_str}"
         )
 
     paired.sort(key=lambda x: x["order"])
 
     return paired, node_annotations, pending_erc20
 
-
-def render_asset_flow(paired, node_annotations, users_addresses, output_file="asset_flow.dot"):
+def render_asset_flow(paired, node_annotations, users_addresses, contract_name_map, color_map, pending_erc20, output_file="asset_flow.dot"):
     """
-    从配对数据渲染资产流向图（仅生成 DOT）
+    绘制资产流向图（DOT格式）
+    :param paired: 已配对的交易流列表（含ETH和ERC20转账）
+    :param node_annotations: 节点注释（非配对ERC20变化，已排除WETH）
+    :param users_addresses: 用户地址列表（用于生成别名）
+    :param contract_name_map: 合约名称映射（地址 -> 名称）
+    :param color_map: 地址颜色映射（地址 -> 颜色代码）
+    :param pending_erc20: 所有未配对的ERC20变化（包含WETH等）
+    :param output_file: 输出DOT文件路径
     """
     dot = Digraph(engine="dot")
-
-    token_color = {}
-    palette = ['#ff5733', '#33ff57', '#3357ff', '#ff33a1', '#ffb233']
+    dot.graph_attr['rankdir'] = 'LR'
 
     users_set = set(users_addresses)
 
-    # -------- 收集所有地址 --------
+    # --- 为用户生成别名 User 1, User 2 ...
+    user_alias_map = {}
+    sorted_users = sorted(list(users_set))  # 保证排序一致性
+    for idx, addr in enumerate(sorted_users):
+        user_alias_map[addr] = f"User {idx + 1}"
+
+    # -------- 收集所有需要绘制的地址 --------
     addresses = set()
     for p in paired:
         addresses.add(p["from"])
         addresses.add(p["to"])
     addresses.update(node_annotations.keys())
+    # 新增：pending_erc20 中的用户和代币地址
+    for v in pending_erc20.values():
+        addresses.add(v["user"])
+        addresses.add(v["token_addr"])
 
-    # -------- 画节点 --------
+    # -------- 绘制所有节点 --------
     for addr in addresses:
         is_user = addr in users_set
         shape = "diamond" if is_user else "ellipse"
 
-        if addr in node_annotations and node_annotations[addr]:
-            label = addr + "\n" + "\n".join(node_annotations[addr])
+        # 确定节点显示名称
+        if is_user:
+            display_name = user_alias_map.get(addr, "Unknown User")
         else:
-            label = addr
+            # 合约：优先使用 contract_name_map 中的名称，否则截取前8位
+            display_name = contract_name_map.get(addr, addr[:8] + "...")
+
+        # 构建节点标签（支持多行HTML）
+        if addr in node_annotations and node_annotations[addr]:
+            lines = [display_name] + node_annotations[addr]
+            label = "<" + "<br/>".join(lines) + ">"
+        else:
+            label = "<" + display_name + ">"
 
         dot.node(
-            addr,
+            addr,  # 内部ID使用真实地址，确保边连接正确
             label=label,
             shape=shape
         )
 
-    # -------- 按顺序画边 --------
+    # -------- 绘制已配对的边（按顺序） --------
     paired_sorted = sorted(paired, key=lambda x: x["order"])
-
     for p in paired_sorted:
         token_addr = p["token_addr"]
 
-        if token_addr not in token_color:
-            token_color[token_addr] = palette[len(token_color) % len(palette)]
-        color = token_color[token_addr]
+        if p["token"] == "ETH":
+            edge_color = color_map.get(p["from"], "#000000")
+        else:
+            edge_color = color_map.get(p["token_addr"], "#000000")
 
-        edge_label = (
-            f"({p['order']}) {p['token']}: {p['amount']}\n"
-        )
+        amount_str = format_scientific_html(p["amount"])
+        edge_label = f"({p['order']}) {p['token']}: {amount_str}"
 
         dot.edge(
             p["from"],
             p["to"],
-            label=edge_label,
-            color=color,
-            fontcolor=color
+            label="<" + edge_label + ">",   # HTML标签，支持换行
+            color=edge_color,
+            fontcolor=edge_color
         )
 
+    # -------- 新增：绘制WETH的铸造/销毁边（来自未配对变化） --------
+    for v in pending_erc20.values():
+        token_name = v["token"]
+        if token_name.lower() != "weth" and token_name.lower() != "wrapped ether":
+            continue
+
+        user = v["user"]
+        token_addr = v["token_addr"]
+        value = v["value"]
+        order = v["order"]
+        decimals = v["decimals"]
+        amount = abs(value) / (10 ** decimals)
+        amount_str = format_scientific_html(amount)
+        edge_color = color_map.get(token_addr, "#000000")
+
+        if value > 0:
+            # 铸造：从WETH合约指向用户
+            src = token_addr
+            tgt = user
+            label = f"({order}) WETH(mint): {amount_str}"
+        else:
+            # 销毁：从用户指向WETH合约
+            src = user
+            tgt = token_addr
+            label = f"({order}) WETH(burn): {amount_str}"
+
+        dot.edge(src, tgt, label="<" + label + ">", color=edge_color, fontcolor=edge_color, style="dashed")
+
+    # 保存DOT文件
     dot.save(output_file)
     return dot
 

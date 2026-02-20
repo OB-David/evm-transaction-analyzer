@@ -48,6 +48,7 @@ def main():
         slot_map = standardized_trace.get("slot_map", {})
         users_addresses = standardized_trace.get("users_addresses", [])
         erc20_token_map = standardized_trace.get("erc20_token_map", {})
+        contract_name_map = standardized_trace.get("contract_name_map", {}).copy()
 
         print(f"发现合约地址数量: {len(contracts_addresses)}，发现用户地址数量: {len(users_addresses)}")
         print(f"slot_map 项数: {len(slot_map)}\n")
@@ -73,7 +74,13 @@ def main():
 
         # 7. 构建代币交易流，生成边与基本块的映射
         print("正在提取代币交易流...")
-        pairs, annotations, pending_erc20 = pair_transactions(all_changes)
+        # 先构建代币精度映射
+        token_decimals_map = {}
+        for token_addr in erc20_token_map.keys():
+            decimals = formatter.get_token_decimals(token_addr)
+            token_decimals_map[token_addr] = decimals
+        # 调用 pair_transactions 时传入精度映射
+        pairs, annotations, pending_erc20 = pair_transactions(all_changes, token_decimals_map)
         edge_link = afg_to_cfg(pairs, pending_erc20, cfg_constructor, tx_cfg)
         json_output = edge_link_to_json(edge_link)
         print(f"共提取到 {len(all_changes)} 条资产变更事件，配对成功 {len(pairs)} 对交易流,存在孤立变动{len(annotations)}条\n")
@@ -86,7 +93,7 @@ def main():
         
         # 9. 保存交易级CFG的DOT文件（调用新文件的render_transaction）
         tx_dot_path = os.path.join(result_dir, "transaction_cfg")  # 无需加.dot后缀，函数内部自动处理
-        render_transaction(tx_cfg, tx_dot_path)
+        color_map = render_transaction(tx_cfg, tx_dot_path)
         print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
 
         # 10. 保存资产变更数据
@@ -101,9 +108,9 @@ def main():
         print(f"交易操作表格Excel已保存到: {table_excel_path}")
 
         # 12. 保存代币交易流图的DOT文件
-        token_flow_dot_path = os.path.join(result_dir, "asset_flow")
-        render_asset_flow(pairs, annotations, users_addresses, token_flow_dot_path)
-        print(f"代币交易流图DOT文件已保存到: {token_flow_dot_path}.dot")
+        token_flow_dot_path = os.path.join(result_dir, "asset_flow.dot")
+        render_asset_flow(pairs, annotations, users_addresses, contract_name_map, color_map, pending_erc20, token_flow_dot_path)
+        print(f"代币交易流图DOT文件已保存到: {token_flow_dot_path}")
 
         # 13. 保存边映射JSON文件
         edge_link_path = os.path.join(result_dir, "edge_link.json")

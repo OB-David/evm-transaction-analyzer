@@ -201,6 +201,96 @@ class TraceFormatter:
             logger.debug(f"[{contract_address}] 代币检查失败: {str(e)}")
             return (False, "") 
     
+    @lru_cache(maxsize=1024)
+    def _get_contract_identity(self, contract_address: str) -> Optional[str]:
+        """
+        改进版身份识别：
+        1. 针对 Uniswap V2 等有 name() 的池子，保留其原名。
+        2. 针对 Uniswap V3 等无 name() 的池子，通过 token0/token1 自动生成名称。
+        3. 增加 V3 Fee 手续费显示。
+        """
+        try:
+            norm_addr = self._normalize_address(contract_address)
+            if not norm_addr: return None
+            checksum_addr = Web3.to_checksum_address(norm_addr)
+            
+            bytecode = self._get_code_cached(norm_addr)
+            if not bytecode or bytecode in [b'\x00', '0x']: return None
+
+            # 扩展 ABI 以支持 token0/1 和 fee
+            COMBINED_ABI = [
+                {"constant":True,"inputs":[],"name":"name","outputs":[{"name":"","type":"string"}],"type":"function"},
+                {"constant":True,"inputs":[],"name":"symbol","outputs":[{"name":"","type":"string"}],"type":"function"},
+                {"constant":True,"inputs":[],"name":"token0","outputs":[{"name":"","type":"address"}],"type":"function"},
+                {"constant":True,"inputs":[],"name":"token1","outputs":[{"name":"","type":"address"}],"type":"function"},
+                {"constant":True,"inputs":[],"name":"fee","outputs":[{"name":"","type":"uint24"}],"type":"function"}
+            ]
+            contract = self.web3.eth.contract(address=checksum_addr, abi=COMBINED_ABI)
+
+            # 1. 尝试获取显示名称
+            display_name = ""
+            try:
+                display_name = contract.functions.name().call().strip()
+            except:
+                try:
+                    display_name = contract.functions.symbol().call().strip()
+                except:
+                    display_name = ""
+
+            # 2. 识别是否为 Pool 并提取基础信息
+            t0_addr, t1_addr, fee_str = None, None, ""
+            is_pool = False
+            try:
+                t0_addr = contract.functions.token0().call()
+                t1_addr = contract.functions.token1().call()
+                is_pool = True
+                # 尝试获取 V3 Fee (3000 = 0.3%)
+                try:
+                    f_val = contract.functions.fee().call()
+                    fee_str = f" ({f_val/10000}%)"
+                except:
+                    pass
+            except:
+                pass
+
+            # 3. 逻辑合并
+            if is_pool:
+                # 如果是 Pool 且没有名字（典型 V3），则构造名称
+                if not display_name:
+                    s0 = self._get_token_symbol(t0_addr)
+                    s1 = self._get_token_symbol(t1_addr)
+                    display_name = f"{s0}/{s1}{fee_str}"
+                
+                return f"Pool: {display_name}"
+            
+            elif display_name:
+                return display_name # 纯代币名或普通合约名
+            
+            return None
+        except:
+            return None
+        
+    # 获取代币精度
+    @lru_cache(maxsize=1024)
+    def get_token_decimals(self, token_address: str) -> int:
+        """
+        获取 ERC20 代币的精度（decimals），失败时返回 18
+        """
+        try:
+            norm_addr = self._normalize_address(token_address)
+            if not norm_addr:
+                return 18
+            checksum_addr = Web3.to_checksum_address(norm_addr)
+
+            # 只包含 decimals() 的 ABI
+            DECIMALS_ABI = [{"constant": True, "inputs": [], "name": "decimals", "outputs": [{"name": "", "type": "uint8"}], "type": "function"}]
+            contract = self.web3.eth.contract(address=checksum_addr, abi=DECIMALS_ABI)
+
+            decimals = contract.functions.decimals().call()
+            return int(decimals)
+        except Exception as e:
+            logger.debug(f"获取 {token_address} 精度失败: {e}，使用默认 18")
+            return 18
 
     def _strip_0x(self, s: str) -> str:
         '''
@@ -373,8 +463,20 @@ class TraceFormatter:
                 is_erc20, token_name = self._check_if_erc20_and_get_name(contract_addr)
                 if is_erc20:
                     erc20_token_map[contract_addr] = token_name or "未知ERC20代币"
-            print(f"识别出ERC20代币数量: {len(erc20_token_map)}")
+            print(f"识别出ERC20代币数量: {len(erc20_token_map)}")\
             
+            # 识别合约名称
+            contract_name_map = {}
+            contract_name_map.update(erc20_token_map)
+            # 识别 Pool
+            logger.info("正在识别合约身份(Token/Pool)...")
+            for addr in contracts_addresses:
+                # 如果不是 ERC20 (不在映射里)，尝试识别是否为 Pool
+                if addr not in contract_name_map:
+                    contract_identity = self._get_contract_identity(addr)
+                    if contract_identity:
+                        contract_name_map[addr] = contract_identity      
+
             # ========== 原有逻辑继续 ==========
             # final_users_addresses = （addresses_from_slots ∪ users_addresses_from_CALL \\ contracts_addresses）
             slot_map = self.extract_slot_address_map({"steps": steps})
@@ -389,7 +491,8 @@ class TraceFormatter:
                 "contracts_addresses": sorted(list(contracts_addresses)),
                 "erc20_token_map": erc20_token_map,  # 新增：ERC20地址->名称映射
                 "slot_map": slot_map,
-                "users_addresses": sorted(list(final_users_addresses_set))
+                "users_addresses": sorted(list(final_users_addresses_set)),
+                "contract_name_map": contract_name_map
             }
 
         except Exception as e:
