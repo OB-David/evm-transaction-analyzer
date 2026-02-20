@@ -7,6 +7,7 @@ from utils.cfg_transaction import CFGConstructor
 from utils.render_cfg import render_transaction   
 from utils.render_token_table import generate_table_excel
 from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_cfg, edge_link_to_json
+from utils.render_legend import render_legend_matplotlib
 
 # 加载环境变量
 load_dotenv()
@@ -48,6 +49,7 @@ def main():
         slot_map = standardized_trace.get("slot_map", {})
         users_addresses = standardized_trace.get("users_addresses", [])
         erc20_token_map = standardized_trace.get("erc20_token_map", {})
+        full_address_name_map = standardized_trace.get("full_address_name_map", {})
 
         print(f"发现合约地址数量: {len(contracts_addresses)}，发现用户地址数量: {len(users_addresses)}")
         print(f"slot_map 项数: {len(slot_map)}\n")
@@ -86,26 +88,39 @@ def main():
         
         # 9. 保存交易级CFG的DOT文件（调用新文件的render_transaction）
         tx_dot_path = os.path.join(result_dir, "transaction_cfg")  # 无需加.dot后缀，函数内部自动处理
-        render_transaction(tx_cfg, tx_dot_path)
+        render_transaction(tx_cfg, tx_dot_path, full_address_name_map=full_address_name_map, rankdir="TB")
         print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
 
-        # 10. 保存资产变更数据
+
+        # 10. 调用图例渲染函数 ==========
+        print("正在生成CFG图例...")
+        render_legend_matplotlib(
+            cfg=tx_cfg,                          # CFG对象（已构建好的tx_cfg）
+            full_address_name_map=full_address_name_map,  # 地址名称映射（已提取）
+            erc20_token_map=erc20_token_map,        # ERC20映射（已提取）
+            output_path=tx_dot_path              # 输出路径和CFG保持一致，会自动加_legend.svg后缀
+        )
+        print(f"CFG图例已保存到: {tx_dot_path}_legend.svg")
+
+
+
+        # 11. 保存资产变更数据
         changes_path = os.path.join(result_dir, "balance_and_eth_changes.json") 
         with open(changes_path, "w", encoding="utf-8") as f:
             json.dump(all_changes, f, indent=2, ensure_ascii=False)
         print(f"资产变更数据已保存到: {changes_path}")
 
-        # 11. 保存交易操作表格Excel文件
+        # 12. 保存交易操作表格Excel文件
         table_excel_path = os.path.join(result_dir, "transaction_table.xlsx")
         generate_table_excel(cfg_constructor, output_path=table_excel_path)
         print(f"交易操作表格Excel已保存到: {table_excel_path}")
 
-        # 12. 保存代币交易流图的DOT文件
+        # 13. 保存代币交易流图的DOT文件
         token_flow_dot_path = os.path.join(result_dir, "asset_flow")
         render_asset_flow(pairs, annotations, users_addresses, token_flow_dot_path)
         print(f"代币交易流图DOT文件已保存到: {token_flow_dot_path}.dot")
 
-        # 13. 保存边映射JSON文件
+        # 14. 保存边映射JSON文件
         edge_link_path = os.path.join(result_dir, "edge_link.json")
         with open(edge_link_path, "w", encoding="utf-8") as f:
             f.write(json_output)
