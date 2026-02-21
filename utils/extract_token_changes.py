@@ -136,13 +136,13 @@ def pair_transactions(all_changes, token_decimals_map=None):
 
     return paired, node_annotations, pending_erc20
 
-def render_asset_flow(paired, node_annotations, users_addresses, contract_name_map, color_map, pending_erc20, output_file="asset_flow.dot"):
+def render_asset_flow(paired, node_annotations, users_addresses, full_address_name_map, pending_erc20, addr_color_map, output_file="asset_flow.dot"):
     """
     绘制资产流向图（DOT格式）
     :param paired: 已配对的交易流列表（含ETH和ERC20转账）
     :param node_annotations: 节点注释（非配对ERC20变化，已排除WETH）
     :param users_addresses: 用户地址列表（用于生成别名）
-    :param contract_name_map: 合约名称映射（地址 -> 名称）
+    :param full_address_name_map: 合约名称映射（地址 -> 名称）
     :param color_map: 地址颜色映射（地址 -> 颜色代码）
     :param pending_erc20: 所有未配对的ERC20变化（包含WETH等）
     :param output_file: 输出DOT文件路径
@@ -164,7 +164,6 @@ def render_asset_flow(paired, node_annotations, users_addresses, contract_name_m
         addresses.add(p["from"])
         addresses.add(p["to"])
     addresses.update(node_annotations.keys())
-    # 新增：pending_erc20 中的用户和代币地址
     for v in pending_erc20.values():
         addresses.add(v["user"])
         addresses.add(v["token_addr"])
@@ -172,14 +171,25 @@ def render_asset_flow(paired, node_annotations, users_addresses, contract_name_m
     # -------- 绘制所有节点 --------
     for addr in addresses:
         is_user = addr in users_set
-        shape = "diamond" if is_user else "ellipse"
+        full_name_map_lower = {addr.lower(): name for addr, name in full_address_name_map.items()}
+        erc20_addrs_lower = [
+            addr for addr, name in full_name_map_lower.items()
+            if not (name.startswith("contract_") or name.startswith("User_"))
+        ]
+        if is_user:
+            shape = "diamond"
+        elif addr.lower() in erc20_addrs_lower:
+            shape = "ellipse"
+        else:
+            shape = "record"
+
+        node_color = addr_color_map.get(addr, "#FFFFFF")
 
         # 确定节点显示名称
         if is_user:
             display_name = user_alias_map.get(addr, "Unknown User")
         else:
-            # 合约：优先使用 contract_name_map 中的名称，否则截取前8位
-            display_name = contract_name_map.get(addr, addr[:8] + "...")
+            display_name = full_address_name_map.get(addr, addr[:8] + "...")
 
         # 构建节点标签（支持多行HTML）
         if addr in node_annotations and node_annotations[addr]:
@@ -191,18 +201,19 @@ def render_asset_flow(paired, node_annotations, users_addresses, contract_name_m
         dot.node(
             addr,  # 内部ID使用真实地址，确保边连接正确
             label=label,
-            shape=shape
+            shape=shape,
+            fillcolor=node_color,
+            style="filled"
         )
 
     # -------- 绘制已配对的边（按顺序） --------
     paired_sorted = sorted(paired, key=lambda x: x["order"])
     for p in paired_sorted:
-        token_addr = p["token_addr"]
 
         if p["token"] == "ETH":
-            edge_color = color_map.get(p["from"], "#000000")
+            edge_color = addr_color_map.get(p["from"], "#FFFFFF")
         else:
-            edge_color = color_map.get(p["token_addr"], "#000000")
+            edge_color = addr_color_map.get(p["token_addr"], "#FFFFFF")
 
         amount_str = format_scientific_html(p["amount"])
         edge_label = f"({p['order']}) {p['token']}: {amount_str}"
@@ -228,7 +239,7 @@ def render_asset_flow(paired, node_annotations, users_addresses, contract_name_m
         decimals = v["decimals"]
         amount = abs(value) / (10 ** decimals)
         amount_str = format_scientific_html(amount)
-        edge_color = color_map.get(token_addr, "#000000")
+        edge_color = addr_color_map.get(token_addr, "#FFFFFF")
 
         if value > 0:
             # 铸造：从WETH合约指向用户

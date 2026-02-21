@@ -3,6 +3,7 @@
 # 包含对trace的结构定义；
 # 包含获取每个step对应的contract address的逻辑；
 # 包含获取contracts addresses, users addresses和slot_map的逻辑；
+# 命名所有参与交易的地址
 # 所有结果都结构化存在StandardizedTrace中
 
 from typing import List, Dict, TypedDict, Set, Tuple, Optional
@@ -147,13 +148,8 @@ class TraceFormatter:
     # 替换原有 _check_if_erc20_and_get_name 函数
     @lru_cache(maxsize=1024)
     def _check_if_erc20_and_get_name(self, contract_address: str) -> Tuple[bool, str]:
-        """
-        极简版ERC20检查：仅判断能否成功调用name()并获取非空名称（symbol不算）
+        """仅判断能否成功调用name()并获取非空名称（symbol不算）
         返回: (是否是代币, token名称)
-        逻辑：
-        1. 合约有非空字节码
-        2. 能成功调用name()方法且返回非空字符串
-        3. 排除名称含uniswap/v2/v3等关键词的合约（避免误判）
         """
         try:
             # 1. 标准化地址
@@ -200,75 +196,6 @@ class TraceFormatter:
         except Exception as e:
             logger.debug(f"[{contract_address}] 代币检查失败: {str(e)}")
             return (False, "") 
-    
-    @lru_cache(maxsize=1024)
-    def _get_contract_identity(self, contract_address: str) -> Optional[str]:
-        """
-        改进版身份识别：
-        1. 针对 Uniswap V2 等有 name() 的池子，保留其原名。
-        2. 针对 Uniswap V3 等无 name() 的池子，通过 token0/token1 自动生成名称。
-        3. 增加 V3 Fee 手续费显示。
-        """
-        try:
-            norm_addr = self._normalize_address(contract_address)
-            if not norm_addr: return None
-            checksum_addr = Web3.to_checksum_address(norm_addr)
-            
-            bytecode = self._get_code_cached(norm_addr)
-            if not bytecode or bytecode in [b'\x00', '0x']: return None
-
-            # 扩展 ABI 以支持 token0/1 和 fee
-            COMBINED_ABI = [
-                {"constant":True,"inputs":[],"name":"name","outputs":[{"name":"","type":"string"}],"type":"function"},
-                {"constant":True,"inputs":[],"name":"symbol","outputs":[{"name":"","type":"string"}],"type":"function"},
-                {"constant":True,"inputs":[],"name":"token0","outputs":[{"name":"","type":"address"}],"type":"function"},
-                {"constant":True,"inputs":[],"name":"token1","outputs":[{"name":"","type":"address"}],"type":"function"},
-                {"constant":True,"inputs":[],"name":"fee","outputs":[{"name":"","type":"uint24"}],"type":"function"}
-            ]
-            contract = self.web3.eth.contract(address=checksum_addr, abi=COMBINED_ABI)
-
-            # 1. 尝试获取显示名称
-            display_name = ""
-            try:
-                display_name = contract.functions.name().call().strip()
-            except:
-                try:
-                    display_name = contract.functions.symbol().call().strip()
-                except:
-                    display_name = ""
-
-            # 2. 识别是否为 Pool 并提取基础信息
-            t0_addr, t1_addr, fee_str = None, None, ""
-            is_pool = False
-            try:
-                t0_addr = contract.functions.token0().call()
-                t1_addr = contract.functions.token1().call()
-                is_pool = True
-                # 尝试获取 V3 Fee (3000 = 0.3%)
-                try:
-                    f_val = contract.functions.fee().call()
-                    fee_str = f" ({f_val/10000}%)"
-                except:
-                    pass
-            except:
-                pass
-
-            # 3. 逻辑合并
-            if is_pool:
-                # 如果是 Pool 且没有名字（典型 V3），则构造名称
-                if not display_name:
-                    s0 = self._get_token_symbol(t0_addr)
-                    s1 = self._get_token_symbol(t1_addr)
-                    display_name = f"{s0}/{s1}{fee_str}"
-                
-                return f"Pool: {display_name}"
-            
-            elif display_name:
-                return display_name # 纯代币名或普通合约名
-            
-            return None
-        except:
-            return None
         
     # 获取代币精度
     @lru_cache(maxsize=1024)
@@ -357,16 +284,18 @@ class TraceFormatter:
                 pc = step.get("pc", 0)
                 opcode = step.get("op", "").upper()
                 raw_stack = step.get("stack", [])
-                # gascost是该step的gasleft减去下一step的gasleft, 除非遇到终止指令
-                if i < len(struct_logs) - 1:
-                    gasleft = step.get("gas", 0)
+                # 单独处理CALL合约时的gascost计算
+                # 执行CALL时会向合约预支付一笔gas，在trace中记录为CALL的gasCost
+                # CALL本身的gascost是预支付的gasCost减去CALL下一步剩下的gasleft。
+                if opcode in {"CALL", "CALLCODE", "DELEGATECALL", "STATICCALL"}:
                     next_gasleft = struct_logs[i + 1].get("gas", 0)
-                    gascost = gasleft - next_gasleft
+                    gasCost = step.get("gasCost", 0)
+                    gascost = gasCost - next_gasleft
                 else:
-                    gascost = 0  # 最后一步一定是终止指令，gascost固定是0
-                # gas计算补丁
-                if opcode in {"STOP", "RETURN", "REVERT"}:
-                    gascost = 0  # 终止指令的gascost固定为0
+                    if i < len(struct_logs) - 1:
+                        gascost = step.get("gasCost", 0)
+                    else:
+                        gascost = 0  # 最后一步一定是终止指令，gascost固定是0
 
                 # CALL 类指令,增加地址分类逻辑
                 if opcode in {"CALL", "CALLCODE", "DELEGATECALL", "STATICCALL"}:
@@ -463,26 +392,16 @@ class TraceFormatter:
                 is_erc20, token_name = self._check_if_erc20_and_get_name(contract_addr)
                 if is_erc20:
                     erc20_token_map[contract_addr] = token_name or "未知ERC20代币"
-            print(f"识别出ERC20代币数量: {len(erc20_token_map)}")\
-            
-            # 识别合约名称
-            contract_name_map = {}
-            contract_name_map.update(erc20_token_map)
-            # 识别 Pool
-            logger.info("正在识别合约身份(Token/Pool)...")
-            for addr in contracts_addresses:
-                # 如果不是 ERC20 (不在映射里)，尝试识别是否为 Pool
-                if addr not in contract_name_map:
-                    contract_identity = self._get_contract_identity(addr)
-                    if contract_identity:
-                        contract_name_map[addr] = contract_identity      
+            print(f"识别出ERC20代币数量: {len(erc20_token_map)}")    
 
-            # ========== 原有逻辑继续 ==========
             # final_users_addresses = （addresses_from_slots ∪ users_addresses_from_CALL \\ contracts_addresses）
             slot_map = self.extract_slot_address_map({"steps": steps})
             addresses_from_slots: Set[str] = set(slot_map.values())
             print(f"通过 slot_map 识别到地址数量: {len(addresses_from_slots)}")
             final_users_addresses_set: Set[str] = (addresses_from_slots.union(users_addresses_from_CALL)) - contracts_addresses
+
+            # 给所有地址命名，构建全地址-名称映射表（包含合约地址和用户地址）
+            full_address_name_map = self._build_full_address_name_map(contracts_addresses=contracts_addresses, erc20_token_map=erc20_token_map, users_addresses=final_users_addresses_set)
 
             # 返回时新增 erc20_token_map 字段
             return {
@@ -492,7 +411,7 @@ class TraceFormatter:
                 "erc20_token_map": erc20_token_map,  # 新增：ERC20地址->名称映射
                 "slot_map": slot_map,
                 "users_addresses": sorted(list(final_users_addresses_set)),
-                "contract_name_map": contract_name_map
+                "full_address_name_map": full_address_name_map
             }
 
         except Exception as e:
@@ -663,3 +582,38 @@ class TraceFormatter:
     # 获取所有涉及的合约字节码
     def get_all_contracts_bytecode(self, all_contracts) -> List[ContractBytecode]:
         return [self.get_contract_bytecode(addr) for addr in all_contracts if addr]
+
+    # 构建全地址-名称映射表
+    def _build_full_address_name_map(
+        self,
+        contracts_addresses: Set[str],
+        erc20_token_map: Dict[str, str],
+        users_addresses: Set[str]
+    ) -> Dict[str, str]:
+        """
+        构建全地址-名称映射表：
+        - ERC20合约：使用token名称
+        - 非ERC20合约：contract_a、contract_b...
+        - 用户地址：User_A、User_B...
+        """
+        full_name_map = {}
+        
+        # 1. 处理ERC20合约（优先级最高）
+        for addr, name in erc20_token_map.items():
+            full_name_map[addr] = name
+        
+        # 2. 处理非ERC20合约
+        non_erc20_contracts = [addr for addr in contracts_addresses if addr not in full_name_map]
+        for idx, addr in enumerate(non_erc20_contracts):
+            # 生成contract_a、contract_b...（a=0, b=1...）
+            contract_suffix = chr(ord('a') + idx)
+            full_name_map[addr] = f"contract_{contract_suffix}"
+        
+        # 3. 处理用户地址
+        sorted_users = sorted(list(users_addresses))
+        for idx, addr in enumerate(sorted_users):
+            # 生成User_A、User_B...（A=0, B=1...）
+            user_suffix = chr(ord('A') + idx)
+            full_name_map[addr] = f"User_{user_suffix}"
+        
+        return full_name_map
