@@ -193,7 +193,7 @@ def render_transaction(cfg: object, output_path: str, full_address_name_map: Dic
         else:
             # 普通合约节点（矩形）
             semantic_table = [
-                f"{{ID: {node.id} | Contract: {contract_name_escaped} | Blocks: {escape_dot(node.fold_info.get('blocks_number', 1) if is_fold_root else 1)} }}",
+                f"{{ID: {node.id} | {contract_name_escaped} | Blocks: {escape_dot(node.fold_info.get('blocks_number', 1) if is_fold_root else 1)} }}",
                 f"{{StartPC: {escape_dot(node.start_pc)} | EndPC: {escape_dot(node.fold_info.get('end_pc', node.end_pc if hasattr(node, 'end_pc') else '0x0'))} | Gas: {escape_dot(gas)}}}",
                 "{ }"
             ]

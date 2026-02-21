@@ -50,7 +50,6 @@ def main():
         users_addresses = standardized_trace.get("users_addresses", [])
         erc20_token_map = standardized_trace.get("erc20_token_map", {})
         full_address_name_map = standardized_trace.get("full_address_name_map", {})
-        contract_name_map = standardized_trace.get("contract_name_map", {}).copy()
 
         print(f"发现合约地址数量: {len(contracts_addresses)}，发现用户地址数量: {len(users_addresses)}")
         print(f"slot_map 项数: {len(slot_map)}\n")
@@ -105,6 +104,7 @@ def main():
             cfg=tx_cfg,                          # CFG对象（已构建好的tx_cfg）
             full_address_name_map=full_address_name_map,  # 地址名称映射（已提取）
             erc20_token_map=erc20_token_map,        # ERC20映射（已提取）
+            users_addresses=users_addresses,              # 用户地址列表（已提取）
             output_path=tx_dot_path              # 输出路径和CFG保持一致，会自动加_legend.svg后缀
         )
         print(f"CFG图例已保存到: {tx_dot_path}_legend.svg")
