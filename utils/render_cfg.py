@@ -1,8 +1,6 @@
 # render_cfg.py
 # 仅负责CFG DOT文件生成，无任何图例相关代码/依赖/调用
 from typing import Any, Optional, List, Dict, Tuple
-import math
-import hashlib
 
 def escape_dot(s: Any) -> str:
     """转义DOT特殊字符"""
@@ -25,8 +23,7 @@ def extract_edge_seq(edge_id: Optional[str]) -> str:
 
 def get_valid_nodes_and_colors(cfg: object, contract_colors: List[str]) -> Tuple[List[object], List[str], List[str], Dict[str, int]]:
     """
-    按【合约第一次出现顺序】依次分配颜色，不哈希、不重复
-    返回：有效节点列表、节点颜色列表、节点合约地址列表、合约地址→颜色索引映射
+    按合约第一次出现顺序依次分配颜色
     """
     valid_nodes = []
     node_colors = []
@@ -59,43 +56,29 @@ def get_valid_nodes_and_colors(cfg: object, contract_colors: List[str]) -> Tuple
         node_contract_addrs.append(node_addr)
         addr_color_map[node_addr] = color
 
-    return valid_nodes, node_colors, node_contract_addrs, contract_to_color_idx, addr_color_map
+    return valid_nodes, node_colors, addr_color_map
 
-def render_transaction(cfg: object, output_path: str, full_address_name_map: Dict[str, str], rankdir: str = "TB") -> None:
+def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str], cfg: object, output_path: str, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], rankdir: str = "TB") -> None:
     """
-    仅生成CFG DOT文件，无图例相关操作
+    仅生成CFG DOT文件
     :param cfg: 包含nodes/edges的CFG对象
     :param output_path: DOT文件输出路径
     :param full_address_name_map: 地址→名称映射
-    :param rankdir: 图表方向（TB/RL等）
+    :param erc20_token_map: ERC20合约地址→名称映射
+    :param rankdir: 图表方向TB
     """
     if not hasattr(cfg, 'nodes') or not hasattr(cfg, 'edges'):
         raise TypeError(f"cfg必须包含nodes/edges属性")
 
-    # 固定配色（仅用于CFG节点颜色）
-    contract_colors = [
-        "#FF9E9E", "#81C784", "#64B5F6", "#FFF176", "#BA68C8",
-        "#4DD0E1", "#FFB74D", "#F48FB1", "#AED581", "#7986CB"
-    ]
-    edge_color_map = {
-        "NORMAL": "#939393",
-        "JUMP": "#575757",
-        "CALL": "#0DFF00",
-        "TERMINATE": "#FF5100",
-    }
-
     # 获取有效节点、颜色、合约地址映射
-    valid_nodes, node_colors, node_contract_addrs, contract_to_color_idx, addr_color_map = get_valid_nodes_and_colors(cfg, contract_colors)
-    if not valid_nodes:
-        print("警告：无有效节点可渲染")
-        return
+    valid_nodes, node_colors, addr_color_map = get_valid_nodes_and_colors(cfg, contract_colors)
 
-    # 预处理地址名称映射（转小写）
+    # 预处理地址名称映射
     full_name_map_lower = {addr.lower(): name for addr, name in full_address_name_map.items()}
-    # 提取ERC20合约地址（名称不是contract_xxx/User_xxx）
-    erc20_addrs_lower = [
-        addr for addr, name in full_name_map_lower.items()
-        if not (name.startswith("contract_") or name.startswith("User_"))
+
+    # 提取ERC20合约地址
+    erc20_addrs = [
+        addr for addr, val in erc20_token_map.items()
     ]
 
     # 初始化DOT文件内容
@@ -128,7 +111,7 @@ def render_transaction(cfg: object, output_path: str, full_address_name_map: Dic
         color = node_colors[idx]
 
         # 判断节点形状（椭圆=ERC20，矩形=普通合约）
-        node_shape = "ellipse" if node_addr_lower in erc20_addrs_lower else "record"
+        node_shape = "ellipse" if node_addr_lower in erc20_addrs else "record"
 
         # 获取Gas值
         if is_fold_root and hasattr(node, "fold_info"):

@@ -1,5 +1,6 @@
 import json
 import os
+from typing import Dict, List, Any
 from dotenv import load_dotenv
 from utils.evm_information import TraceFormatter
 from utils.basic_block import BasicBlockProcessor
@@ -26,6 +27,50 @@ def create_result_directory(tx_hash: str) -> str:
     os.makedirs(result_dir, exist_ok=True)
     return result_dir
 
+def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]]):
+    '''保存所有图：交易级CFG图、CFG图例、代币交易流图'''
+
+    # 定义Tx_CFG,Asset_Flow和图例的共用颜色规则
+    CONTRACT_COLORS = [
+    "#FF9E9E", "#81C784", "#64B5F6", "#BA68C8", "#FFCD07", 
+    "#4DD0E1", "#FD9800", "#F48FB1", "#AED581", "#7986CB"
+    ]
+    EDGE_COLOR_MAP = {
+        "NORMAL": "#939393",
+        "JUMP": "#000000",
+        "CALL": "#1F6800",
+        "TERMINATE": "#C14A00",
+    }
+
+    # 保存交易级CFG的DOT文件
+    tx_dot_path = os.path.join(result_dir, "transaction_cfg")
+    addr_color_map = render_transaction(
+        contract_colors = CONTRACT_COLORS,
+        edge_color_map = EDGE_COLOR_MAP,
+        cfg=tx_cfg, 
+        output_path=tx_dot_path, 
+        full_address_name_map = full_address_name_map, 
+        erc20_token_map = erc20_token_map,
+        rankdir="TB")
+    print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
+
+    # 保存图例 
+    print("正在生成CFG图例...")
+    render_legend_matplotlib(
+        addr_color_map=addr_color_map,
+        edge_color_map = EDGE_COLOR_MAP,                       
+        full_address_name_map=full_address_name_map,
+        erc20_token_map=erc20_token_map,        
+        users_addresses=users_addresses,             
+        output_path=tx_dot_path)          
+    print(f"CFG图例已保存到: {tx_dot_path}_legend.svg")
+    
+    # 保存代币交易流图的DOT文件
+    token_flow_dot_path = os.path.join(result_dir, "asset_flow.dot")
+    render_asset_flow(pairs, annotations, users_addresses, full_address_name_map, pending_erc20, addr_color_map, token_flow_dot_path)
+    print(f"代币交易流图DOT文件已保存到: {token_flow_dot_path}.dot")
+
+
 def main():
     # 配置参数
     PROVIDER_URL = os.environ.get("GETH_API")
@@ -49,7 +94,7 @@ def main():
         slot_map = standardized_trace.get("slot_map", {})
         users_addresses = standardized_trace.get("users_addresses", [])
         erc20_token_map = standardized_trace.get("erc20_token_map", {})
-        full_address_name_map = standardized_trace.get("full_address_name_map", {})
+        full_address_name_map = standardized_trace.get("full_address_name_map", {}) 
 
         print(f"发现合约地址数量: {len(contracts_addresses)}，发现用户地址数量: {len(users_addresses)}")
         print(f"slot_map 项数: {len(slot_map)}\n")
@@ -92,43 +137,18 @@ def main():
             json.dump(standardized_trace, f, indent=2, ensure_ascii=False)
         print(f"轨迹数据（含 addresses 与 slot_map）已保存到: {trace_path}")
         
-        # 9. 保存交易级CFG的DOT文件（调用新文件的render_transaction）
-        tx_dot_path = os.path.join(result_dir, "transaction_cfg")  # 无需加.dot后缀，函数内部自动处理
-        addr_color_map = render_transaction(tx_cfg, tx_dot_path, full_address_name_map=full_address_name_map, rankdir="TB")
-        print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
-
-
-        # 10. 调用图例渲染函数 ==========
-        print("正在生成CFG图例...")
-        render_legend_matplotlib(
-            cfg=tx_cfg,                          # CFG对象（已构建好的tx_cfg）
-            full_address_name_map=full_address_name_map,  # 地址名称映射（已提取）
-            erc20_token_map=erc20_token_map,        # ERC20映射（已提取）
-            users_addresses=users_addresses,              # 用户地址列表（已提取）
-            output_path=tx_dot_path              # 输出路径和CFG保持一致，会自动加_legend.svg后缀
-        )
-        print(f"CFG图例已保存到: {tx_dot_path}_legend.svg")
-
-
-
-        # 11. 保存资产变更数据
+        # 9. 保存资产变更数据
         changes_path = os.path.join(result_dir, "balance_and_eth_changes.json") 
         with open(changes_path, "w", encoding="utf-8") as f:
             json.dump(all_changes, f, indent=2, ensure_ascii=False)
         print(f"资产变更数据已保存到: {changes_path}")
 
-        # 12. 保存交易操作表格Excel文件
+        # 10. 保存交易操作表格Excel文件
         table_excel_path = os.path.join(result_dir, "transaction_table.xlsx")
         generate_table_excel(cfg_constructor, output_path=table_excel_path)
         print(f"交易操作表格Excel已保存到: {table_excel_path}")
 
-
-        # 13. 保存代币交易流图的DOT文件
-        token_flow_dot_path = os.path.join(result_dir, "asset_flow.dot")
-        render_asset_flow(pairs, annotations, users_addresses, full_address_name_map, pending_erc20, addr_color_map, token_flow_dot_path)
-        print(f"代币交易流图DOT文件已保存到: {token_flow_dot_path}.dot")
-
-        # 14. 保存边映射JSON文件
+        # 11. 保存边映射JSON文件
         edge_link_path = os.path.join(result_dir, "edge_link.json")
         with open(edge_link_path, "w", encoding="utf-8") as f:
             f.write(json_output)
@@ -136,6 +156,10 @@ def main():
 
         print("\n===== 处理完成 =====")
         print(f"所有结果已保存到: {os.path.abspath(result_dir)}")
+
+        # 12. 渲染并保存三个核心图
+        save_graphs(result_dir=result_dir, tx_cfg=tx_cfg, full_address_name_map = full_address_name_map, erc20_token_map=erc20_token_map, 
+                    users_addresses=users_addresses, pairs=pairs, annotations=annotations, pending_erc20=pending_erc20)
         
     except Exception as e:
         import traceback
