@@ -6,7 +6,6 @@ from utils.evm_information import TraceFormatter
 from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
 from utils.render_cfg import render_transaction
-from utils.render_token_table import generate_table_excel
 from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_cfg, edge_link_to_json
 from utils.render_legend import render_legend_matplotlib
 
@@ -28,7 +27,7 @@ def create_result_directory(tx_hash: str) -> str:
     return result_dir
 
 def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]]):
-    '''保存所有图：交易级CFG图、CFG图例、代币交易流图'''
+    '''渲染并保存所有图：交易级CFG图、CFG图例、代币交易流图'''
 
     # 定义Tx_CFG,Asset_Flow和图例的共用颜色规则
     CONTRACT_COLORS = [
@@ -143,12 +142,7 @@ def main():
             json.dump(all_changes, f, indent=2, ensure_ascii=False)
         print(f"资产变更数据已保存到: {changes_path}")
 
-        # 10. 保存交易操作表格Excel文件
-        table_excel_path = os.path.join(result_dir, "transaction_table.xlsx")
-        generate_table_excel(cfg_constructor, output_path=table_excel_path)
-        print(f"交易操作表格Excel已保存到: {table_excel_path}")
-
-        # 11. 保存边映射JSON文件
+        # 10. 保存边映射JSON文件
         edge_link_path = os.path.join(result_dir, "edge_link.json")
         with open(edge_link_path, "w", encoding="utf-8") as f:
             f.write(json_output)
@@ -157,7 +151,7 @@ def main():
         print("\n===== 处理完成 =====")
         print(f"所有结果已保存到: {os.path.abspath(result_dir)}")
 
-        # 12. 渲染并保存三个核心图
+        # 11. 渲染并保存三个核心图
         save_graphs(result_dir=result_dir, tx_cfg=tx_cfg, full_address_name_map = full_address_name_map, erc20_token_map=erc20_token_map, 
                     users_addresses=users_addresses, pairs=pairs, annotations=annotations, pending_erc20=pending_erc20)
         

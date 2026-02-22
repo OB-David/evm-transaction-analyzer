@@ -14,7 +14,7 @@ def hex_to_int_safe(x: str) -> int:
     except Exception:
         return 0
 
-def format_scientific_html(value: float, precision: int = 2, sup_size: int = 8) -> str:
+def format_scientific_html(value: float, precision: int = 4, sup_size: int = 8) -> str:
     """
     将浮点数格式化为 HTML 科学计数法，指数部分使用较小的字体
     :param value: 要格式化的浮点数
