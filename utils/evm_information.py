@@ -1,11 +1,3 @@
-# evm_information.py 负责从节点上获取所有必要信息；
-# 这些信息包括交易的标准化trace、涉及的contract address以及对应的bytecode；
-# 包含对trace的结构定义；
-# 包含获取每个step对应的contract address的逻辑；
-# 包含获取contracts addresses, users addresses和slot_map的逻辑；
-# 命名所有参与交易的地址
-# 所有结果都结构化存在StandardizedTrace中
-
 from typing import List, Dict, TypedDict, Set, Tuple, Optional
 import logging
 import json
@@ -133,6 +125,19 @@ class TraceFormatter:
         tx = self.web3.eth.get_transaction(tx_hash)
         return tx.get("to", "")
 
+    # 获取交易发起者（from）地址
+    def _get_tx_sender_address(self, tx_hash: str) -> str:
+        """
+        获取交易的发起者（from）地址并标准化
+        """
+        try:
+            tx = self.web3.eth.get_transaction(tx_hash)
+            sender_addr = tx.get("from", "")
+            return self._normalize_address(sender_addr)
+        except Exception as e:
+            logger.error(f"获取交易发起者地址失败: {e}")
+            return ""
+
     # 缓存 get_code 查询，减少 RPC 调用（基于地址）
     @lru_cache(maxsize=1024)
     def _get_code_cached(self, addr_checksum: str) -> bytes:
@@ -252,10 +257,15 @@ class TraceFormatter:
         - erc20_token_map: dict（ERC20合约地址 -> token名称）
         - slot_map: slot -> normalized address 映射（通过 steps 计算）
         - users_addresses: 最终用户地址集合（由 addresses_from_slots 与中间的 users_addresses_from_CALL 合并去重并减去contracts_addresses）
+        - tx_sender_address: 交易发起者（from）地址
         说明：
         - users_addresses_from_CALL 仍在函数内部作为中间结果计算，但不会写入返回值
         """
         try:
+            # ========== 新增：先获取交易发起者地址 ==========
+            tx_sender_address = self._get_tx_sender_address(tx_hash)
+            logger.info(f"交易 {tx_hash} 的发起者地址: {tx_sender_address}")
+
             cmd = [
                 "cast", "rpc",
                 "debug_traceTransaction",
@@ -400,10 +410,21 @@ class TraceFormatter:
             print(f"通过 slot_map 识别到地址数量: {len(addresses_from_slots)}")
             final_users_addresses_set: Set[str] = (addresses_from_slots.union(users_addresses_from_CALL)) - contracts_addresses
 
-            # 给所有地址命名，构建全地址-名称映射表（包含合约地址和用户地址）
-            full_address_name_map = self._build_full_address_name_map(contracts_addresses=contracts_addresses, erc20_token_map=erc20_token_map, users_addresses=final_users_addresses_set)
+            # ========== 新增：将交易发起者加入用户地址集合 ==========
+            if tx_sender_address and tx_sender_address not in contracts_addresses:
+                final_users_addresses_set.add(tx_sender_address)
+                logger.info(f"已将交易发起者 {tx_sender_address} 加入用户地址集合")
 
-            # 返回时新增 erc20_token_map 字段
+            # 给所有地址命名，构建全地址-名称映射表（包含合约地址和用户地址）
+            # ========== 修改：传入交易发起者地址 ==========
+            full_address_name_map = self._build_full_address_name_map(
+                contracts_addresses=contracts_addresses, 
+                erc20_token_map=erc20_token_map, 
+                users_addresses=final_users_addresses_set,
+                tx_sender_address=tx_sender_address  # 新增参数
+            )
+
+            # 返回时新增 erc20_token_map 和 tx_sender_address 字段
             return {
                 "tx_hash": tx_hash,
                 "steps": steps,
@@ -411,7 +432,8 @@ class TraceFormatter:
                 "erc20_token_map": erc20_token_map,  # 新增：ERC20地址->名称映射
                 "slot_map": slot_map,
                 "users_addresses": sorted(list(final_users_addresses_set)),
-                "full_address_name_map": full_address_name_map
+                "full_address_name_map": full_address_name_map,
+                "tx_sender_address": tx_sender_address  # 新增：交易发起者地址
             }
 
         except Exception as e:
@@ -583,18 +605,20 @@ class TraceFormatter:
     def get_all_contracts_bytecode(self, all_contracts) -> List[ContractBytecode]:
         return [self.get_contract_bytecode(addr) for addr in all_contracts if addr]
 
-    # 构建全地址-名称映射表
+    #  tx_sender_address 参数，优先命名为 User_From
     def _build_full_address_name_map(
         self,
         contracts_addresses: Set[str],
         erc20_token_map: Dict[str, str],
-        users_addresses: Set[str]
+        users_addresses: Set[str],
+        tx_sender_address: str = ""  # 新增参数：交易发起者地址
     ) -> Dict[str, str]:
         """
         构建全地址-名称映射表：
         - ERC20合约：使用token名称
         - 非ERC20合约：contract_a、contract_b...
-        - 用户地址：User_A、User_B...
+        - 交易发起者：优先命名为 User_From
+        - 其他用户地址：User_A、User_B...
         """
         full_name_map = {}
         
@@ -609,8 +633,16 @@ class TraceFormatter:
             contract_suffix = chr(ord('a') + idx)
             full_name_map[addr] = f"contract_{contract_suffix}"
         
-        # 3. 处理用户地址
+        # 3. 处理用户地址（优先处理交易发起者）
         sorted_users = sorted(list(users_addresses))
+        
+        # 3.1 先处理交易发起者，命名为 User_From
+        if tx_sender_address and tx_sender_address in sorted_users:
+            full_name_map[tx_sender_address] = "User_From"
+            # 从排序后的列表中移除，避免重复命名
+            sorted_users.remove(tx_sender_address)
+        
+        # 3.2 处理剩余用户地址：User_A、User_B...
         for idx, addr in enumerate(sorted_users):
             # 生成User_A、User_B...（A=0, B=1...）
             user_suffix = chr(ord('A') + idx)

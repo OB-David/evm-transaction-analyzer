@@ -52,12 +52,29 @@ def render_legend_matplotlib(
         # 标题内部间距（标题到元素）
         current_y -= 0.9
 
-        # 按用户地址字母序排序（小写，避免大小写干扰）
-        user_alias_map = {}
-        for idx, addr in enumerate(users_addresses):
-            user_alias_map[addr] = f"User {idx + 1}"
+        # 构建 {地址: 原始用户名} 的映射（如 0xxxx: User_From, 0xaaa: User_A）
+        user_alias_map = {addr: full_address_name_map.get(addr, f"User_{addr[:6]}") for addr in users_addresses}
+        
+        # ========== 核心修改：自定义排序规则，User_From 优先，其余按字母序 ==========
+        def custom_sort_key(item):
+            """
+            自定义排序key：
+            - User_From 优先级最高（返回 0 + 名称）
+            - 其他用户名称返回 1 + 小写名称（保证按字母序）
+            """
+            addr, name = item
+            if name == "User_From":
+                # 让 User_From 排在最前面
+                return (0, name.lower())
+            else:
+                # 其他名称按字母序排列
+                return (1, name.lower())
+        
+        # 使用自定义key排序
+        sorted_user_items = sorted(user_alias_map.items(), key=custom_sort_key)
 
-        for addr, user_name in user_alias_map.items():
+        # 遍历排序后的用户地址和名称
+        for addr, user_name in sorted_user_items:
             # 菱形（和 asset_flow diamond 一致）
             diamond_vertices = [
                 (1.5, current_y + 0.3),
@@ -73,7 +90,7 @@ def render_legend_matplotlib(
             )
             ax.add_patch(diamond)
 
-            # 用户名称放入菱形中心
+            # 用户名称放入菱形中心（显示原始名称：User_From / User_A 等）
             ax.text(1.5, current_y, user_name, fontsize=8, ha='center', va='center', color='black')
             
             # 地址显示在右侧
@@ -85,6 +102,7 @@ def render_legend_matplotlib(
         # 组间间距（用户到Token合约）
         current_y -= 0.3
 
+    
     # 合约样式
     # 先拆分Token合约和普通合约，并整理名称
     token_contracts = []  

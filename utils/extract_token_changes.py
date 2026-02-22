@@ -141,9 +141,9 @@ def render_asset_flow(paired, node_annotations, users_addresses, full_address_na
     绘制资产流向图（DOT格式）
     :param paired: 已配对的交易流列表（含ETH和ERC20转账）
     :param node_annotations: 节点注释（非配对ERC20变化，已排除WETH）
-    :param users_addresses: 用户地址列表（用于生成别名）
+    :param users_addresses: 用户地址列表
     :param full_address_name_map: 合约名称映射（地址 -> 名称）
-    :param color_map: 地址颜色映射（地址 -> 颜色代码）
+    :param addr_color_map: 地址颜色映射（地址 -> 颜色代码）
     :param pending_erc20: 所有未配对的ERC20变化（包含WETH等）
     :param output_file: 输出DOT文件路径
     """
@@ -152,11 +152,10 @@ def render_asset_flow(paired, node_annotations, users_addresses, full_address_na
 
     users_set = set(users_addresses)
 
-    # --- 为用户生成别名 User 1, User 2 ...
+    # 使用full_address_name_map中的固定名称
     user_alias_map = {}
-    sorted_users = sorted(list(users_set))  # 保证排序一致性
-    for idx, addr in enumerate(sorted_users):
-        user_alias_map[addr] = f"User {idx + 1}"
+    for addr in users_set:
+        user_alias_map[addr] = full_address_name_map.get(addr)
 
     # -------- 收集所有需要绘制的地址 --------
     addresses = set()
@@ -187,7 +186,7 @@ def render_asset_flow(paired, node_annotations, users_addresses, full_address_na
 
         # 确定节点显示名称
         if is_user:
-            display_name = user_alias_map.get(addr, "Unknown User")
+            display_name = user_alias_map.get(addr)
         else:
             display_name = full_address_name_map.get(addr, addr[:8] + "...")
 
@@ -257,6 +256,7 @@ def render_asset_flow(paired, node_annotations, users_addresses, full_address_na
     # 保存DOT文件
     dot.save(output_file)
     return dot
+
 
 def afg_to_cfg(paired, pending_erc20, cfg_constructor: CFGConstructor, tx_cfg: CFG):
     edge_link = []
