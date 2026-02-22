@@ -123,92 +123,137 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
         actions = node.fold_info.get("actions", []) if (is_fold_root or (not is_folded) and hasattr(node, "fold_info")) else []
         has_action = len(actions) > 0
 
+        # ERC20节点（椭圆）
         if node_shape == "ellipse":
-            # ERC20节点（椭圆）
             block_id = node.id
             blocks_num = escape_dot(node.fold_info.get('blocks_number', 1) if is_fold_root else 1)
             start_pc = escape_dot(node.start_pc)
             end_pc = escape_dot(node.fold_info.get('end_pc', node.end_pc if hasattr(node, 'end_pc') else '0x0'))
             gas_str = f"{gas:.2f}"
             
-            # 处理Action文本
-            action_text = []
-            act_idx = 1
-            for act in actions:
-                if "eth_event" in act and act["eth_event"]:
-                    eth_item = act["eth_event"]
-                    from_addr = eth_item['from'].lower() if isinstance(eth_item['from'], str) else str(eth_item['from']).lower()
-                    from_name = full_name_map_lower.get(from_addr, addr_short(from_addr))
-                    to_addr = eth_item['to'].lower() if isinstance(eth_item['to'], str) else str(eth_item['to']).lower()
-                    to_name = full_name_map_lower.get(to_addr, addr_short(to_addr))
-                    action_text.append(f"Action{act_idx}: Send_ETH {from_name}→{to_name} {eth_item['amount']}")
-                    act_idx += 1
-                for erc in act.get("erc20_events", []):
-                    user_addr = erc['user'].lower() if isinstance(erc['user'], str) else str(erc['user']).lower()
-                    user_name = full_name_map_lower.get(user_addr, addr_short(user_addr))
-                    action_text.append(f"Action{act_idx}:  {erc['type']} {user_name} {erc['balance']}")
-                    act_idx += 1
-            actions_str = "\\n".join(action_text) if action_text else "No actions"
+            #  有action情况
+            if has_action: 
+                # 处理Action文本
+                action_text = []
+                act_idx = 1
+                for act in actions:
+                    if "eth_event" in act and act["eth_event"]:
+                        eth_item = act["eth_event"]
+                        from_addr = eth_item['from'].lower() if isinstance(eth_item['from'], str) else str(eth_item['from']).lower()
+                        from_name = full_name_map_lower.get(from_addr, addr_short(from_addr))
+                        to_addr = eth_item['to'].lower() if isinstance(eth_item['to'], str) else str(eth_item['to']).lower()
+                        to_name = full_name_map_lower.get(to_addr, addr_short(to_addr))
+                        action_text.append(f"Action{act_idx}: Send_ETH {from_name}→{to_name} {eth_item['amount']}")
+                        act_idx += 1
+                    for erc in act.get("erc20_events", []):
+                        user_addr = erc['user'].lower() if isinstance(erc['user'], str) else str(erc['user']).lower()
+                        user_name = full_name_map_lower.get(user_addr, addr_short(user_addr))
+                        action_text.append(f"Action{act_idx}:  {erc['type']} {user_name} {erc['balance']}")
+                        act_idx += 1
+                actions_str = "\\n".join(action_text)
 
-            # 节点标签
-            label_text = (
-                f"ID: {block_id} | {contract_name_escaped} | Blocks: {blocks_num}\\n"
-                f"StartPC: {start_pc} | EndPC: {end_pc} | Gas: {gas_str}"
-                f"\\n {actions_str}"
-            )
-            label_text_escaped = escape_dot(label_text)
+                # 节点标签
+                label_text = (
+                    f"ID: {block_id} | {contract_name_escaped} | Blocks: {blocks_num}\\n"
+                    f"StartPC: {start_pc} | EndPC: {end_pc} | Gas: {gas_str}"
+                    f"\\n {actions_str}"
+                )
+                label_text_escaped = escape_dot(label_text)
 
-            # 节点属性（有Action则红色粗边框）
-            style_str = "filled, shadow" + (", bold" if has_action else "")
-            node_attrs = [
-                f'shape="{node_shape}"',
-                f'label="{label_text_escaped}"',
-                f'style="{style_str}"',
-                f'fillcolor="{color}"',
-                f'color="{"red" if has_action else "black"}"',
-                f'width=0',
-                f'height=0',
-                f'margin=0.1'
-            ]
-            if has_action:
-                node_attrs.append(f'penwidth=2')
+                # 节点属性（有Action则红色粗边框）
+                style_str = "filled, shadow" + (", bold" if has_action else "")
+                node_attrs = [
+                    f'shape="{node_shape}"',
+                    f'label="{label_text_escaped}"',
+                    f'style="{style_str}"',
+                    f'fillcolor="{color}"',
+                    f'color="{"red" if has_action else "black"}"',
+                    f'width=0',
+                    f'height=0',
+                    f'margin=0.1',
+                    f'penwidth=2'
+                ]
+
+            # 无action情况
+            else:
+                # 节点标签
+                label_text = (
+                    f"ID: {block_id} | {contract_name_escaped} | Blocks: {blocks_num}\\n"
+                    f"StartPC: {start_pc} | EndPC: {end_pc} | Gas: {gas_str}"
+                )
+                label_text_escaped = escape_dot(label_text)
+
+                # 节点属性
+                style_str = "filled, shadow" + (", bold" if has_action else "")
+                node_attrs = [
+                    f'shape="{node_shape}"',
+                    f'label="{label_text_escaped}"',
+                    f'style="{style_str}"',
+                    f'fillcolor="{color}"',
+                    f'color="{"red" if has_action else "black"}"',
+                    f'width=0',
+                    f'height=0',
+                    f'margin=0.1',
+                ]
             dot_lines.append(f"  {node_id} [{', '.join(node_attrs)}];")
+
+
+        # 普通合约节点（矩形）
         else:
-            # 普通合约节点（矩形）
-            semantic_table = [
-                f"{{ID: {node.id} | {contract_name_escaped} | Blocks: {escape_dot(node.fold_info.get('blocks_number', 1) if is_fold_root else 1)} }}",
-                f"{{StartPC: {escape_dot(node.start_pc)} | EndPC: {escape_dot(node.fold_info.get('end_pc', node.end_pc if hasattr(node, 'end_pc') else '0x0'))} | Gas: {escape_dot(gas)}}}",
-                "{ }"
-            ]
-
-            # 处理Action文本
-            action_text = []
-            act_idx = 1
-            for act in actions:
-                if "eth_event" in act and act["eth_event"]:
-                    eth_item = act["eth_event"]
-                    from_addr = eth_item['from'].lower() if isinstance(eth_item['from'], str) else str(eth_item['from']).lower()
-                    from_name = full_name_map_lower.get(from_addr, addr_short(from_addr))
-                    to_addr = eth_item['to'].lower() if isinstance(eth_item['to'], str) else str(eth_item['to']).lower()
-                    to_name = full_name_map_lower.get(to_addr, addr_short(to_addr))
-                    action_text.append(f"Action{act_idx}: Send_ETH {from_name} → {to_name} {eth_item['amount']}")
-                    act_idx += 1
-            actions_joined = '\\n'.join(action_text) if action_text else 'No actions'
-            semantic_table[2] = f"{{ {actions_joined} }}"
-            label_semantic = "|".join(semantic_table)
-
-            # 节点属性
-            style_str = "filled" + (", bold" if has_action else "")
-            node_attrs = [
-                f"shape=\"{node_shape}\"",
-                f"label=\"{{{label_semantic}}}\"",
-                f"style=\"{style_str}\"",
-                f"fillcolor=\"{color}\"",
-                f"color=\"{'red' if has_action else 'black'}\"",
-                f"margin=0.1"
-            ]
+            # 有action情况
             if has_action:
-                node_attrs.append(f'penwidth=2')
+                semantic_table = [
+                    f"{{ID: {node.id} | {contract_name_escaped} | Blocks: {escape_dot(node.fold_info.get('blocks_number', 1) if is_fold_root else 1)} }}",
+                    f"{{StartPC: {escape_dot(node.start_pc)} | EndPC: {escape_dot(node.fold_info.get('end_pc', node.end_pc if hasattr(node, 'end_pc') else '0x0'))} | Gas: {escape_dot(gas)}}}",
+                    "{ }"
+                ]
+
+                # 处理Action文本
+                action_text = []
+                act_idx = 1
+                for act in actions:
+                    if "eth_event" in act and act["eth_event"]:
+                        eth_item = act["eth_event"]
+                        from_addr = eth_item['from'].lower() if isinstance(eth_item['from'], str) else str(eth_item['from']).lower()
+                        from_name = full_name_map_lower.get(from_addr, addr_short(from_addr))
+                        to_addr = eth_item['to'].lower() if isinstance(eth_item['to'], str) else str(eth_item['to']).lower()
+                        to_name = full_name_map_lower.get(to_addr, addr_short(to_addr))
+                        action_text.append(f"Action{act_idx}: Send_ETH {from_name} → {to_name} {eth_item['amount']}")
+                        act_idx += 1
+                actions_joined = '\\n'.join(action_text) if action_text else 'No actions'
+                semantic_table[2] = f"{{ {actions_joined} }}"
+                label_semantic = "|".join(semantic_table)
+
+                # 节点属性
+                style_str = "filled" + (", bold" if has_action else "")
+                node_attrs = [
+                    f"shape=\"{node_shape}\"",
+                    f"label=\"{{{label_semantic}}}\"",
+                    f"style=\"{style_str}\"",
+                    f"fillcolor=\"{color}\"",
+                    f"color=\"{'red' if has_action else 'black'}\"",
+                    f"margin=0.1",
+                    f'penwidth=2'
+                ]
+                
+            # 无action情况
+            else: 
+                semantic_table = [
+                    f"{{ID: {node.id} | {contract_name_escaped} | Blocks: {escape_dot(node.fold_info.get('blocks_number', 1) if is_fold_root else 1)} }}",
+                    f"{{StartPC: {escape_dot(node.start_pc)} | EndPC: {escape_dot(node.fold_info.get('end_pc', node.end_pc if hasattr(node, 'end_pc') else '0x0'))} | Gas: {escape_dot(gas)}}}"
+                ]
+                
+                # 节点属性
+                style_str = "filled" + (", bold" if has_action else "")
+                node_attrs = [
+                    f"shape=\"{node_shape}\"",
+                    f"label=\"{{{'|'.join(semantic_table)}}}\"",
+                    f"style=\"{style_str}\"",
+                    f"fillcolor=\"{color}\"",
+                    f"color=\"{'red' if has_action else 'black'}\"",
+                    f"margin=0.1"
+                ]
+
             dot_lines.append(f"  {node_id} [{', '.join(node_attrs)}];")
 
     # 生成边
