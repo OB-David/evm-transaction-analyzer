@@ -78,9 +78,9 @@ def render_legend_matplotlib(
             # 菱形（和 asset_flow diamond 一致）
             diamond_vertices = [
                 (1.5, current_y + 0.3),
-                (1.5 + 0.6, current_y),
+                (1.5 + 0.8, current_y),
                 (1.5, current_y - 0.3),
-                (1.5 - 0.6, current_y)
+                (1.5 - 0.8, current_y)
             ]
             diamond = Polygon(
                 diamond_vertices,
@@ -130,7 +130,7 @@ def render_legend_matplotlib(
         sorted_token_contracts = sorted(token_contracts, key=lambda x: x[0].lower())
         for contract_name, contract_addr, color in sorted_token_contracts:
             # 椭圆（ERC20 Token合约）
-            shape = Ellipse((1.5, current_y), width=1.2, height=0.6, 
+            shape = Ellipse((1.5, current_y), width=1.6, height=0.6, 
                            facecolor=color, edgecolor='black', linewidth=1)
             ax.add_patch(shape)
             # 合约名称放入椭圆中心
@@ -157,7 +157,7 @@ def render_legend_matplotlib(
         sorted_normal_contracts = sorted(normal_contracts, key=lambda x: x[0].lower())
         for contract_name, contract_addr, color in sorted_normal_contracts:
             # 矩形（普通合约）
-            shape = Rectangle((0.9, current_y-0.3), width=1.2, height=0.6, 
+            shape = Rectangle((0.7, current_y-0.3), width=1.6, height=0.6, 
                              facecolor=color, edgecolor='black', linewidth=1)
             ax.add_patch(shape)
             # 合约名称放入矩形中心
@@ -179,7 +179,7 @@ def render_legend_matplotlib(
     ax.text(0.5, current_y, 'CFG\'s Edge Types', fontsize=10, ha='left', va='center', fontweight='bold')
     current_y -= 0.9
 
-    arrow_length = 1
+    arrow_length = 1.6
     for edge_type, edge_color in edge_color_map.items():
         # 绘制彩色箭头
         arrow = FancyArrowPatch(

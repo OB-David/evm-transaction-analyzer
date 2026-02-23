@@ -73,7 +73,7 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
 def main():
     # 配置参数
     PROVIDER_URL = os.environ.get("GETH_API")
-    TX_HASH = "0xd76d6cf2885323fbe0b9d1795763f8f9d30be648dcf0df4a524f7c3fe5c37177"
+    TX_HASH = "0x9086653927f4385925bb07c573ac2fa0aa41a1bfc0af532b5007a0ec5d6dbca5"
 
     try:
         # 创建结果目录
@@ -113,11 +113,7 @@ def main():
         tx_cfg, all_changes = cfg_constructor.construct_cfg(standardized_trace, slot_map, erc20_token_map)
         print(f"成功构建交易级CFG，包含 {len(tx_cfg.nodes)} 个节点和 {len(tx_cfg.edges)} 条边\n")
 
-        # 6. 生成交易操作表格数据（仅打印提示，实际生成在后续步骤）
-        print("正在生成交易操作表格Excel...")
-        table = cfg_constructor.table
-
-        # 7. 构建代币交易流，生成边与基本块的映射
+        # 6. 构建代币交易流，生成边与基本块的映射
         print("正在提取代币交易流...")
         # 先构建代币精度映射
         token_decimals_map = {}
@@ -130,19 +126,19 @@ def main():
         json_output = edge_link_to_json(edge_link)
         print(f"共提取到 {len(all_changes)} 条资产变更事件，配对成功 {len(pairs)} 对交易流,存在孤立变动{len(annotations)}条\n")
 
-        # 8. 保存轨迹数据
+        # 7. 保存轨迹数据
         trace_path = os.path.join(result_dir, "trace.json")
         with open(trace_path, "w", encoding="utf-8") as f:
             json.dump(standardized_trace, f, indent=2, ensure_ascii=False)
         print(f"轨迹数据（含 addresses 与 slot_map）已保存到: {trace_path}")
         
-        # 9. 保存资产变更数据
+        # 8. 保存资产变更数据
         changes_path = os.path.join(result_dir, "balance_and_eth_changes.json") 
         with open(changes_path, "w", encoding="utf-8") as f:
             json.dump(all_changes, f, indent=2, ensure_ascii=False)
         print(f"资产变更数据已保存到: {changes_path}")
 
-        # 10. 保存边映射JSON文件
+        # 9. 保存边映射JSON文件
         edge_link_path = os.path.join(result_dir, "edge_link.json")
         with open(edge_link_path, "w", encoding="utf-8") as f:
             f.write(json_output)
@@ -151,7 +147,7 @@ def main():
         print("\n===== 处理完成 =====")
         print(f"所有结果已保存到: {os.path.abspath(result_dir)}")
 
-        # 11. 渲染并保存三个核心图
+        # 10. 渲染并保存三个核心图
         save_graphs(result_dir=result_dir, tx_cfg=tx_cfg, full_address_name_map = full_address_name_map, erc20_token_map=erc20_token_map, 
                     users_addresses=users_addresses, pairs=pairs, annotations=annotations, pending_erc20=pending_erc20)
         

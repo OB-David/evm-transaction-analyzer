@@ -244,12 +244,12 @@ def render_asset_flow(paired, node_annotations, users_addresses, full_address_na
             # 铸造：从WETH合约指向用户
             src = token_addr
             tgt = user
-            label = f"({order}) WETH(mint): {amount_str}"
+            label = f"({order}) Wrapped Ether(mint): {amount_str}"
         else:
             # 销毁：从用户指向WETH合约
             src = user
             tgt = token_addr
-            label = f"({order}) WETH(burn): {amount_str}"
+            label = f"({order}) Wrapped Ether(burn): {amount_str}"
 
         dot.edge(src, tgt, label="<" + label + ">", color=edge_color, fontcolor=edge_color, style="dashed")
 

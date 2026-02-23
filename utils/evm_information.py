@@ -150,57 +150,60 @@ class TraceFormatter:
             logger.debug(f"获取字节码 RPC 失败: {addr_checksum} - {e}")
             return b""
 
-    # 替换原有 _check_if_erc20_and_get_name 函数
-    @lru_cache(maxsize=1024)
-    def _check_if_erc20_and_get_name(self, contract_address: str) -> Tuple[bool, str]:
-        """仅判断能否成功调用name()并获取非空名称（symbol不算）
-        返回: (是否是代币, token名称)
+
+    # 识别ERC20 token合约，包括逻辑合约识别
+    def identify_erc20_contracts(self, initial_contracts: Set[str], steps: List[StandardizedStep]) -> Tuple[Dict[str, str], Set[str]]:
         """
-        try:
-            # 1. 标准化地址
-            norm_addr = self._normalize_address(contract_address)
-            if not norm_addr:
-                return (False, "")
-            checksum_addr = Web3.to_checksum_address(norm_addr)
-            
-            # 2. 检查是否有字节码（空字节码不是合约）
-            bytecode = self._get_code_cached(norm_addr)
-            if not bytecode:
-                logger.debug(f"[{norm_addr}] 无字节码，不是代币")
-                return (False, "")
-            
-            # 3. 仅定义name()方法的ABI（symbol不算）
-            ONLY_NAME_ABI = [
-                {"constant":True,"inputs":[],"name":"name","outputs":[{"name":"","type":"string"}],"payable":False,"stateMutability":"view","type":"function"}
-            ]
-            name_contract = self.web3.eth.contract(address=checksum_addr, abi=ONLY_NAME_ABI)
-            
-            # 4. 调用name()方法，仅保留非空结果（symbol不算）
-            token_name = ""
-            try:
-                # 调用name()并去除首尾空格
-                token_name = name_contract.functions.name().call().strip()
-                # 确保名称非空（空字符串不算）
-                if not token_name:
-                    logger.debug(f"[{norm_addr}] name()返回空字符串，不是代币")
-                    return (False, "")
-            except Exception as e:
-                # 调用失败（无name()方法），直接判定不是代币
-                logger.debug(f"[{norm_addr}] 无name()方法或调用失败: {str(e)}")
-                return (False, "")
-            
-            # 5. 排除常见合约（避免误判）
-            keywords = ["swap", "pair", "router", "transfer","order"]
-            if any(keyword in token_name.lower() for keyword in keywords):
-                logger.debug(f"[{norm_addr}] 名称包含关键词，排除: {token_name}")
-                return (False, "")
-            
-            logger.info(f"[{norm_addr}] 识别为代币，名称: {token_name}")
-            return (True, token_name)
+        识别所有ERC20合约（代理+逻辑合约）并返回完整映射
+        参数:
+            initial_contracts: 初始识别的合约地址集合
+            steps: 标准化的trace步骤列表
+        返回:
+            erc20_token_map: 所有ERC20地址(代理+逻辑)->代币名称的映射
+            all_contracts: 更新后的完整合约地址集合（含逻辑合约）
+        """
+        erc20_token_map = {}
+        all_contracts = set(initial_contracts)  # 复制初始集合避免遍历异常
         
-        except Exception as e:
-            logger.debug(f"[{contract_address}] 代币检查失败: {str(e)}")
-            return (False, "") 
+        # 1. 遍历初始合约，识别ERC20代理合约
+        for contract_addr in all_contracts:
+            norm_addr = self._normalize_address(contract_addr)
+            if not norm_addr:
+                continue
+
+            try:
+                # 检查字节码
+                bytecode = self._get_code_cached(norm_addr)
+                if not bytecode:
+                    continue
+
+                # 调用name()方法判断是否为ERC20
+                ONLY_NAME_ABI = [{"constant":True,"inputs":[],"name":"name","outputs":[{"name":"","type":"string"}],"payable":False,"stateMutability":"view","type":"function"}]
+                name_contract = self.web3.eth.contract(address=Web3.to_checksum_address(norm_addr), abi=ONLY_NAME_ABI)
+                token_name = name_contract.functions.name().call().strip()
+                
+                # 过滤无效/非代币名称
+                if not token_name or any(key in token_name.lower() for key in ["swap", "pair", "router", "transfer","order"]):
+                    continue
+
+                # 2. 识别成功：添加代理合约到映射
+                erc20_token_map[norm_addr] = token_name
+                logger.info(f"[{norm_addr}] 识别为ERC20代理合约: {token_name}")
+
+                # 3. 查找该代理合约的DELEGATECALL目标（逻辑合约）
+                for step in steps:
+                    if step["opcode"] == "DELEGATECALL" and step["address"] == norm_addr and len(step["stack"]) >= 7:
+                        logic_addr = self._normalize_address(step["stack"][-2])
+                        if logic_addr and logic_addr not in erc20_token_map:
+                            erc20_token_map[logic_addr] = token_name  # 逻辑合约复用代理合约名称
+                            all_contracts.add(logic_addr)  # 逻辑合约加入总合约集合
+                            logger.info(f"[{norm_addr}] 关联逻辑合约: {logic_addr} (名称: {token_name})")
+
+            except Exception as e:
+                logger.debug(f"[{contract_addr}] ERC20检查失败: {str(e)}")
+                continue
+
+        return erc20_token_map, all_contracts
         
     # 获取代币精度
     @lru_cache(maxsize=1024)
@@ -254,7 +257,7 @@ class TraceFormatter:
         - tx_hash
         - steps: 标准化的 steps 列表（保持原来格式）
         - contracts_addresses: list（在遍历 CALL 时识别到的合约地址）
-        - erc20_token_map: dict（ERC20合约地址 -> token名称）
+        - erc20_token_map: dict（ERC20合约地址 -> token名称，包含代理和逻辑合约）
         - slot_map: slot -> normalized address 映射（通过 steps 计算）
         - users_addresses: 最终用户地址集合（由 addresses_from_slots 与中间的 users_addresses_from_CALL 合并去重并减去contracts_addresses）
         - tx_sender_address: 交易发起者（from）地址
@@ -396,13 +399,10 @@ class TraceFormatter:
             # 中间过程 users_addresses_from_CALL 已收集完毕（但不返回）
             print(f"通过 CALL 类指令识别到合约地址数量: {len(contracts_addresses)}，用户地址数量: {len(users_addresses_from_CALL)}")
             
-            # ========== 新增：检查ERC20代币并建立地址-名称映射 ==========
-            erc20_token_map: Dict[str, str] = {}
-            for contract_addr in contracts_addresses:
-                is_erc20, token_name = self._check_if_erc20_and_get_name(contract_addr)
-                if is_erc20:
-                    erc20_token_map[contract_addr] = token_name or "未知ERC20代币"
-            print(f"识别出ERC20代币数量: {len(erc20_token_map)}")    
+            # 识别所有ERC20合约（代理合约+逻辑合约）
+            erc20_token_map, contracts_addresses = self.identify_erc20_contracts(contracts_addresses, steps)
+            # 可选：打印识别结果
+            print(f"识别出ERC20代理+逻辑合约总数: {len(erc20_token_map)}，更新后合约地址总数: {len(contracts_addresses)}") 
 
             # final_users_addresses = （addresses_from_slots ∪ users_addresses_from_CALL \\ contracts_addresses）
             slot_map = self.extract_slot_address_map({"steps": steps})
@@ -429,7 +429,7 @@ class TraceFormatter:
                 "tx_hash": tx_hash,
                 "steps": steps,
                 "contracts_addresses": sorted(list(contracts_addresses)),
-                "erc20_token_map": erc20_token_map,  # 新增：ERC20地址->名称映射
+                "erc20_token_map": erc20_token_map,  # 新增：ERC20地址->名称映射（包含代理和逻辑合约）
                 "slot_map": slot_map,
                 "users_addresses": sorted(list(final_users_addresses_set)),
                 "full_address_name_map": full_address_name_map,
