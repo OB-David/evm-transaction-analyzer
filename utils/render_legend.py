@@ -9,7 +9,8 @@ from matplotlib.patches import Rectangle, Ellipse, FancyArrowPatch, Polygon
 EDGE_OPCODE_MAP = {
     "NORMAL": "Non-terminating opcodes",
     "JUMP": "JUMP, JUMPI",
-    "CALL": "CALL, CALLCODE, DELEGATECALL, STATICCALL",
+    "CALL": "CALL, CALLCODE, STATICCALL",
+    "DELEGATECALL": "DELEGATECALL",
     "TERMINATE": "RETURN, STOP, REVERT, INVALID, SELFDESTRUCT"
 }
 
@@ -33,9 +34,6 @@ def render_legend_matplotlib(
     contract_to_color = addr_color_map or {}
     users_addresses = users_addresses or []
 
-    # 预处理名称映射（转小写，避免地址大小写问题）
-    full_name_map_lower = {addr.lower(): name for addr, name in full_address_name_map.items()}
-    erc20_token_map_lower = {addr.lower(): val for addr, val in erc20_token_map.items()} if erc20_token_map else {}
 
     # 创建画布
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
@@ -111,10 +109,10 @@ def render_legend_matplotlib(
             
         contract_addr_lower = contract_addr.lower()
         # 获取合约名称
-        contract_name = full_name_map_lower.get(contract_addr_lower)
+        contract_name = full_address_name_map.get(contract_addr_lower)
         
         # 区分Token合约和普通合约
-        if contract_addr_lower in erc20_token_map_lower:
+        if contract_addr_lower in erc20_token_map:
             token_contracts.append((contract_name, contract_addr, color))
         else:
             normal_contracts.append((contract_name, contract_addr, color))

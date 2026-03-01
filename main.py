@@ -8,6 +8,7 @@ from utils.cfg_transaction import CFGConstructor
 from utils.render_cfg import render_transaction
 from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_cfg, edge_link_to_json
 from utils.render_legend import render_legend_matplotlib
+from utils.render_token_table import generate_table_excel
 
 # 加载环境变量
 load_dotenv()
@@ -36,8 +37,9 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
     ]
     EDGE_COLOR_MAP = {
         "NORMAL": "#939393",
-        "JUMP": "#000000",
+        "JUMP": "#242424",
         "CALL": "#1F6800",
+        "DELEGATECALL": "#009DFF",
         "TERMINATE": "#C14A00",
     }
 
@@ -66,6 +68,7 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
     
     # 保存代币交易流图的DOT文件
     token_flow_dot_path = os.path.join(result_dir, "asset_flow.dot")
+    print(pairs)
     render_asset_flow(pairs, annotations, users_addresses, full_address_name_map, pending_erc20, addr_color_map, token_flow_dot_path)
     print(f"代币交易流图DOT文件已保存到: {token_flow_dot_path}.dot")
 
@@ -110,8 +113,14 @@ def main():
         # 5. 构建交易级控制流图(CFG)
         print("正在构建交易级控制流图...")
         cfg_constructor = CFGConstructor(all_blocks)
-        tx_cfg, all_changes = cfg_constructor.construct_cfg(standardized_trace, slot_map, erc20_token_map)
+        tx_cfg, all_changes, table = cfg_constructor.construct_cfg(standardized_trace, slot_map, erc20_token_map)
         print(f"成功构建交易级CFG，包含 {len(tx_cfg.nodes)} 个节点和 {len(tx_cfg.edges)} 条边\n")
+
+        # # 生成表格数据
+        # print("正在生成表格数据...")
+        # table_path = os.path.join(result_dir, "token_changes_table.xlsx")       
+        # generate_table_excel(table, table_path)
+        # print(f"表格数据已保存到: {table_path}\n")
 
         # 6. 构建代币交易流，生成边与基本块的映射
         print("正在提取代币交易流...")

@@ -353,6 +353,7 @@ class CFGConstructor:
             current_opcode = current_step["opcode"]
             current_stack = current_step.get("stack", [])
             current_address = current_step["address"]
+            RW_address = current_step["RW_address"]
 
             # 处理JUMPDEST
             if current_opcode == "JUMPDEST":
@@ -397,7 +398,7 @@ class CFGConstructor:
                     self.table.append({
                         "pc": current_pc,
                         "op": "CALL",
-                        "from": current_address,
+                        "from": RW_address,
                         "to": to_addr,
                         "token_name": "ETH",
                         "token_address": "ETH",
@@ -406,7 +407,7 @@ class CFGConstructor:
 
                     all_changes.append({
                         "type": "ETH_TRANSFER",
-                        "from_address": current_address,
+                        "from_address": RW_address,
                         "to_address": to_addr,
                         "eth_value": str(eth_value),
                         "pc": current_pc
@@ -417,7 +418,7 @@ class CFGConstructor:
                 slot_hex = current_stack[-1].lower()
                 if slot_hex in slot_map:
                     from_addr = slot_map[slot_hex]
-                    token_name = self._get_token_name_by_address(current_address, erc20_token_map)
+                    token_name = self._get_token_name_by_address(RW_address, erc20_token_map)
                     if token_name != "":
                         balance_hex = "0x0"
                         if current_step_idx + 1 < len(steps):
@@ -443,7 +444,7 @@ class CFGConstructor:
                 balance_hex = current_stack[-2]
                 if slot_hex in slot_map:
                     to_addr = slot_map[slot_hex]
-                    token_name = self._get_token_name_by_address(current_address, erc20_token_map)
+                    token_name = self._get_token_name_by_address(RW_address, erc20_token_map)
                     if token_name != "":
                         self.table.append({
                             "pc": current_pc,
@@ -517,4 +518,4 @@ class CFGConstructor:
         self._fill_actions_from_table(cfg)
         self._fold_linear_chains(cfg)
 
-        return cfg, all_changes
+        return cfg, all_changes, self.table

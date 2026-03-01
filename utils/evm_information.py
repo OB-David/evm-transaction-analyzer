@@ -195,7 +195,7 @@ class TraceFormatter:
                     if step["opcode"] == "DELEGATECALL" and step["address"] == norm_addr and len(step["stack"]) >= 7:
                         logic_addr = self._normalize_address(step["stack"][-2])
                         if logic_addr and logic_addr not in erc20_token_map:
-                            erc20_token_map[logic_addr] = token_name  # 逻辑合约复用代理合约名称
+                            erc20_token_map[logic_addr] = f"{token_name.strip()}_logic"
                             all_contracts.add(logic_addr)  # 逻辑合约加入总合约集合
                             logger.info(f"[{norm_addr}] 关联逻辑合约: {logic_addr} (名称: {token_name})")
 
@@ -289,6 +289,10 @@ class TraceFormatter:
             next_address = initial_address
             call_stack = [initial_address] if initial_address else []
 
+            RW_address = initial_address  # 记录当前上下文的读写地址
+            next_RW_address = initial_address
+            RW_stack = [initial_address] if initial_address else []
+
             # 新增：在遍历时收集 contracts_addresses 和 users_addresses_from_CALL（后者为中间变量，不返回）
             contracts_addresses: Set[str] = set()
             users_addresses_from_CALL: Set[str] = set()
@@ -355,10 +359,15 @@ class TraceFormatter:
                         if is_valid_address and is_next_pc_zero:
                             call_stack.append(current_address)
                             next_address = to_address
+                            if opcode in {"CALL", "CALLCODE", "STATICCALL"}:
+                                RW_stack.append(RW_address)
+                                next_RW_address = to_address
                         else:
                             next_address = current_address
+                            next_RW_address = RW_address
                     else:
                         next_address = current_address
+                        next_RW_address = RW_address
 
                 # CREATE 类指令
                 elif opcode in ["CREATE", "CREATE2"]:
@@ -371,12 +380,17 @@ class TraceFormatter:
                             if next_step_pc == "0x0" and new_address:
                                 call_stack.append(current_address)
                                 next_address = new_address
+                                RW_stack.append(current_address)
+                                next_RW_address = new_address
                             else:
                                 next_address = current_address
+                                next_RW_address = RW_address
                         else:
                             next_address = current_address
+                            next_RW_address = RW_address
                     else:
                         next_address = current_address
+                        next_RW_address = RW_address
 
                 # 终止指令
                 elif opcode in {"STOP", "RETURN", "REVERT", "INVALID", "SELFDESTRUCT"}:
@@ -384,10 +398,15 @@ class TraceFormatter:
                         next_address = call_stack.pop()
                     else:
                         next_address = current_address
+                    if len(RW_stack) > 1:
+                        next_RW_address = RW_stack.pop()
+                    else:
+                        next_RW_address = RW_address
 
                 # 记录当前步骤（保持原来格式）
                 steps.append({
                     "address": current_address,
+                    "RW_address": RW_address,
                     "pc": self._normalize_pc(pc),
                     "opcode": opcode,
                     "gascost": gascost,
@@ -395,6 +414,7 @@ class TraceFormatter:
                 })
 
                 current_address = next_address
+                RW_address = next_RW_address
 
             # 中间过程 users_addresses_from_CALL 已收集完毕（但不返回）
             print(f"通过 CALL 类指令识别到合约地址数量: {len(contracts_addresses)}，用户地址数量: {len(users_addresses_from_CALL)}")
