@@ -38,6 +38,7 @@ def pair_transactions(all_changes, token_decimals_map=None):
             order_counter += 1
             paired.append({
                 "order": order_counter,
+                "codecontract_address": c["codecontract_address"],
                 "from": c["from_address"],
                 "to": c["to_address"],
                 "amount": formatted_val,
@@ -55,6 +56,7 @@ def pair_transactions(all_changes, token_decimals_map=None):
         token_name = c["token_name"]
         user = c["user_address"]
         val = int(c["changed_balance"])
+        codecontract_address = c["codecontract_address"]
 
         decimals = 18
         if token_decimals_map and token_addr in token_decimals_map:
@@ -62,6 +64,7 @@ def pair_transactions(all_changes, token_decimals_map=None):
 
         c_structured = {
             "order": order_counter,
+            "codecontract_address": codecontract_address,
             "user": user,
             "value": val,
             "token": token_name,
@@ -74,6 +77,7 @@ def pair_transactions(all_changes, token_decimals_map=None):
             order_counter += 1
             pending_erc20[token_addr] = {
             "order": order_counter,
+            "codecontract_address": codecontract_address,
             "user": user,
             "value": val,
             "token": token_name,
@@ -94,6 +98,8 @@ def pair_transactions(all_changes, token_decimals_map=None):
                 paired.append({
                     "order": prev["order"],
                     "from": sender.get("user"),
+                    "from_codecontract": sender.get("codecontract_address"),
+                    "to_codecontract": receiver.get("codecontract_address"),
                     "to": receiver.get("user"),
                     "amount": formatted_val,
                     "token": token_name,
@@ -203,18 +209,26 @@ def render_asset_flow(paired, node_annotations, users_addresses, full_address_na
     return dot
 
 # --- 后续的 afg_to_cfg 和序列化函数保持不变 ---
-def afg_to_cfg(paired, pending_erc20, cfg_constructor: CFGConstructor, tx_cfg: CFG):
+def afg_to_cfg(paired, pending_erc20, cfg_constructor: CFGConstructor, tx_cfg: CFG, folded_node_map):
     edge_link = []
     for p in paired:
         if p["token"] == "ETH":
-            matched_block = cfg_constructor.find_node_by_pc_address(tx_cfg, p["from"], p["source_pcs"][0])
+            matched_block = cfg_constructor.find_node_by_pc_address(tx_cfg, p["codecontract_address"], p["source_pcs"][0]).id
             if matched_block:
                edge_link.append({"edge_id": p["order"], "type": "ETH_TRANSFER", "matched_blocks": matched_block})
         else:
             # ERC20 Transfer 配对
-            blocks = {k: cfg_constructor.find_node_by_pc_address(tx_cfg, p["token_addr"], p["source_pcs"][v]) 
-                      for k, v in [("s_l", "sender_sload_pc"), ("s_s", "sender_sstore_pc"), 
-                                   ("r_l", "receiver_sload_pc"), ("r_s", "receiver_sstore_pc")]}
+            # from_codecontract_address 对应的 sload/sstore
+            s_l = cfg_constructor.find_node_by_pc_address(tx_cfg, p["from_codecontract"], p["source_pcs"]["sender_sload_pc"]).id
+            s_s = cfg_constructor.find_node_by_pc_address(tx_cfg, p["from_codecontract"], p["source_pcs"]["sender_sstore_pc"]).id
+            r_l = cfg_constructor.find_node_by_pc_address(tx_cfg, p["to_codecontract"], p["source_pcs"]["receiver_sload_pc"]).id
+            r_s = cfg_constructor.find_node_by_pc_address(tx_cfg, p["to_codecontract"], p["source_pcs"]["receiver_sstore_pc"]).id
+            blocks = {
+                "s_l": next((rid for rid, nids in folded_node_map.items() if s_l in nids), s_l),
+                "s_s": next((rid for rid, nids in folded_node_map.items() if s_s in nids), s_s),
+                "r_l": next((rid for rid, nids in folded_node_map.items() if r_l in nids), r_l),
+                "r_s": next((rid for rid, nids in folded_node_map.items() if r_s in nids), r_s),
+            }
             if all(blocks.values()):
                 edge_link.append({
                     "edge_id": p["order"], "type": "ERC20_TOKEN_TRANSFER",
@@ -222,8 +236,10 @@ def afg_to_cfg(paired, pending_erc20, cfg_constructor: CFGConstructor, tx_cfg: C
                 })  
 
     for v in pending_erc20.values():
-        sload_block = cfg_constructor.find_node_by_pc_address(tx_cfg, v["token_addr"], v["source_pcs"][0])
-        sstore_block = cfg_constructor.find_node_by_pc_address(tx_cfg, v["token_addr"], v["source_pcs"][1])
+        sload_block = cfg_constructor.find_node_by_pc_address(tx_cfg, v["token_addr"], v["source_pcs"][0]).id
+        sload_block = next((rid for rid, nids in folded_node_map.items() if sload_block in nids), sload_block)
+        sstore_block = cfg_constructor.find_node_by_pc_address(tx_cfg, v["token_addr"], v["source_pcs"][1]).id
+        sstore_block = next((rid for rid, nids in folded_node_map.items() if sstore_block in nids), sstore_block)
         edge_link.append({
             "edge_id": v["order"], "type": "ERC20_BALANCE_CHANGE",
             "matched_blocks": [sload_block, sstore_block]
@@ -232,22 +248,18 @@ def afg_to_cfg(paired, pending_erc20, cfg_constructor: CFGConstructor, tx_cfg: C
     edge_link.sort(key=lambda x: x["edge_id"])
     return edge_link
 
-def serialize_block_node(node):
-    return {"BlockID": node.id} if node else None
+
 
 def edge_link_to_json(edge_link):
-    serializable_list = []
-    for item in edge_link:
-        entry = {"edge_id": item["edge_id"], "type": item["type"]}
-        raw = item["matched_blocks"]
-        if item["type"] == "ETH_TRANSFER":
-            entry["matched_blocks"] = serialize_block_node(raw)
-        elif item["type"] == "ERC20_TOKEN_TRANSFER":
-            entry["matched_blocks"] = {
-                "sender": [serialize_block_node(n) for n in raw["sender"]],
-                "receiver": [serialize_block_node(n) for n in raw["receiver"]]
-            }
-        elif item["type"] == "ERC20_BALANCE_CHANGE":
-            entry["matched_blocks"] = [serialize_block_node(n) for n in raw]
-        serializable_list.append(entry)
-    return json.dumps(serializable_list, indent=4, ensure_ascii=False)
+    """
+    将全ID格式的edge_link序列化为JSON字符串
+    :param edge_link: afg_to_cfg函数返回的列表（全ID格式）
+    :return: 格式化的JSON字符串
+    """
+    # 直接序列化，因为edge_link全是基础类型（ID为str/int，无对象）
+    return json.dumps(
+        edge_link,
+        indent=4,        # 缩进4格，美观易读
+        ensure_ascii=False,  # 支持特殊字符（如合约地址）
+        sort_keys=False  # 保持原有字段顺序，不打乱edge_id/type等
+    )

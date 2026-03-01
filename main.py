@@ -8,7 +8,7 @@ from utils.cfg_transaction import CFGConstructor
 from utils.render_cfg import render_transaction
 from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_cfg, edge_link_to_json
 from utils.render_legend import render_legend_matplotlib
-from utils.render_token_table import generate_table_excel
+# from utils.render_token_table import generate_table_excel
 
 # 加载环境变量
 load_dotenv()
@@ -68,7 +68,6 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
     
     # 保存代币交易流图的DOT文件
     token_flow_dot_path = os.path.join(result_dir, "asset_flow.dot")
-    print(pairs)
     render_asset_flow(pairs, annotations, users_addresses, full_address_name_map, pending_erc20, addr_color_map, token_flow_dot_path)
     print(f"代币交易流图DOT文件已保存到: {token_flow_dot_path}.dot")
 
@@ -76,7 +75,7 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
 def main():
     # 配置参数
     PROVIDER_URL = os.environ.get("GETH_API")
-    TX_HASH = "0x9086653927f4385925bb07c573ac2fa0aa41a1bfc0af532b5007a0ec5d6dbca5"
+    TX_HASH = "0x840ecb2b5d55a682afd529138b36e97992eda9706e206237b57ec4697e4f8186"
 
     try:
         # 创建结果目录
@@ -113,7 +112,7 @@ def main():
         # 5. 构建交易级控制流图(CFG)
         print("正在构建交易级控制流图...")
         cfg_constructor = CFGConstructor(all_blocks)
-        tx_cfg, all_changes, table = cfg_constructor.construct_cfg(standardized_trace, slot_map, erc20_token_map)
+        tx_cfg, all_changes, folded_node_map, table = cfg_constructor.construct_cfg(standardized_trace, slot_map, erc20_token_map)
         print(f"成功构建交易级CFG，包含 {len(tx_cfg.nodes)} 个节点和 {len(tx_cfg.edges)} 条边\n")
 
         # # 生成表格数据
@@ -131,7 +130,7 @@ def main():
             token_decimals_map[token_addr] = decimals
         # 调用 pair_transactions 时传入精度映射
         pairs, annotations, pending_erc20 = pair_transactions(all_changes, token_decimals_map)
-        edge_link = afg_to_cfg(pairs, pending_erc20, cfg_constructor, tx_cfg)
+        edge_link = afg_to_cfg(pairs, pending_erc20, cfg_constructor, tx_cfg, folded_node_map)
         json_output = edge_link_to_json(edge_link)
         print(f"共提取到 {len(all_changes)} 条资产变更事件，配对成功 {len(pairs)} 对交易流,存在孤立变动{len(annotations)}条\n")
 
