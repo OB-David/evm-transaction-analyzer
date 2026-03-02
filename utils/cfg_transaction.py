@@ -87,26 +87,26 @@ class CFGConstructor:
         self.table = []  # 唯一语义数据来源
 
     # ========== 核心工具函数（修复进制转换） ==========
-    def _safe_hex_to_float(self, value: Any) -> float:
-        """安全转换任意类型的Gas值为浮点数（处理十六进制/空值）"""
+    def _safe_hex_to_int(self, value: Any) -> int:
+        """安全转换任意类型的Gas值为整数（处理十六进制/空值）"""
         if value is None or value == "" or str(value).lower() == "none":
-            return 0.0
+            return 0
         
         try:
-            # 处理十六进制字符串（核心修复）
+            # 处理十六进制字符串
             val_str = str(value).strip().lower()
             if val_str.startswith("0x"):
-                return float(int(val_str, 16))
-            # 处理普通数字字符串/整数/浮点数
-            return float(val_str)
+                return int(val_str, 16)
+            # 处理普通数字字符串/整数
+            return int(val_str)
         except (ValueError, TypeError):
             # 转换失败返回0（避免崩溃）
-            return 0.0
+            return 0
 
     def _get_step_gas_decimal(self, step: StandardizedStep) -> float:
         """获取Step的Gas消耗（修复进制转换）"""
         raw = step.get("gascost")
-        return self._safe_hex_to_float(raw)
+        return self._safe_hex_to_int(raw)
 
     # ========== 线性链路识别与折叠 ==========
     def _get_unique_parents(self, cfg: CFG, node: FoldableBlockNode) -> Set[FoldableBlockNode]:
