@@ -87,26 +87,26 @@ class CFGConstructor:
         self.table = []  # 唯一语义数据来源
 
     # ========== 核心工具函数（修复进制转换） ==========
-    def _safe_hex_to_float(self, value: Any) -> float:
-        """安全转换任意类型的Gas值为浮点数（处理十六进制/空值）"""
+    def _safe_hex_to_int(self, value: Any) -> int:
+        """安全转换任意类型的Gas值为整数（处理十六进制/空值）"""
         if value is None or value == "" or str(value).lower() == "none":
-            return 0.0
+            return 0
         
         try:
-            # 处理十六进制字符串（核心修复）
+            # 处理十六进制字符串
             val_str = str(value).strip().lower()
             if val_str.startswith("0x"):
-                return float(int(val_str, 16))
-            # 处理普通数字字符串/整数/浮点数
-            return float(val_str)
+                return int(val_str, 16)
+            # 处理普通数字字符串/整数
+            return int(val_str)
         except (ValueError, TypeError):
             # 转换失败返回0（避免崩溃）
-            return 0.0
+            return 0
 
     def _get_step_gas_decimal(self, step: StandardizedStep) -> float:
         """获取Step的Gas消耗（修复进制转换）"""
         raw = step.get("gascost")
-        return self._safe_hex_to_float(raw)
+        return self._safe_hex_to_int(raw)
 
     # ========== 线性链路识别与折叠 ==========
     def _get_unique_parents(self, cfg: CFG, node: FoldableBlockNode) -> Set[FoldableBlockNode]:
@@ -145,9 +145,13 @@ class CFGConstructor:
         return chain
 
     def _fold_linear_chains(self, cfg: CFG):
-        """折叠所有线性链路"""
+        """折叠所有线性链路（标记隐藏版本），同时维护根节点到被折叠节点的映射"""
         processed_nodes = set()
         nodes = [n for n in cfg.nodes if isinstance(n, FoldableBlockNode)]
+        
+        # ========== 核心新增：初始化折叠节点映射 ==========
+        # 键：折叠根节点（first_node）；值：被折叠的节点列表（含根节点自身）
+        self.folded_node_map = {}  # 绑定到实例，供外部调用；若仅内部用可改为局部变量
 
         for node in nodes:
             if node in processed_nodes:
@@ -157,10 +161,15 @@ class CFGConstructor:
             chain = self._identify_linear_chain(cfg, node)
             if len(chain) <= 1:  # 非线性链路，跳过
                 processed_nodes.add(node)
+                # 非折叠节点也记录映射（值为自身列表），确保映射全覆盖
+                self.folded_node_map[node.id] = [node.id]
                 continue
             
+            # ========== 新增：根节点关联整个被折叠链路 ==========
+            first_node = chain[0]  # 折叠根节点
+            self.folded_node_map[first_node.id] = [node.id for node in chain]
+
             # 1. 合并链路信息到第一个节点
-            first_node = chain[0]
             other_nodes = chain[1:]
             first_node.merge_fold_info(other_nodes)
 
@@ -181,7 +190,7 @@ class CFGConstructor:
                 setattr(new_edge, "visible", True)  
                 cfg.edges.append(new_edge)
 
-            # 3. 标记中间节点和内部边为隐藏
+            # 3. 标记中间节点和内部边为隐藏（原有逻辑不变）
             for n in other_nodes:
                 setattr(n, "folded", True)
                 setattr(n, "visible", False)
@@ -197,6 +206,10 @@ class CFGConstructor:
             # 标记折叠根节点
             setattr(first_node, "folded", True)
             setattr(first_node, "is_fold_root", True)
+        
+    
+        return self.folded_node_map
+
 
     # ========== 基础工具方法 ==========
     def _find_base_block(self, address: str, pc: str) -> Block:
@@ -257,7 +270,7 @@ class CFGConstructor:
         """从table填充语义信息（ETH/ERC20事件）"""
         node_table_map: Dict[FoldableBlockNode, List[Dict[str, Any]]] = {}
         for item in self.table:
-            addr = item.get("token_address") if item.get("token_address") != "ETH" else item.get("from")
+            addr = item.get("codecontract_address")
             pc = item.get("pc")
             if not addr or not pc:
                 continue
@@ -280,7 +293,7 @@ class CFGConstructor:
                     action_type = "read" if op == "SLOAD" else "write"
 
                     erc20_event = {
-                        "tokenname": item.get("token_name", "") or item.get("token_address", ""),
+                        "tokenname": item.get("token_name", ""),
                         "type": action_type,
                         "user": item.get("from") if action_type == "read" else item.get("to"),
                         "balance": self._normalize_hex_value(item.get("balance/amount", ""))
@@ -353,6 +366,7 @@ class CFGConstructor:
             current_opcode = current_step["opcode"]
             current_stack = current_step.get("stack", [])
             current_address = current_step["address"]
+            RW_address = current_step["RW_address"]
 
             # 处理JUMPDEST
             if current_opcode == "JUMPDEST":
@@ -396,8 +410,9 @@ class CFGConstructor:
                 if value_hex != "0x0":
                     self.table.append({
                         "pc": current_pc,
+                        "codecontract_address": current_address,
                         "op": "CALL",
-                        "from": current_address,
+                        "from": RW_address,
                         "to": to_addr,
                         "token_name": "ETH",
                         "token_address": "ETH",
@@ -406,7 +421,8 @@ class CFGConstructor:
 
                     all_changes.append({
                         "type": "ETH_TRANSFER",
-                        "from_address": current_address,
+                        "codecontract_address": current_address,
+                        "from_address": RW_address,
                         "to_address": to_addr,
                         "eth_value": str(eth_value),
                         "pc": current_pc
@@ -417,7 +433,7 @@ class CFGConstructor:
                 slot_hex = current_stack[-1].lower()
                 if slot_hex in slot_map:
                     from_addr = slot_map[slot_hex]
-                    token_name = self._get_token_name_by_address(current_address, erc20_token_map)
+                    token_name = self._get_token_name_by_address(RW_address, erc20_token_map)
                     if token_name != "":
                         balance_hex = "0x0"
                         if current_step_idx + 1 < len(steps):
@@ -426,11 +442,12 @@ class CFGConstructor:
                         
                         self.table.append({
                             "pc": current_pc,
+                            "codecontract_address": current_address,
                             "op": "SLOAD",
                             "from": from_addr,
                             "to": None,
                             "token_name": token_name,
-                            "token_address": current_address,
+                            "token_address": RW_address,
                             "balance/amount": self._normalize_hex_value(balance_hex)
                         })
 
@@ -443,15 +460,16 @@ class CFGConstructor:
                 balance_hex = current_stack[-2]
                 if slot_hex in slot_map:
                     to_addr = slot_map[slot_hex]
-                    token_name = self._get_token_name_by_address(current_address, erc20_token_map)
+                    token_name = self._get_token_name_by_address(RW_address, erc20_token_map)
                     if token_name != "":
                         self.table.append({
                             "pc": current_pc,
+                            "codecontract_address": current_address,
                             "op": "SSTORE",
                             "from": None,
                             "to": to_addr,
                             "token_name": token_name,
-                            "token_address": current_address,
+                            "token_address": RW_address,
                             "balance/amount": self._normalize_hex_value(balance_hex)
                         })
                         balance_traces[(current_address, to_addr)]["SSTORE"] = self._normalize_hex_value(balance_hex)
@@ -467,7 +485,8 @@ class CFGConstructor:
                             if diff != 0:
                                 all_changes.append({
                                     "type": "ERC20_BALANCE_CHANGE",
-                                    "erc20_token_address": current_address,
+                                    "codecontract_address": current_address,
+                                    "erc20_token_address": RW_address,
                                     "token_name": token_name,
                                     "user_address": to_addr,
                                     "changed_balance": str(diff),
@@ -515,6 +534,6 @@ class CFGConstructor:
 
         # 填充语义信息+折叠线性链路
         self._fill_actions_from_table(cfg)
-        self._fold_linear_chains(cfg)
+        folded_node_map = self._fold_linear_chains(cfg)
 
-        return cfg, all_changes
+        return cfg, all_changes, folded_node_map, self.table
