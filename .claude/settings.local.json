@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"C:/Users/lanhe/Desktop/evm-transaction-analyzer\" && npm create vite@latest frontend -- --template vue-ts 2>&1)",
+      "Bash(cd \"C:/Users/lanhe/Desktop/evm-transaction-analyzer/frontend\" && npm install 2>&1)",
+      "Bash(echo EXIT: $?:*)"
+    ]
+  }
+}
