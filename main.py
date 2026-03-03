@@ -21,7 +21,7 @@ except Exception:
 def main():
     # 配置参数
     PROVIDER_URL = os.environ.get("GETH_API")
-    TX_HASH = "0x524a646c580e69eee16b7f44b9a48cec8e7bbb029802f123be1b84fc1f67d5e4"
+    TX_HASH = "0x840ecb2b5d55a682afd529138b36e97992eda9706e206237b57ec4697e4f8186"
 
     try:
         # ========== 前置检查 ==========
@@ -136,12 +136,6 @@ def main():
         print("详细错误堆栈：")
         traceback.print_exc()
 
-if __name__ == "__main__":
-    main()
-
-
-
-
 def create_result_directory(tx_hash: str) -> str:
     """创建结果目录结构: Result/交易哈希/"""
     # 移除交易哈希中的0x前缀
@@ -195,3 +189,11 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
     token_flow_dot_path = os.path.join(result_dir, "asset_flow.dot")
     render_asset_flow(pairs, annotations, users_addresses, full_address_name_map, pending_erc20, addr_color_map, token_flow_dot_path)
     print(f"代币交易流图DOT文件已保存到: {token_flow_dot_path}.dot")
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+

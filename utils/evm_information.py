@@ -220,23 +220,96 @@ class TraceFormatter:
     @lru_cache(maxsize=1024)
     def get_token_decimals(self, token_address: str) -> int:
         """
-        获取 ERC20 代币的精度（decimals），失败时返回 18
+        获取代币精度：
+        - ERC20代币：返回实际decimals，失败返回18
+        - NFT（ERC721/ERC1155）：返回1（NFT无精度概念，兜底值）
+        - 其他合约/无效地址：ERC20逻辑失败后返回18
         """
         try:
+            # 步骤1：地址格式化校验
             norm_addr = self._normalize_address(token_address)
             if not norm_addr:
+                logger.debug(f"代币地址 {token_address} 格式无效，ERC20兜底返回18")
                 return 18
             checksum_addr = Web3.to_checksum_address(norm_addr)
 
-            # 只包含 decimals() 的 ABI
+            # 步骤2：先判断是否是NFT合约（核心逻辑）
+            is_nft, nft_type = self._is_nft_contract(checksum_addr)
+            if is_nft:
+                logger.debug(f"{token_address} 是{nft_type} NFT，返回精度1")
+                return 0
+
+            # 步骤3：非NFT，按ERC20逻辑查询decimals
             DECIMALS_ABI = [{"constant": True, "inputs": [], "name": "decimals", "outputs": [{"name": "", "type": "uint8"}], "type": "function"}]
             contract = self.web3.eth.contract(address=checksum_addr, abi=DECIMALS_ABI)
-
+            
             decimals = contract.functions.decimals().call()
-            return int(decimals)
+            decimals_int = int(decimals)
+            # 额外校验：ERC20精度应在1-18之间，避免异常值
+            if 1 <= decimals_int <= 18:
+                logger.debug(f"获取 {token_address} ERC20精度成功: {decimals_int}")
+                return decimals_int
+            else:
+                logger.warning(f"{token_address} ERC20精度异常({decimals_int})，返回默认18")
+                return 18
+
         except Exception as e:
-            logger.debug(f"获取 {token_address} 精度失败: {e}，使用默认 18")
+            # 异常分支：非NFT+ERC20查询失败 → 返回18；NFT判断失败仍走ERC20兜底
+            logger.debug(f"获取 {token_address} 精度失败: {e}，非NFT则返回ERC20默认18")
             return 18
+
+    def _is_nft_contract(self, checksum_addr: str) -> tuple[bool, str]:
+        """
+        内部辅助函数：判断是否是NFT合约（ERC721/ERC1155）
+        返回：(是否是NFT, NFT类型/空字符串)
+        """
+        try:
+            # 先检查是否是合约地址（非合约直接排除）
+            code = self.web3.eth.get_code(checksum_addr)
+            if len(code) == 0:
+                return (False, "")
+
+            # 定义supportsInterface ABI（NFT判断核心）
+            INTERFACE_ABI = [
+                {
+                    "constant": True,
+                    "inputs": [{"name": "interfaceId", "type": "bytes4"}],
+                    "name": "supportsInterface",
+                    "outputs": [{"name": "", "type": "bool"}],
+                    "type": "function"
+                }
+            ]
+            contract = self.web3.eth.contract(address=checksum_addr, abi=INTERFACE_ABI)
+
+            # 检查ERC721接口（标准NFT）
+            ERC721_INTERFACE_ID = "0x80ac58cd"
+            if contract.functions.supportsInterface(ERC721_INTERFACE_ID).call():
+                return (True, "ERC721")
+
+            # 检查ERC1155接口（多类型NFT）
+            ERC1155_INTERFACE_ID = "0xd9b67a26"
+            if contract.functions.supportsInterface(ERC1155_INTERFACE_ID).call():
+                return (True, "ERC1155")
+
+            # 兼容非标NFT：检查ERC721核心方法ownerOf
+            ERC721_OWNEROF_ABI = [
+                {"constant":True,"inputs":[{"name":"tokenId","type":"uint256"}],
+                "name":"ownerOf","outputs":[{"name":"","type":"address"}],"type":"function"}
+            ]
+            erc721_contract = self.web3.eth.contract(address=checksum_addr, abi=ERC721_OWNEROF_ABI)
+            try:
+                # 仅测试方法是否存在，传入任意tokenId（0）
+                erc721_contract.functions.ownerOf(0).call()
+                return (True, "ERC721（非标）")
+            except:
+                pass
+
+            # 非NFT合约
+            return (False, "")
+
+        except Exception as e:
+            logger.debug(f"判断 {checksum_addr} 是否为NFT失败: {e}，按ERC20处理")
+            return (False, "")
 
     def _strip_0x(self, s: str) -> str:
         '''
