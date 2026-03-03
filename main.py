@@ -1,5 +1,6 @@
 import json
 import os
+from web3 import Web3
 from typing import Dict, List, Any
 from dotenv import load_dotenv
 from utils.evm_information import TraceFormatter
@@ -17,67 +18,37 @@ try:
 except Exception:
     pass
 
-def create_result_directory(tx_hash: str) -> str:
-    """创建结果目录结构: Result/交易哈希/"""
-    # 移除交易哈希中的0x前缀
-    tx_dir_name = tx_hash.lstrip('0x')
-    # 构建完整目录路径
-    result_dir = os.path.join("Result", tx_dir_name)
-    # 创建目录（如果不存在）
-    os.makedirs(result_dir, exist_ok=True)
-    return result_dir
-
-def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]]):
-    '''渲染并保存所有图：交易级CFG图、CFG图例、代币交易流图'''
-
-    # 定义Tx_CFG,Asset_Flow和图例的共用颜色规则
-    CONTRACT_COLORS = [
-    "#FF9E9E", "#81C784", "#64B5F6", "#BA68C8", "#FFCD07", 
-    "#4DD0E1", "#FD9800", "#F48FB1", "#AED581", "#7986CB"
-    ]
-    EDGE_COLOR_MAP = {
-        "NORMAL": "#939393",
-        "JUMP": "#242424",
-        "CALL": "#1F6800",
-        "DELEGATECALL": "#009DFF",
-        "TERMINATE": "#C14A00",
-    }
-
-    # 保存交易级CFG的DOT文件
-    tx_dot_path = os.path.join(result_dir, "transaction_cfg")
-    addr_color_map = render_transaction(
-        contract_colors = CONTRACT_COLORS,
-        edge_color_map = EDGE_COLOR_MAP,
-        cfg=tx_cfg, 
-        output_path=tx_dot_path, 
-        full_address_name_map = full_address_name_map, 
-        erc20_token_map = erc20_token_map,
-        rankdir="TB")
-    print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
-
-    # 保存图例 
-    print("正在生成CFG图例...")
-    render_legend_matplotlib(
-        addr_color_map=addr_color_map,
-        edge_color_map = EDGE_COLOR_MAP,                       
-        full_address_name_map=full_address_name_map,
-        erc20_token_map=erc20_token_map,        
-        users_addresses=users_addresses,             
-        output_path=tx_dot_path)          
-    print(f"CFG图例已保存到: {tx_dot_path}_legend.svg")
-    
-    # 保存代币交易流图的DOT文件
-    token_flow_dot_path = os.path.join(result_dir, "asset_flow.dot")
-    render_asset_flow(pairs, annotations, users_addresses, full_address_name_map, pending_erc20, addr_color_map, token_flow_dot_path)
-    print(f"代币交易流图DOT文件已保存到: {token_flow_dot_path}.dot")
-
-
 def main():
     # 配置参数
     PROVIDER_URL = os.environ.get("GETH_API")
-    TX_HASH = "0x840ecb2b5d55a682afd529138b36e97992eda9706e206237b57ec4697e4f8186"
+    TX_HASH = "0x524a646c580e69eee16b7f44b9a48cec8e7bbb029802f123be1b84fc1f67d5e4"
 
     try:
+        # ========== 前置检查 ==========
+        print(f"正在检查交易 {TX_HASH} 的基础信息...")
+        
+        # 初始化Web3
+        web3 = Web3(Web3.HTTPProvider(PROVIDER_URL))
+        if not web3.is_connected():
+            raise Exception(f"无法连接到以太坊节点: {PROVIDER_URL}")
+        
+        # 获取交易信息
+        tx = web3.eth.get_transaction(TX_HASH)
+        to_address = tx.get('to')
+        
+        # 检查1：无to_address → 合约创建交易
+        if to_address is None or to_address == "":
+            print("This contract creation transaction is not the type of transaction we are concerned about.")
+            return
+        
+        # 检查2：to_address不是合约地址 → 普通ETH转账
+        contract_code = web3.eth.get_code(to_address)
+        if len(contract_code) == 0:
+            print("This ETH transfer transaction is not the type of transaction we are concerned about.")
+            return
+
+
+        # 通过检查后开始分析
         # 创建结果目录
         result_dir = create_result_directory(TX_HASH)
         print(f"所有结果将保存到: {os.path.abspath(result_dir)}\n")
@@ -167,3 +138,60 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+def create_result_directory(tx_hash: str) -> str:
+    """创建结果目录结构: Result/交易哈希/"""
+    # 移除交易哈希中的0x前缀
+    tx_dir_name = tx_hash.lstrip('0x')
+    # 构建完整目录路径
+    result_dir = os.path.join("Result", tx_dir_name)
+    # 创建目录（如果不存在）
+    os.makedirs(result_dir, exist_ok=True)
+    return result_dir
+
+def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]]):
+    '''渲染并保存所有图：交易级CFG图、CFG图例、代币交易流图'''
+
+    # 定义Tx_CFG,Asset_Flow和图例的共用颜色规则
+    CONTRACT_COLORS = [
+    "#FF9E9E", "#81C784", "#64B5F6", "#BA68C8", "#FFCD07", 
+    "#4DD0E1", "#FD9800", "#F48FB1", "#AED581", "#7986CB"
+    ]
+    EDGE_COLOR_MAP = {
+        "NORMAL": "#939393",
+        "JUMP": "#242424",
+        "CALL": "#1F6800",
+        "DELEGATECALL": "#009DFF",
+        "TERMINATE": "#C14A00",
+    }
+
+    # 保存交易级CFG的DOT文件
+    tx_dot_path = os.path.join(result_dir, "transaction_cfg")
+    addr_color_map = render_transaction(
+        contract_colors = CONTRACT_COLORS,
+        edge_color_map = EDGE_COLOR_MAP,
+        cfg=tx_cfg, 
+        output_path=tx_dot_path, 
+        full_address_name_map = full_address_name_map, 
+        erc20_token_map = erc20_token_map,
+        rankdir="TB")
+    print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
+
+    # 保存图例 
+    print("正在生成CFG图例...")
+    render_legend_matplotlib(
+        addr_color_map=addr_color_map,
+        edge_color_map = EDGE_COLOR_MAP,                       
+        full_address_name_map=full_address_name_map,
+        erc20_token_map=erc20_token_map,        
+        users_addresses=users_addresses,             
+        output_path=tx_dot_path)          
+    print(f"CFG图例已保存到: {tx_dot_path}_legend.svg")
+    
+    # 保存代币交易流图的DOT文件
+    token_flow_dot_path = os.path.join(result_dir, "asset_flow.dot")
+    render_asset_flow(pairs, annotations, users_addresses, full_address_name_map, pending_erc20, addr_color_map, token_flow_dot_path)
+    print(f"代币交易流图DOT文件已保存到: {token_flow_dot_path}.dot")

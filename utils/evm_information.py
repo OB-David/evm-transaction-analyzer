@@ -125,6 +125,17 @@ class TraceFormatter:
         tx = self.web3.eth.get_transaction(tx_hash)
         return tx.get("to", "")
 
+
+    # 获取当前交易所属区块的矿工地址
+    def get_miner_by_tx_hash(self, tx_hash: str) -> Optional[str]:
+            tx = self.web3.eth.get_transaction(tx_hash)
+            block_number = tx.blockNumber
+            
+            # 3. 根据区块号获取区块详情，提取miner地址
+            block = self.web3.eth.get_block(block_number)
+            miner_address = self.web3.to_checksum_address(block.miner)
+            return miner_address
+
     # 获取交易发起者（from）地址
     def _get_tx_sender_address(self, tx_hash: str) -> str:
         """
@@ -283,8 +294,11 @@ class TraceFormatter:
             struct_logs = raw_trace.get("structLogs", [])
             steps: List[StandardizedStep] = []
 
-            # initial addresses and call stack (原有逻辑)
+            
             initial_address = self._normalize_address(self._get_initial_address(tx_hash))
+
+            miner_address = self._normalize_address(self.get_miner_by_tx_hash(tx_hash))
+
             current_address = initial_address
             next_address = initial_address
             call_stack = [initial_address] if initial_address else []
@@ -295,6 +309,9 @@ class TraceFormatter:
 
             # 新增：在遍历时收集 contracts_addresses 和 users_addresses_from_CALL（后者为中间变量，不返回）
             contracts_addresses: Set[str] = set()
+
+            contracts_addresses.add(initial_address)
+
             users_addresses_from_CALL: Set[str] = set()
 
             for i, step in enumerate(struct_logs):
@@ -342,7 +359,7 @@ class TraceFormatter:
                                 to_address = norm_addr
                                 is_valid_address = True
 
-                                # 新逻辑：如果下一步 pc 是 0x0，则视为合约地址；否则在 hex_len 在 10-40 时视为用户地址
+                                # 如果下一步 pc 是 0x0，则视为合约地址；否则在 hex_len 在 10-40 时视为用户地址
                                 if is_next_pc_zero:
                                     contracts_addresses.add(to_address)
                                 else:
@@ -631,7 +648,8 @@ class TraceFormatter:
         contracts_addresses: Set[str],
         erc20_token_map: Dict[str, str],
         users_addresses: Set[str],
-        tx_sender_address: str = ""  # 新增参数：交易发起者地址
+        tx_sender_address: str = "",    #交易发起者地址
+        miner_address: str = ""  # 矿工地址
     ) -> Dict[str, str]:
         """
         构建全地址-名称映射表：
@@ -653,7 +671,7 @@ class TraceFormatter:
             contract_suffix = chr(ord('a') + idx)
             full_name_map[addr] = f"contract_{contract_suffix}"
         
-        # 3. 处理用户地址（优先处理交易发起者）
+        # 3. 处理用户地址
         sorted_users = sorted(list(users_addresses))
         
         # 3.1 先处理交易发起者，命名为 User_From
@@ -661,7 +679,12 @@ class TraceFormatter:
             full_name_map[tx_sender_address] = "User_From"
             # 从排序后的列表中移除，避免重复命名
             sorted_users.remove(tx_sender_address)
-        
+
+        # 3.2 处理矿工地址，命名为 Miner
+        if miner_address and miner_address in sorted_users:
+            full_name_map[miner_address] = "Miner"
+            sorted_users.remove(miner_address)
+
         # 3.2 处理剩余用户地址：User_A、User_B...
         for idx, addr in enumerate(sorted_users):
             # 生成User_A、User_B...（A=0, B=1...）
