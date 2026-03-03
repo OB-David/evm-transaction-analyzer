@@ -21,7 +21,7 @@ except Exception:
 def main():
     # 配置参数
     PROVIDER_URL = os.environ.get("GETH_API")
-    TX_HASH = "0x840ecb2b5d55a682afd529138b36e97992eda9706e206237b57ec4697e4f8186"
+    TX_HASH = "0xd76d6cf2885323fbe0b9d1795763f8f9d30be648dcf0df4a524f7c3fe5c37177"
 
     try:
         # ========== 前置检查 ==========
@@ -171,7 +171,7 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
         output_path=tx_dot_path, 
         full_address_name_map = full_address_name_map, 
         erc20_token_map = erc20_token_map,
-        rankdir="TB")
+        rankdir="LR")
     print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
 
     # 保存图例 

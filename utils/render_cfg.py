@@ -58,14 +58,14 @@ def get_valid_nodes_and_colors(cfg: object, contract_colors: List[str]) -> Tuple
 
     return valid_nodes, node_colors, addr_color_map
 
-def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str], cfg: object, output_path: str, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], rankdir: str = "TB") -> None:
+def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str], cfg: object, output_path: str, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], rankdir: str = "LR") -> None:
     """
     仅生成CFG DOT文件
     :param cfg: 包含nodes/edges的CFG对象
     :param output_path: DOT文件输出路径
     :param full_address_name_map: 地址→名称映射
     :param erc20_token_map: ERC20合约地址→名称映射
-    :param rankdir: 图表方向TB
+    :param rankdir: 图表方向 LR=左到右
     """
     if not hasattr(cfg, 'nodes') or not hasattr(cfg, 'edges'):
         raise TypeError(f"cfg必须包含nodes/edges属性")
@@ -81,28 +81,29 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
         addr for addr, val in erc20_token_map.items()
     ]
 
-    # 初始化DOT文件内容
+    # ====================== 竖向加宽布局（核心修改）======================
     dot_lines = [
         "digraph CFG {",
         f"  rankdir={rankdir};",
-        # 节点参数：紧凑布局
-        '  node [fontname="Arial", fontsize=7, color=black, style=filled, margin=0.1];',
-        # 边参数：小字体
-        '  edge [fontname="Arial", fontsize=4];',
-        # 图表参数：紧凑布局
-        '  graph [nodesep=0.3, ranksep=0.3, charset="utf-8", maxiter=100000, dpi=96, ratio=compress];',
+        # 节点：增大纵向内边距，让节点自身更高
+        '  node [fontname="Arial", fontsize=7, color=black, style=filled, margin=0.08, width=0, height=0.8, fontmargin=0.02];',
+        # 边：拉长纵向长度，节点间纵向距离更大
+        '  edge [fontname="Arial", fontsize=4, len=0.01, labelfontsize=4, labelmargin=0.02, penwidth=1];',
+        # 图表：大幅增加纵向行间距，取消纵向最大限制
+        '  graph [nodesep=0.05, ranksep=0.1, charset="utf-8", maxiter=200000, dpi=96, ratio=auto, overlap=false, splines=polyline];',
     ]
+    # ====================================================================
 
     rendered_node_ids = set()
     
-    # 生成节点
+    # 生成节点（文字内容完全保留，仅调整布局参数）
     for idx, node in enumerate(valid_nodes):
         node_id = f"node_{node.id}"
         rendered_node_ids.add(node_id)
         node_addr_original = str(getattr(node, "address", "Unknown")).strip()
         node_addr_lower = node_addr_original.lower()
         
-        # 获取合约名称
+        # 获取合约名称（完全保留原文字）
         contract_name = full_name_map_lower.get(node_addr_lower, "Unknown")
         contract_name_escaped = escape_dot(contract_name)
         
@@ -113,7 +114,7 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
         # 判断节点形状（椭圆=ERC20，矩形=普通合约）
         node_shape = "ellipse" if node_addr_lower in erc20_addrs else "record"
 
-        # 获取Gas值
+        # 获取Gas值（完全保留原数值）
         if is_fold_root and hasattr(node, "fold_info"):
             gas = node.fold_info.get("total_gas", 0)
         else:
@@ -123,7 +124,7 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
         actions = node.fold_info.get("actions", []) if (is_fold_root or (not is_folded) and hasattr(node, "fold_info")) else []
         has_action = len(actions) > 0
 
-        # ERC20节点（椭圆）
+        # ERC20节点（椭圆）- 仅调整布局，文字完全保留
         if node_shape == "ellipse":
             block_id = node.id
             blocks_num = escape_dot(node.fold_info.get('blocks_number', 1) if is_fold_root else 1)
@@ -133,7 +134,7 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
             
             #  有action情况
             if has_action: 
-                # 处理Action文本
+                # 处理Action文本（完全保留原文字）
                 action_text = []
                 act_idx = 1
                 for act in actions:
@@ -152,15 +153,18 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
                         act_idx += 1
                 actions_str = "\\n".join(action_text)
 
-                # 节点标签
+                # 节点标签（文字完全保留）
                 label_text = (
-                    f"ID: {block_id} | {contract_name_escaped} | Blocks: {blocks_num}\\n"
-                    f"StartPC: {start_pc} | EndPC: {end_pc} | Gas: {gas_str}"
-                    f"\\n {actions_str}"
+                    f"ID: {block_id} \\n"
+                    f"{contract_name_escaped}\\n"
+                    f"Blocks: {blocks_num}\\n"
+                    f"StartPC: {start_pc} | EndPC: {end_pc}\\n"
+                    f"Gas: {gas_str}\\n"
+                    f"{actions_str}"
                 )
                 label_text_escaped = escape_dot(label_text)
 
-                # 节点属性（有Action则红色粗边框）
+                # 节点属性（仅布局参数）
                 style_str = "filled, shadow" + (", bold" if has_action else "")
                 node_attrs = [
                     f'shape="{node_shape}"',
@@ -168,22 +172,25 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
                     f'style="{style_str}"',
                     f'fillcolor="{color}"',
                     f'color="{"red" if has_action else "black"}"',
-                    f'width=0',
-                    f'height=0',
-                    f'margin=0.1',
+                    f'margin=0.08',  # 增大节点内边距（纵向）
+                    f'fontmargin=0.02',  # 文字与边框间距
+                    f'height=0.8',  # 强制节点最小高度
                     f'penwidth=2'
                 ]
 
             # 无action情况
             else:
-                # 节点标签
+                # 节点标签（文字完全保留）
                 label_text = (
-                    f"ID: {block_id} | {contract_name_escaped} | Blocks: {blocks_num}\\n"
-                    f"StartPC: {start_pc} | EndPC: {end_pc} | Gas: {gas_str}"
+                    f"ID: {block_id} \\n"
+                    f"{contract_name_escaped}\\n"
+                    f"Blocks: {blocks_num}\\n"
+                    f"StartPC: {start_pc} | EndPC: {end_pc}\\n"
+                    f"Gas: {gas_str}"
                 )
                 label_text_escaped = escape_dot(label_text)
 
-                # 节点属性
+                # 节点属性（仅布局参数）
                 style_str = "filled, shadow" + (", bold" if has_action else "")
                 node_attrs = [
                     f'shape="{node_shape}"',
@@ -191,24 +198,19 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
                     f'style="{style_str}"',
                     f'fillcolor="{color}"',
                     f'color="{"red" if has_action else "black"}"',
-                    f'width=0',
-                    f'height=0',
-                    f'margin=0.1',
+                    f'margin=0.08',
+                    f'fontmargin=0.02',
+                    f'height=0.8'
                 ]
             dot_lines.append(f"  {node_id} [{', '.join(node_attrs)}];")
 
 
-        # 普通合约节点（矩形）
+        # 普通合约节点（矩形）- 仅调整布局，文字完全保留
         else:
             # 有action情况
             if has_action:
-                semantic_table = [
-                    f"{{ID: {node.id} | {contract_name_escaped} | Blocks: {escape_dot(node.fold_info.get('blocks_number', 1) if is_fold_root else 1)} }}",
-                    f"{{StartPC: {escape_dot(node.start_pc)} | EndPC: {escape_dot(node.fold_info.get('end_pc', node.end_pc if hasattr(node, 'end_pc') else '0x0'))} | Gas: {escape_dot(gas)}}}",
-                    "{ }"
-                ]
 
-                # 处理Action文本
+                # 处理Action文本（完全保留原文字）
                 action_text = []
                 act_idx = 1
                 for act in actions:
@@ -221,10 +223,12 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
                         action_text.append(f"Action{act_idx}: Send_ETH {from_name} → {to_name} {eth_item['amount']}")
                         act_idx += 1
                 actions_joined = '\\n'.join(action_text) if action_text else 'No actions'
-                semantic_table[2] = f"{{ {actions_joined} }}"
+                semantic_table = [
+                    f"{{ID: {node.id} | {contract_name_escaped} | Blocks: {escape_dot(node.fold_info.get('blocks_number', 1) if is_fold_root else 1)} | StartPC: {escape_dot(node.start_pc)} | EndPC: {escape_dot(node.fold_info.get('end_pc', node.end_pc if hasattr(node, 'end_pc') else '0x0'))} | Gas: {escape_dot(gas)} | {actions_joined}}}"
+                    ]
                 label_semantic = "|".join(semantic_table)
 
-                # 节点属性
+                # 节点属性（仅布局参数）
                 style_str = "filled" + (", bold" if has_action else "")
                 node_attrs = [
                     f"shape=\"{node_shape}\"",
@@ -232,18 +236,19 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
                     f"style=\"{style_str}\"",
                     f"fillcolor=\"{color}\"",
                     f"color=\"{'red' if has_action else 'black'}\"",
-                    f"margin=0.1",
+                    f"margin=0.08",  # 增大节点内边距（纵向）
+                    f'fontmargin=0.02',  # 文字与边框间距
+                    f'height=0.8',  # 强制节点最小高度
                     f'penwidth=2'
                 ]
                 
             # 无action情况
             else: 
                 semantic_table = [
-                    f"{{ID: {node.id} | {contract_name_escaped} | Blocks: {escape_dot(node.fold_info.get('blocks_number', 1) if is_fold_root else 1)} }}",
-                    f"{{StartPC: {escape_dot(node.start_pc)} | EndPC: {escape_dot(node.fold_info.get('end_pc', node.end_pc if hasattr(node, 'end_pc') else '0x0'))} | Gas: {escape_dot(gas)}}}"
+                    f"{{ID: {node.id} | {contract_name_escaped} | Blocks: {escape_dot(node.fold_info.get('blocks_number', 1) if is_fold_root else 1)}  | StartPC: {escape_dot(node.start_pc)} | EndPC: {escape_dot(node.fold_info.get('end_pc', node.end_pc if hasattr(node, 'end_pc') else '0x0'))} | Gas: {escape_dot(gas)}}}"
                 ]
                 
-                # 节点属性
+                # 节点属性（仅布局参数）
                 style_str = "filled" + (", bold" if has_action else "")
                 node_attrs = [
                     f"shape=\"{node_shape}\"",
@@ -251,12 +256,14 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
                     f"style=\"{style_str}\"",
                     f"fillcolor=\"{color}\"",
                     f"color=\"{'red' if has_action else 'black'}\"",
-                    f"margin=0.1"
+                    f"margin=0.08",
+                    f'fontmargin=0.02',
+                    f'height=0.8'
                 ]
 
             dot_lines.append(f"  {node_id} [{', '.join(node_attrs)}];")
 
-    # 生成边
+    # 生成边（仅调整布局，标签文字完全保留）
     for edge in getattr(cfg, 'edges', []):
         if not (hasattr(edge, 'source') and hasattr(edge, 'target')):
             continue
@@ -268,7 +275,9 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
         edge_seq = getattr(edge, "merged_ids", extract_edge_seq(getattr(edge, "edge_id", "")))
         edge_type = escape_dot(getattr(edge, 'edge_type', 'UNKNOWN'))
         edge_color = edge_color_map.get(edge_type, "#607D8B")
-        dot_lines.append(f"  {src_id} -> {tgt_id} [label=\"{edge_seq}\", color=\"{edge_color}\", style=\"solid\", labelfloat=true, fontsize=4];")
+        
+        # 边属性（仅布局参数，文字保留）
+        dot_lines.append(f"  {src_id} -> {tgt_id} [label=\"{edge_seq}\", color=\"{edge_color}\", style=\"solid\", fontsize=2, len=0.5, labelmargin=0.015];")
 
     dot_lines.append("}")
 
