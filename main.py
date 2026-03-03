@@ -52,7 +52,7 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
         output_path=tx_dot_path, 
         full_address_name_map = full_address_name_map, 
         erc20_token_map = erc20_token_map,
-        rankdir="TB")
+        rankdir="LR")
     print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
 
     # 保存图例 

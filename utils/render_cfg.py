@@ -58,7 +58,7 @@ def get_valid_nodes_and_colors(cfg: object, contract_colors: List[str]) -> Tuple
 
     return valid_nodes, node_colors, addr_color_map
 
-def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str], cfg: object, output_path: str, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], rankdir: str = "TB") -> None:
+def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str], cfg: object, output_path: str, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], rankdir: str = "LR") -> None:
     """
     仅生成CFG DOT文件
     :param cfg: 包含nodes/edges的CFG对象

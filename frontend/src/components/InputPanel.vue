@@ -2,14 +2,18 @@
 import { ref } from 'vue'
 import { analyzeTransaction, type AnalyzeResult } from '../api/analyze'
 
+const emit = defineEmits<{
+  'analysis-complete': [txHash: string]
+}>()
+
+const EXAMPLE_TX_HASH = '0x840ecb2b5d55a682afd529138b36e97992eda9706e206237b57ec4697e4f8186'
 const txHash = ref('')
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
 const result = ref<AnalyzeResult | null>(null)
 
 async function onSubmit() {
-  const hash = txHash.value.trim()
-  if (!hash) return
+  const hash = txHash.value.trim() || EXAMPLE_TX_HASH
 
   status.value = 'loading'
   errorMsg.value = ''
@@ -20,6 +24,7 @@ async function onSubmit() {
     if (res.status === 'success') {
       status.value = 'success'
       result.value = res
+      emit('analysis-complete', hash)
     } else {
       status.value = 'error'
       errorMsg.value = res.error || 'Analysis failed'
@@ -39,13 +44,13 @@ async function onSubmit() {
         v-model="txHash"
         type="text"
         class="hash-input"
-        placeholder="0x..."
+        :placeholder="EXAMPLE_TX_HASH"
         :disabled="status === 'loading'"
       />
       <button
         type="submit"
         class="analyze-btn"
-        :disabled="status === 'loading' || !txHash.trim()"
+        :disabled="status === 'loading'"
       >
         {{ status === 'loading' ? 'Analyzing...' : 'Analyze' }}
       </button>
@@ -93,6 +98,11 @@ async function onSubmit() {
 
 .hash-input:focus {
   border-color: var(--accent);
+}
+
+.hash-input::placeholder {
+  color: #a0a0a0;
+  opacity: 1;
 }
 
 .analyze-btn {

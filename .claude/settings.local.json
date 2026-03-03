@@ -3,7 +3,9 @@
     "allow": [
       "Bash(cd \"C:/Users/lanhe/Desktop/evm-transaction-analyzer\" && npm create vite@latest frontend -- --template vue-ts 2>&1)",
       "Bash(cd \"C:/Users/lanhe/Desktop/evm-transaction-analyzer/frontend\" && npm install 2>&1)",
-      "Bash(echo EXIT: $?:*)"
+      "Bash(echo EXIT: $?:*)",
+      "Bash(npm install d3-graphviz @hpcc-js/wasm)",
+      "Bash(npm install --save-dev @types/d3-graphviz)"
     ]
   }
 }
