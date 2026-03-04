@@ -110,14 +110,20 @@ def main():
         with open(trace_path, "w", encoding="utf-8") as f:
             json.dump(standardized_trace, f, indent=2, ensure_ascii=False)
         print(f"轨迹数据（含 addresses 与 slot_map）已保存到: {trace_path}")
+
+        # 8. 保存折叠后Block ID与Instructions映射数据
+        print("正在导出可见Block ID与Instructions映射...")
+        folded_blocks_path = os.path.join(result_dir, "folded_blocks_instructions.json")
+        cfg_constructor.export_folded_blocks_instructions(tx_cfg, folded_blocks_path)
+        print(f"blcokid-instructions映射数据已保存到: {folded_blocks_path}")
         
-        # 8. 保存资产变更数据
+        # 9. 保存资产变更数据
         changes_path = os.path.join(result_dir, "balance_and_eth_changes.json") 
         with open(changes_path, "w", encoding="utf-8") as f:
             json.dump(all_changes, f, indent=2, ensure_ascii=False)
         print(f"资产变更数据已保存到: {changes_path}")
 
-        # 9. 保存边映射JSON文件
+        # 10. 保存边映射JSON文件
         edge_link_path = os.path.join(result_dir, "edge_link.json")
         with open(edge_link_path, "w", encoding="utf-8") as f:
             f.write(json_output)
@@ -193,7 +199,3 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
 
 if __name__ == "__main__":
     main()
-
-
-
-
