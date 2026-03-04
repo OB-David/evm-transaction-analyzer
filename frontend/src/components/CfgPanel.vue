@@ -3,11 +3,12 @@ import { ref, onMounted, watch, nextTick } from 'vue'
 import { graphviz } from 'd3-graphviz'
 import { zoomIdentity, zoomTransform } from 'd3-zoom'
 import { select } from 'd3-selection'
-import { fetchCfgDotFile } from '../api/analyze'
+import { fetchCfgDotFile, fetchBlockInstructions, type BlockInstructionsMap } from '../api/analyze'
 
 const props = defineProps<{
   txHash: string | null
   highlightedBlockId: number[] | null
+  isAnalyzing: boolean
 }>()
 
 const emit = defineEmits<{
@@ -17,6 +18,11 @@ const emit = defineEmits<{
 const dotContent = ref<string>('')
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
+
+// Block instructions state
+const blockInstructions = ref<BlockInstructionsMap>({})
+const selectedBlockId = ref<number | null>(null)
+const codeBoxPosition = ref<{ x: number; y: number } | null>(null)
 
 const graphContainer = ref<HTMLElement | null>(null)
 let graphvizInstance: any = null
@@ -31,6 +37,7 @@ const edgeConnections = ref<Map<string, {source: string, target: string}>>(new M
 const nodeNameToEl = ref<Map<string, Element>>(new Map())
 
 watch(() => props.txHash, (newHash) => {
+  closeCodeBox() // Close code box when switching transactions
   if (newHash) {
     loadCfgData(newHash)
   }
@@ -45,6 +52,15 @@ async function loadCfgData(txHash: string) {
 
     dotContent.value = dot
     status.value = 'success'
+
+    // Fetch block instructions
+    try {
+      const instructions = await fetchBlockInstructions(txHash)
+      blockInstructions.value = instructions
+    } catch (e) {
+      console.warn('Failed to load block instructions:', e)
+      // Don't fail the whole load if instructions fail
+    }
 
     await nextTick()
     await renderGraph()
@@ -108,10 +124,87 @@ function attachInteractivity() {
     nodeEl.addEventListener('mouseleave', () => {
       nodeEl.classList.remove('hovered')
     })
+
+    // Add click handler for showing instructions
+    nodeEl.addEventListener('click', (e) => {
+      e.stopPropagation()
+      handleNodeClick(node, title || '')
+    })
   })
 
   // 解析边连接关系
   parseEdgeConnections()
+
+  // Add click handler to SVG background to close code box
+  svg.addEventListener('click', (e) => {
+    if (e.target === svg || (e.target as Element).tagName === 'g') {
+      closeCodeBox()
+    }
+  })
+}
+
+function handleNodeClick(node: Element, nodeName: string) {
+  // Extract block ID from node name (format: "node_X")
+  const match = nodeName.match(/^node_(\d+)$/)
+  if (!match) return
+
+  const blockId = parseInt(match[1], 10)
+
+  // Toggle: if clicking the same node, close the code box
+  if (selectedBlockId.value === blockId) {
+    closeCodeBox()
+    return
+  }
+
+  // Check if we have instructions for this block
+  if (!blockInstructions.value[blockId]) {
+    console.warn(`No instructions found for block ${blockId}`)
+    return
+  }
+
+  // Calculate position for code box
+  if (!graphContainer.value) return
+
+  const containerRect = graphContainer.value.getBoundingClientRect()
+  const nodeRect = (node as SVGGraphicsElement).getBoundingClientRect()
+
+  // Position to the right of the node if there's space, otherwise to the left
+  const codeBoxWidth = 400
+  const spaceOnRight = containerRect.right - nodeRect.right
+  const spaceOnLeft = nodeRect.left - containerRect.left
+
+  let x: number
+  if (spaceOnRight >= codeBoxWidth + 20) {
+    // Position to the right
+    x = nodeRect.right - containerRect.left + 10
+  } else if (spaceOnLeft >= codeBoxWidth + 20) {
+    // Position to the left
+    x = nodeRect.left - containerRect.left - codeBoxWidth - 10
+  } else {
+    // Center it if no space on either side
+    x = Math.max(10, (containerRect.width - codeBoxWidth) / 2)
+  }
+
+  // Vertical position: align with node top, but keep within bounds
+  let y = nodeRect.top - containerRect.top
+  y = Math.max(10, Math.min(y, containerRect.height - 320)) // 320 = max height + padding
+
+  selectedBlockId.value = blockId
+  codeBoxPosition.value = { x, y }
+}
+
+function closeCodeBox() {
+  selectedBlockId.value = null
+  codeBoxPosition.value = null
+}
+
+function formatInstruction(instr: string): string {
+  // Parse instruction format from "('0x2b', 'DUP1')" to "0x2b  DUP1"
+  const match = instr.match(/\('([^']+)',\s*'([^']+)'\)/)
+  if (match) {
+    return `${match[1]}  ${match[2]}`
+  }
+  return instr
 }
 
 function parseEdgeConnections() {
@@ -355,6 +448,19 @@ onMounted(() => {
   if (props.txHash) {
     loadCfgData(props.txHash)
   }
+
+  // Add ESC key handler to close code box
+  const handleEsc = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      closeCodeBox()
+    }
+  }
+  window.addEventListener('keydown', handleEsc)
+
+  // Cleanup on unmount
+  return () => {
+    window.removeEventListener('keydown', handleEsc)
+  }
 })
 </script>
 
@@ -370,7 +476,7 @@ onMounted(() => {
       Show All
     </button>
 
-    <div v-if="status === 'loading'" class="status-overlay">
+    <div v-if="isAnalyzing || status === 'loading'" class="status-overlay">
       Loading control flow graph...
     </div>
 
@@ -380,6 +486,31 @@ onMounted(() => {
 
     <div v-else-if="status === 'success'" class="cfg-container">
       <div ref="graphContainer" class="graph-viewport"></div>
+
+      <!-- Instructions Code Box -->
+      <div
+        v-if="selectedBlockId !== null && codeBoxPosition"
+        class="code-box"
+        :style="{
+          left: `${codeBoxPosition.x}px`,
+          top: `${codeBoxPosition.y}px`
+        }"
+        @click.stop
+      >
+        <div class="code-box-header">
+          <span class="code-box-title">Block {{ selectedBlockId }}</span>
+          <button class="code-box-close" @click="closeCodeBox">×</button>
+        </div>
+        <div class="code-box-content">
+          <div
+            v-for="(instr, idx) in blockInstructions[selectedBlockId]?.instructions || []"
+            :key="idx"
+            class="instruction-line"
+          >
+            {{ formatInstruction(instr) }}
+          </div>
+        </div>
+      </div>
     </div>
 
     <div v-else class="placeholder">
@@ -428,6 +559,12 @@ onMounted(() => {
 
 .graph-viewport :deep(.node) {
   transition: opacity 0.15s;
+  cursor: pointer;
+}
+
+.graph-viewport :deep(.node text) {
+  cursor: pointer;
+  user-select: none;
 }
 
 .graph-viewport :deep(.node.hovered ellipse),
@@ -503,5 +640,88 @@ onMounted(() => {
 .placeholder-text {
   color: var(--muted);
   font-size: 12px;
+}
+
+/* Instructions Code Box */
+.code-box {
+  position: absolute;
+  z-index: 100;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  max-width: 400px;
+  max-height: 300px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.code-box-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.code-box-title {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 500;
+  letter-spacing: 0.3px;
+}
+
+.code-box-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s;
+}
+
+.code-box-close:hover {
+  color: var(--text);
+}
+
+.code-box-content {
+  padding: 8px 12px;
+  overflow-y: auto;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.instruction-line {
+  white-space: nowrap;
+  color: #666666;
+}
+
+/* Custom scrollbar for code box */
+.code-box-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.code-box-content::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+.code-box-content::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.code-box-content::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
 }
 </style>

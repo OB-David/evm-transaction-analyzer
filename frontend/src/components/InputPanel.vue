@@ -1,19 +1,37 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { analyzeTransaction, type AnalyzeResult } from '../api/analyze'
+import { analyzeTransaction, fetchTransactionBlock, type AnalyzeResult } from '../api/analyze'
 
 const emit = defineEmits<{
   'analysis-complete': [txHash: string]
+  'block-number-changed': [blockNumber: number]
 }>()
 
 const EXAMPLE_TX_HASH = '0x840ecb2b5d55a682afd529138b36e97992eda9706e206237b57ec4697e4f8186'
+const blockNumber = ref('')
 const txHash = ref('')
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
+const blockStatus = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
+const blockErrorMsg = ref('')
 const result = ref<AnalyzeResult | null>(null)
+
+// Expose method to update txHash from parent
+function updateTxHash(hash: string) {
+  txHash.value = hash
+}
+
+defineExpose({
+  updateTxHash
+})
 
 async function onSubmit() {
   const hash = txHash.value.trim() || EXAMPLE_TX_HASH
+
+  // If using example, make it editable in the input
+  if (!txHash.value.trim()) {
+    txHash.value = EXAMPLE_TX_HASH
+  }
 
   status.value = 'loading'
   errorMsg.value = ''
@@ -25,6 +43,15 @@ async function onSubmit() {
       status.value = 'success'
       result.value = res
       emit('analysis-complete', hash)
+
+      // Fetch block number for this transaction
+      try {
+        const blockNum = await fetchTransactionBlock(hash)
+        blockNumber.value = blockNum.toString()
+        emit('block-number-changed', blockNum)
+      } catch (e) {
+        console.error('Failed to fetch block number:', e)
+      }
     } else {
       status.value = 'error'
       errorMsg.value = res.error || 'Analysis failed'
@@ -34,11 +61,54 @@ async function onSubmit() {
     errorMsg.value = e.message || 'Network error'
   }
 }
+
+async function onBlockSubmit() {
+  const blockNum = blockNumber.value.trim()
+  if (!blockNum) return
+
+  const num = parseInt(blockNum, 10)
+  if (isNaN(num) || num < 0) {
+    blockStatus.value = 'error'
+    blockErrorMsg.value = 'Invalid block number'
+    return
+  }
+
+  blockStatus.value = 'loading'
+  blockErrorMsg.value = ''
+
+  try {
+    emit('block-number-changed', num)
+    blockStatus.value = 'success'
+  } catch (e: any) {
+    blockStatus.value = 'error'
+    blockErrorMsg.value = e.message || 'Failed to load block'
+  }
+}
 </script>
 
 <template>
   <div class="input-panel">
-    <label class="panel-label"> (a) Input</label>
+    <label class="panel-label">(a) Input</label>
+
+    <!-- Block Number Input -->
+    <form class="input-form" @submit.prevent="onBlockSubmit">
+      <input
+        v-model="blockNumber"
+        type="text"
+        class="hash-input"
+        placeholder="Block Number (e.g., 12345678)"
+        :disabled="blockStatus === 'loading'"
+      />
+      <button
+        type="submit"
+        class="analyze-btn"
+        :disabled="blockStatus === 'loading'"
+      >
+        {{ blockStatus === 'loading' ? 'Loading...' : 'Explore' }}
+      </button>
+    </form>
+
+    <!-- Transaction Hash Input -->
     <form class="input-form" @submit.prevent="onSubmit">
       <input
         v-model="txHash"
@@ -55,8 +125,12 @@ async function onSubmit() {
         {{ status === 'loading' ? 'Analyzing...' : 'Analyze' }}
       </button>
     </form>
+
     <div class="status-line">
-      <span v-if="status === 'loading'" class="status-loading">Processing transaction...</span>
+      <span v-if="blockStatus === 'loading'" class="status-loading">Loading block...</span>
+      <span v-else-if="blockStatus === 'success'" class="status-success">Block loaded</span>
+      <span v-else-if="blockStatus === 'error'" class="status-error">{{ blockErrorMsg }}</span>
+      <span v-else-if="status === 'loading'" class="status-loading">Processing transaction...</span>
       <span v-else-if="status === 'success'" class="status-success">Done — {{ result?.files.length }} files generated</span>
       <span v-else-if="status === 'error'" class="status-error">{{ errorMsg }}</span>
     </div>

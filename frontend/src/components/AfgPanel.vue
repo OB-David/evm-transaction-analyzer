@@ -7,6 +7,7 @@ import LegendPanel from './LegendPanel.vue'
 const props = defineProps<{
   txHash: string | null
   highlightedBlockId: number[] | null
+  isAnalyzing: boolean
 }>()
 
 const emit = defineEmits<{
@@ -211,7 +212,7 @@ onMounted(() => {
   <div class="afg-panel">
     <span class="panel-label">(c) Asset Flow Graph</span>
 
-    <div v-if="status === 'loading'" class="status-overlay">
+    <div v-if="isAnalyzing || status === 'loading'" class="status-overlay">
       Loading asset flow graph...
     </div>
 

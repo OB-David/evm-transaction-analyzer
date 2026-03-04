@@ -52,6 +52,10 @@ def run(tx_hash: str):
     with open(os.path.join(result_dir, "edge_link.json"), "w", encoding="utf-8") as f:
         f.write(json_output)
 
+    # Save folded blocks instructions
+    folded_blocks_path = os.path.join(result_dir, "folded_blocks_instructions.json")
+    cfg_constructor.export_folded_blocks_instructions(tx_cfg, folded_blocks_path)
+
     # Render graphs
     save_graphs(
         result_dir=result_dir,

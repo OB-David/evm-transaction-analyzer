@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, field_validator
+from utils.block_exploration import fetch_block_gas_data, get_transaction_block_number
 
 app = FastAPI(title="EVM Transaction Analyzer")
 
@@ -41,6 +42,35 @@ class AnalyzeResponse(BaseModel):
     result_dir: str
     files: list[str]
     error: str | None = None
+
+
+class BlockRequest(BaseModel):
+    block_number: int
+
+
+class TransactionGasInfo(BaseModel):
+    index: int
+    hash: str
+    gas: int
+    log_gas: float
+    gas_price_gwei: float
+    from_addr: str
+    to_addr: str | None
+    x: int
+    y: int
+
+
+class BlockGasResponse(BaseModel):
+    status: str
+    block_number: int
+    miner: str
+    transaction_count: int
+    transactions: list[TransactionGasInfo]
+    error: str | None = None
+
+
+class BlockNumberResponse(BaseModel):
+    block_number: int
 
 
 @app.post("/api/analyze", response_model=AnalyzeResponse)
@@ -124,3 +154,24 @@ async def get_file(tx_hash: str, filename: str):
     else:
         content_type, _ = mimetypes.guess_type(filename)
         return FileResponse(path=file_path, media_type=content_type)
+
+
+@app.post("/api/block", response_model=BlockGasResponse)
+async def get_block_gas_data(req: BlockRequest):
+    """Get block gas data for heatmap visualization."""
+    result = fetch_block_gas_data(req.block_number)
+    return BlockGasResponse(**result)
+
+
+@app.get("/api/transaction/{tx_hash}/block", response_model=BlockNumberResponse)
+async def get_transaction_block(tx_hash: str):
+    """Get the block number for a given transaction hash."""
+    # Validate tx_hash format
+    if not TX_HASH_RE.match(tx_hash):
+        raise HTTPException(status_code=400, detail="Invalid tx_hash format")
+
+    block_number = get_transaction_block_number(tx_hash)
+    if block_number is None:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    return BlockNumberResponse(block_number=block_number)
