@@ -4,6 +4,7 @@ from utils.evm_information import StandardizedStep
 from utils.basic_block import Block
 from utils.cfg_structure import CFG, BlockNode, Edge
 from collections import defaultdict
+import json
 
 # 全局辅助函数：标准化地址（确保地址格式唯一）
 def normalize_address(address: str) -> str:
@@ -537,3 +538,37 @@ class CFGConstructor:
         folded_node_map = self._fold_linear_chains(cfg)
 
         return cfg, all_changes, folded_node_map, self.table
+    
+
+
+    # 导出blockid和instructions映射
+    def export_folded_blocks_instructions(self, cfg: CFG, output_path: str):
+        """
+        导出可见节点的block_id与instructions纯映射
+        :param cfg: CFG对象
+        :param output_path: JSON输出路径
+        """
+        block_inst_map = {}
+        
+        for node in cfg.nodes:
+            # 仅处理FoldableBlockNode且排除被折叠的中间节点
+            if not isinstance(node, FoldableBlockNode):
+                continue
+            # 跳过被折叠的中间节点（只保留根节点和未折叠节点）
+            if hasattr(node, "folded") and node.folded and not getattr(node, "is_fold_root", False):
+                continue
+            
+            # 极简序列化：所有指令转字符串
+            block_inst_map[node.id] = {
+                "block_id": node.id,
+                "instructions": [str(instr) for instr in node.instructions]
+            }
+        
+        # 写入JSON
+        try:
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(block_inst_map, f, ensure_ascii=False, indent=2)
+            print(f"✅ 极简版Block-Inst映射已导出: {output_path} (共{len(block_inst_map)}个节点)")
+        except Exception as e:
+            print(f"❌ 导出失败: {e}")
+            raise

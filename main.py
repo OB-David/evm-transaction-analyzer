@@ -21,7 +21,7 @@ except Exception:
 def main():
     # 配置参数
     PROVIDER_URL = os.environ.get("GETH_API")
-    TX_HASH = "0x524a646c580e69eee16b7f44b9a48cec8e7bbb029802f123be1b84fc1f67d5e4"
+    TX_HASH = "0xd76d6cf2885323fbe0b9d1795763f8f9d30be648dcf0df4a524f7c3fe5c37177"
 
     try:
         # ========== 前置检查 ==========
@@ -110,14 +110,20 @@ def main():
         with open(trace_path, "w", encoding="utf-8") as f:
             json.dump(standardized_trace, f, indent=2, ensure_ascii=False)
         print(f"轨迹数据（含 addresses 与 slot_map）已保存到: {trace_path}")
+
+        # 8. 保存折叠后Block ID与Instructions映射数据
+        print("正在导出可见Block ID与Instructions映射...")
+        folded_blocks_path = os.path.join(result_dir, "folded_blocks_instructions.json")
+        cfg_constructor.export_folded_blocks_instructions(tx_cfg, folded_blocks_path)
+        print(f"blcokid-instructions映射数据已保存到: {folded_blocks_path}")
         
-        # 8. 保存资产变更数据
+        # 9. 保存资产变更数据
         changes_path = os.path.join(result_dir, "balance_and_eth_changes.json") 
         with open(changes_path, "w", encoding="utf-8") as f:
             json.dump(all_changes, f, indent=2, ensure_ascii=False)
         print(f"资产变更数据已保存到: {changes_path}")
 
-        # 9. 保存边映射JSON文件
+        # 10. 保存边映射JSON文件
         edge_link_path = os.path.join(result_dir, "edge_link.json")
         with open(edge_link_path, "w", encoding="utf-8") as f:
             f.write(json_output)
@@ -135,12 +141,6 @@ def main():
         print(f"\n❌ 执行失败: {str(e)}")
         print("详细错误堆栈：")
         traceback.print_exc()
-
-if __name__ == "__main__":
-    main()
-
-
-
 
 def create_result_directory(tx_hash: str) -> str:
     """创建结果目录结构: Result/交易哈希/"""
@@ -177,7 +177,7 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
         output_path=tx_dot_path, 
         full_address_name_map = full_address_name_map, 
         erc20_token_map = erc20_token_map,
-        rankdir="TB")
+        rankdir="LR")
     print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
 
     # 保存图例 
@@ -195,3 +195,7 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
     token_flow_dot_path = os.path.join(result_dir, "asset_flow.dot")
     render_asset_flow(pairs, annotations, users_addresses, full_address_name_map, pending_erc20, addr_color_map, token_flow_dot_path)
     print(f"代币交易流图DOT文件已保存到: {token_flow_dot_path}.dot")
+
+
+if __name__ == "__main__":
+    main()
