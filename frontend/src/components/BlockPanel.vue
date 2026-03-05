@@ -165,7 +165,7 @@ function renderPlotly(data: BlockGasData) {
 
 <template>
   <div class="block-panel">
-    <label class="panel-label">(d) Block Exploration</label>
+    <label class="panel-label">(b) Block Exploration</label>
 
     <div v-if="loading" class="status-loading">Loading block data...</div>
     <div v-else-if="error" class="status-error">{{ error }}</div>

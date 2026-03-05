@@ -22,7 +22,7 @@ const errorMsg = ref('')
 // Block instructions state
 const blockInstructions = ref<BlockInstructionsMap>({})
 const selectedBlockId = ref<number | null>(null)
-const codeBoxPosition = ref<{ x: number; y: number } | null>(null)
+const instructionsPanel = ref<HTMLElement | null>(null)
 
 const graphContainer = ref<HTMLElement | null>(null)
 let graphvizInstance: any = null
@@ -37,7 +37,7 @@ const edgeConnections = ref<Map<string, {source: string, target: string}>>(new M
 const nodeNameToEl = ref<Map<string, Element>>(new Map())
 
 watch(() => props.txHash, (newHash) => {
-  closeCodeBox() // Close code box when switching transactions
+  selectedBlockId.value = null // Reset selection when switching transactions
   if (newHash) {
     loadCfgData(newHash)
   }
@@ -125,77 +125,53 @@ function attachInteractivity() {
       nodeEl.classList.remove('hovered')
     })
 
-    // Add click handler for showing instructions
+    // Add click handler for selecting block
     nodeEl.addEventListener('click', (e) => {
       e.stopPropagation()
-      handleNodeClick(node, title || '')
+      handleNodeClick(title || '')
     })
   })
 
   // 解析边连接关系
   parseEdgeConnections()
-
-  // Add click handler to SVG background to close code box
-  svg.addEventListener('click', (e) => {
-    if (e.target === svg || (e.target as Element).tagName === 'g') {
-      closeCodeBox()
-    }
-  })
 }
 
-function handleNodeClick(node: Element, nodeName: string) {
+function handleNodeClick(nodeName: string) {
   // Extract block ID from node name (format: "node_X")
   const match = nodeName.match(/^node_(\d+)$/)
   if (!match) return
 
   const blockId = parseInt(match[1], 10)
 
-  // Toggle: if clicking the same node, close the code box
+  // Remove previous selection highlight
+  if (selectedBlockId.value !== null) {
+    const prevNodeName = `node_${selectedBlockId.value}`
+    const prevNode = nodeNameToEl.value.get(prevNodeName)
+    if (prevNode) {
+      prevNode.classList.remove('selected')
+    }
+  }
+
+  // Toggle: if clicking the same node, deselect
   if (selectedBlockId.value === blockId) {
-    closeCodeBox()
+    selectedBlockId.value = null
     return
   }
 
-  // Check if we have instructions for this block
-  if (!blockInstructions.value[blockId]) {
-    console.warn(`No instructions found for block ${blockId}`)
-    return
-  }
-
-  // Calculate position for code box
-  if (!graphContainer.value) return
-
-  const containerRect = graphContainer.value.getBoundingClientRect()
-  const nodeRect = (node as SVGGraphicsElement).getBoundingClientRect()
-
-  // Position to the right of the node if there's space, otherwise to the left
-  const codeBoxWidth = 400
-  const spaceOnRight = containerRect.right - nodeRect.right
-  const spaceOnLeft = nodeRect.left - containerRect.left
-
-  let x: number
-  if (spaceOnRight >= codeBoxWidth + 20) {
-    // Position to the right
-    x = nodeRect.right - containerRect.left + 10
-  } else if (spaceOnLeft >= codeBoxWidth + 20) {
-    // Position to the left
-    x = nodeRect.left - containerRect.left - codeBoxWidth - 10
-  } else {
-    // Center it if no space on either side
-    x = Math.max(10, (containerRect.width - codeBoxWidth) / 2)
-  }
-
-  // Vertical position: align with node top, but keep within bounds
-  let y = nodeRect.top - containerRect.top
-  y = Math.max(10, Math.min(y, containerRect.height - 320)) // 320 = max height + padding
-
+  // Set selected block and add highlight
   selectedBlockId.value = blockId
-  codeBoxPosition.value = { x, y }
-}
+  const currentNode = nodeNameToEl.value.get(nodeName)
+  if (currentNode) {
+    currentNode.classList.add('selected')
+  }
 
-function closeCodeBox() {
-  selectedBlockId.value = null
-  codeBoxPosition.value = null
+  // Scroll to the block in the instructions panel
+  nextTick(() => {
+    const blockElement = document.getElementById(`block-${blockId}`)
+    if (blockElement && instructionsPanel.value) {
+      blockElement.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+  })
 }
 
 function formatInstruction(instr: string): string {
@@ -448,25 +424,12 @@ onMounted(() => {
   if (props.txHash) {
     loadCfgData(props.txHash)
   }
-
-  // Add ESC key handler to close code box
-  const handleEsc = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      closeCodeBox()
-    }
-  }
-  window.addEventListener('keydown', handleEsc)
-
-  // Cleanup on unmount
-  return () => {
-    window.removeEventListener('keydown', handleEsc)
-  }
 })
 </script>
 
 <template>
   <div class="cfg-panel">
-    <span class="panel-label">(b) Control Flow Graph</span>
+    <span class="panel-label">(d) Control Flow Graph</span>
 
     <button
       v-if="visibleNodes.size > 0"
@@ -487,27 +450,27 @@ onMounted(() => {
     <div v-else-if="status === 'success'" class="cfg-container">
       <div ref="graphContainer" class="graph-viewport"></div>
 
-      <!-- Instructions Code Box -->
-      <div
-        v-if="selectedBlockId !== null && codeBoxPosition"
-        class="code-box"
-        :style="{
-          left: `${codeBoxPosition.x}px`,
-          top: `${codeBoxPosition.y}px`
-        }"
-        @click.stop
-      >
-        <div class="code-box-header">
-          <span class="code-box-title">Block {{ selectedBlockId }}</span>
-          <button class="code-box-close" @click="closeCodeBox">×</button>
-        </div>
-        <div class="code-box-content">
+      <!-- Fixed Instructions Panel -->
+      <div ref="instructionsPanel" class="instructions-panel">
+        <div class="instructions-header">Instructions</div>
+        <div class="instructions-content">
           <div
-            v-for="(instr, idx) in blockInstructions[selectedBlockId]?.instructions || []"
-            :key="idx"
-            class="instruction-line"
+            v-for="(block, blockId) in blockInstructions"
+            :key="blockId"
+            :id="`block-${blockId}`"
+            class="block-section"
+            :class="{ 'selected': selectedBlockId === parseInt(blockId) }"
           >
-            {{ formatInstruction(instr) }}
+            <div class="block-header">Block {{ blockId }}</div>
+            <div class="block-instructions">
+              <div
+                v-for="(instr, idx) in block.instructions"
+                :key="idx"
+                class="instruction-line"
+              >
+                {{ formatInstruction(instr) }}
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -527,6 +490,7 @@ onMounted(() => {
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+  box-sizing: border-box;
 }
 
 .panel-label {
@@ -542,14 +506,20 @@ onMounted(() => {
 .cfg-container {
   position: relative;
   width: 100%;
-  height: 100%;
-  padding-top: 28px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 0;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .graph-viewport {
-  width: 100%;
-  height: 100%;
+  flex: 1;
   overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+  margin-top: 28px;
 }
 
 .graph-viewport :deep(svg) {
@@ -590,6 +560,19 @@ onMounted(() => {
 .graph-viewport :deep(.node.highlighted path) {
   stroke: #ff0000;
   stroke-width: 3;
+}
+
+/* 选中的节点 */
+.graph-viewport :deep(.node.selected) {
+  filter: drop-shadow(0 0 12px rgba(100, 120, 200, 1));
+}
+
+.graph-viewport :deep(.node.selected ellipse),
+.graph-viewport :deep(.node.selected polygon),
+.graph-viewport :deep(.node.selected path) {
+  stroke: #6478c8;
+  stroke-width: 4;
+  fill: rgba(100, 120, 200, 0.15);
 }
 
 /* 平滑过渡 */
@@ -642,86 +625,89 @@ onMounted(() => {
   font-size: 12px;
 }
 
-/* Instructions Code Box */
-.code-box {
-  position: absolute;
-  z-index: 100;
-  background: var(--panel-bg);
-  border: 1px solid var(--border);
-  border-radius: 2px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  max-width: 400px;
-  max-height: 300px;
+/* Fixed Instructions Panel */
+.instructions-panel {
+  width: 140px;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  flex-shrink: 0;
+  min-height: 0;
+  align-self: stretch;
+  max-height: 100%;
 }
 
-.code-box-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg);
-}
-
-.code-box-title {
-  font-size: 11px;
+.instructions-header {
+  padding: 4px 8px;
+  font-size: 9px;
   color: var(--muted);
   font-weight: 500;
   letter-spacing: 0.3px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-bg);
+  flex-shrink: 0;
 }
 
-.code-box-close {
-  background: none;
-  border: none;
-  color: var(--muted);
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0;
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s;
-}
-
-.code-box-close:hover {
-  color: var(--text);
-}
-
-.code-box-content {
-  padding: 8px 12px;
+.instructions-content {
+  flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 0;
+  min-height: 0;
+}
+
+.block-section {
+  margin-bottom: 8px;
+  padding: 0 8px;
+  transition: background 0.15s;
+}
+
+.block-section.selected {
+  background: rgba(100, 120, 200, 0.08);
+  border-left: 2px solid var(--accent);
+  padding-left: 6px;
+}
+
+.block-header {
+  font-size: 9px;
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  margin-bottom: 3px;
+  text-transform: uppercase;
+}
+
+.block-instructions {
   font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--text);
+  font-size: 10px;
+  line-height: 1.4;
 }
 
 .instruction-line {
   white-space: nowrap;
   color: #666666;
+  padding: 0.5px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-/* Custom scrollbar for code box */
-.code-box-content::-webkit-scrollbar {
+/* Custom scrollbar for instructions panel */
+.instructions-content::-webkit-scrollbar {
   width: 6px;
 }
 
-.code-box-content::-webkit-scrollbar-track {
+.instructions-content::-webkit-scrollbar-track {
   background: var(--bg);
 }
 
-.code-box-content::-webkit-scrollbar-thumb {
+.instructions-content::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 3px;
 }
 
-.code-box-content::-webkit-scrollbar-thumb:hover {
+.instructions-content::-webkit-scrollbar-thumb:hover {
   background: var(--muted);
 }
 </style>

@@ -74,15 +74,15 @@ function handleCfgNavigate(blockIds: number[] | null) {
       />
     </div>
     <div class="right-col">
-      <CfgPanel
-        class="cfg-panel"
+      <AfgPanel
+        class="afg-panel"
         :tx-hash="currentTxHash"
         :highlighted-block-id="highlightedBlockId"
         :is-analyzing="isAnalyzing"
         @cfg-navigate="handleCfgNavigate"
       />
-      <AfgPanel
-        class="afg-panel"
+      <CfgPanel
+        class="cfg-panel"
         :tx-hash="currentTxHash"
         :highlighted-block-id="highlightedBlockId"
         :is-analyzing="isAnalyzing"
@@ -132,13 +132,19 @@ function handleCfgNavigate(blockIds: number[] | null) {
   flex-direction: column;
   gap: 1px;
   background: var(--border);
+  min-height: 0;
+  overflow: hidden;
 }
 
 .cfg-panel {
   flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .afg-panel {
   flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 </style>
