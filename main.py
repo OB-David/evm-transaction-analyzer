@@ -21,7 +21,7 @@ except Exception:
 def main():
     # 配置参数
     PROVIDER_URL = os.environ.get("GETH_API")
-    TX_HASH = "0xae18e30f82a26ab2fc8ede7399feb000bfd95b00d0cd3763612e4dac1c66a95b"
+    TX_HASH = "0x840ecb2b5d55a682afd529138b36e97992eda9706e206237b57ec4697e4f8186"
 
     try:
         # ========== 前置检查 ==========

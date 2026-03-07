@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Gas Mosaic Surf</title>
+    <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
+    <style>
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+            background: #fdfdfd; display: flex; flex-direction: column; 
+            align-items: center; padding: 40px; color: #333;
+        }
+        .header-container { text-align: center; margin-bottom: 25px; }
+        #time-banner { 
+            font-size: 18px; font-weight: 500; color: #2c3e50; background: #fff; 
+            padding: 12px 25px; border-radius: 50px; border: 1px solid #eee;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05); display: inline-block; margin-top: 10px;
+        }
+        .nav { display: flex; gap: 15px; margin-bottom: 30px; }
+        button { 
+            padding: 12px 28px; border-radius: 30px; border: 1px solid #ddd; 
+            background: white; cursor: pointer; font-weight: 500; transition: all 0.2s;
+        }
+        button:hover { background: #f5f5f5; border-color: #bbb; transform: translateY(-1px); }
+        .btn-home { background: #000; color: #fff; border: none; }
+        .btn-home:hover { background: #333; }
+        .card { 
+            border: 1px solid #f0f0f0; padding: 15px; border-radius: 20px; 
+            box-shadow: 0 12px 40px rgba(0,0,0,0.08); background: #fff;
+            min-width: 750px; display: flex; justify-content: center;
+        }
+        #status-bar { margin-top: 20px; color: #aaa; font-size: 13px; }
+    </style>
+</head>
+<body>
+    <div class="header-container">
+        <h1>Surf Blocks</h1>
+        <div id="time-banner">Connecting to API...</div>
+    </div>
+
+    <div class="nav">
+        <button onclick="changePage(100)">⬅️ Older 100</button>
+        <button class="btn-home" onclick="resetHome()">🏠 Latest</button>
+        <button onclick="changePage(-100)">Newer 100 ➡️</button>
+    </div>
+
+    <div class="card">
+        <div id="plot"></div>
+    </div>
+
+    <div id="status-bar">Offset: 0 blocks</div>
+
+    <script>
+        const API_BASE = "http://127.0.0.1:5003/api/data";
+        let currentOffset = 0;
+
+        async function updateView(offset) {
+            const statusBar = document.getElementById('status-bar');
+            const timeBanner = document.getElementById('time-banner');
+            
+            statusBar.innerText = 'Fetching from Node...';
+            
+            try {
+                const response = await fetch(`${API_BASE}?offset=${offset}`);
+                const result = await response.json();
+                
+                if(result.plot_json) {
+                    const plotData = JSON.parse(result.plot_json);
+                    Plotly.newPlot('plot', plotData.data, plotData.layout, {displayModeBar: false});
+                    
+                    if(result.page_time > 0) {
+                        const date = new Date(result.page_time * 1000);
+                        timeBanner.innerText = "Page Latest: " + date.toLocaleString();
+                    } else {
+                        timeBanner.innerText = "Historical Block Data";
+                    }
+                }
+                currentOffset = offset;
+                statusBar.innerText = 'Current Offset: ' + currentOffset + ' blocks';
+            } catch (e) {
+                console.error("Update error:", e);
+                statusBar.innerText = 'Error: Cannot connect to Backend.';
+                timeBanner.innerText = "API Offline";
+            }
+        }
+
+        function changePage(delta) {
+            let next = currentOffset + delta;
+            if(next < 0) next = 0;
+            updateView(next);
+        }
+
+        function resetHome() {
+            updateView(0);
+        }
+
+        // 初始加载
+        updateView(0);
+    </script>
+</body>
+</html>
