@@ -1,39 +1,116 @@
-# Transaction's Control Flow Graph for EVM
+# EVM Transaction Analyzer
 
-
-
-## Using UV
-You need to install [UV](https://docs.astral.sh/uv/) at first
-
-### How to use UV for python version management
-- `uv python list`: View available Python versions.
-- `uv python install python3.x`: Install Python versions.
-- `uv python uninstall python3.x`: Uninstall a Python version.
-
-### How to manage Python projects with UV
-- `uv init`: Create a new Python project with a `pyproject.toml` file, which contains all information for this project, similar to `package.json` in Node.js project.
-- `uv add`: Add a dependency to the project, instead of `pip install`, `uv add` will add the package to `pyproject.toml` environment.
-- `uv remove`: Remove a dependency from the project.
-- `uv sync`: Sync the project's dependencies with the environment, similar to `npm install`.
-- `uv lock`: Create a lockfile for the project's dependencies.
-- `uv run`: Run a command in the project environment.
-- `uv tree`: View the dependency tree for the project.
-
-## What each file does
-
-`main.py`, `evm_information.py`, `basic_block.py`, `cfg_transaction.py`, `cfg_contract.py`, and `cfg_static_complete.py` are the main files for this project.
-
-- `evm_information.py` retrieves and standardizes execution traces and contract bytecode from an Ethereum node, serving as a clean data interface for downstream analyse. Now it also calculate the contracts', users' addresses and map between slots and addresses. 
-
-- `basic_block.py` splits EVM bytecode into basic blocks, enabling structural analysis of smart contract execution.
-
-- `cfg_transaction.py` draws the transaction execution CFG of a certain transaction.
-
-> The results of the 3 CFGs above are saved in the folder `Result/`.
-
-Run the following command to draw the CFGs:
-
-```bash
-python main.py
+```
+evm-transaction-analyzer/
+├── backend/    Python (FastAPI) analysis server
+├── frontend/   Vue 3 + TypeScript visualization app
+└── README.md
 ```
 
+- **Backend** — Fetches transaction traces from an Ethereum node, disassembles contract bytecode into basic blocks, constructs transaction-level CFGs, extracts token transfer flows, and serves results via a FastAPI server.
+- **Frontend** — Interactive dashboard using D3-Graphviz for CFG/AFG rendering and Plotly for block gas heatmap visualization.
+
+## Prerequisites
+
+- [UV](https://docs.astral.sh/uv/) (Python package manager, v0.4+)
+- Python 3.12+
+- Node.js 18+
+- Access to a Geth JSON-RPC endpoint
+
+## Using UV
+
+UV is the Python package manager used by this project.
+
+### Python version management
+
+- `uv python list` — View available Python versions
+- `uv python install python3.x` — Install a Python version
+- `uv python uninstall python3.x` — Uninstall a Python version
+
+### Project dependency management
+
+- `uv add <package>` — Add a dependency (updates `pyproject.toml`)
+- `uv remove <package>` — Remove a dependency
+- `uv sync` — Install/sync all dependencies
+- `uv lock` — Create/update the lockfile
+- `uv run <command>` — Run a command in the project environment
+- `uv tree` — View the dependency tree
+
+## Setup
+
+### Backend
+
+```bash
+cd backend
+uv sync                    # Install Python dependencies
+cp .env.example .env       # Create environment config
+# Edit .env with your actual values
+```
+
+Environment variables (configured in `backend/.env`):
+
+| Variable | Description |
+|----------|-------------|
+| `GETH_API` | URL of the Geth JSON-RPC endpoint |
+| `POSTGRESQL_HOST` | PostgreSQL server host |
+
+### Frontend
+
+```bash
+cd frontend
+npm install
+```
+
+## Running
+
+### Start the backend server
+
+```bash
+cd backend
+uv run uvicorn server:app --port 8000
+```
+
+The API server starts at `http://localhost:8000`.
+
+### Start the frontend dev server
+
+```bash
+cd frontend
+npm run dev
+```
+
+The frontend starts at `http://localhost:5173`.
+
+### Standalone analysis (no server)
+
+```bash
+cd backend
+uv run python main.py
+```
+
+Runs the analysis pipeline on the hardcoded transaction hash in `main.py` and saves results to `backend/Result/`.
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/analyze` | Analyze a transaction by hash |
+| GET | `/api/files/{tx_hash}/{filename}` | Retrieve analysis output files (.dot, .json, .svg) |
+| POST | `/api/block` | Get block gas data for heatmap |
+| GET | `/api/blocks` | Get block-level gas summary (paginated) |
+| GET | `/api/transaction/{tx_hash}/block` | Get block number for a transaction |
+
+## Key Backend Modules
+
+| Module | Description |
+|--------|-------------|
+| `main.py` | Main analysis pipeline entry point |
+| `main_api.py` | CLI wrapper accepting tx_hash as argument |
+| `server.py` | FastAPI server wrapping the pipeline |
+| `utils/evm_information.py` | EVM trace fetching, contract bytecode retrieval |
+| `utils/basic_block.py` | Bytecode to basic block conversion |
+| `utils/cfg_transaction.py` | Transaction-level CFG construction |
+| `utils/extract_token_changes.py` | Token transfer pairing and asset flow |
+| `utils/render_cfg.py` | CFG DOT file rendering |
+| `utils/render_legend.py` | Legend generation (matplotlib) |
+| `utils/block_exploration.py` | Block gas data fetching |
