@@ -9,9 +9,15 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, field_validator
-from utils.block_exploration import fetch_block_gas_data, get_transaction_block_number
+from utils.block_exploration import fetch_block_gas_data, get_transaction_block_number, fetch_blocks_gas_summary, start_prefetch
 
 app = FastAPI(title="EVM Transaction Analyzer")
+
+
+@app.on_event("startup")
+def startup_prefetch():
+    """Start background block prefetch on server startup."""
+    start_prefetch()
 
 # Thread pool for running subprocesses on Windows
 executor = ThreadPoolExecutor(max_workers=4)
@@ -71,6 +77,23 @@ class BlockGasResponse(BaseModel):
 
 class BlockNumberResponse(BaseModel):
     block_number: int
+
+
+class BlockSummaryInfo(BaseModel):
+    block_number: int
+    avg_gas: float
+    base_fee: float
+    tx_count: int
+    x: int
+    y: int
+
+
+class BlocksHeatmapResponse(BaseModel):
+    status: str
+    latest_block: int
+    page_timestamp: int
+    blocks: list[BlockSummaryInfo]
+    error: str | None = None
 
 
 @app.post("/api/analyze", response_model=AnalyzeResponse)
@@ -161,6 +184,13 @@ async def get_block_gas_data(req: BlockRequest):
     """Get block gas data for heatmap visualization."""
     result = fetch_block_gas_data(req.block_number)
     return BlockGasResponse(**result)
+
+
+@app.get("/api/blocks", response_model=BlocksHeatmapResponse)
+async def get_blocks_heatmap(offset: int = 0, count: int = 160):
+    """Get block-level gas summary data for the blocks heatmap."""
+    result = fetch_blocks_gas_summary(offset, count)
+    return BlocksHeatmapResponse(**result)
 
 
 @app.get("/api/transaction/{tx_hash}/block", response_model=BlockNumberResponse)

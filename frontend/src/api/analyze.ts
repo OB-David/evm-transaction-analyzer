@@ -106,6 +106,33 @@ export async function fetchTransactionBlock(txHash: string): Promise<number> {
   return data.block_number
 }
 
+export interface BlockSummaryInfo {
+  block_number: number
+  avg_gas: number
+  base_fee: number
+  tx_count: number
+  x: number
+  y: number
+}
+
+export interface BlocksHeatmapData {
+  status: string
+  latest_block: number
+  page_timestamp: number
+  blocks: BlockSummaryInfo[]
+  error?: string | null
+}
+
+export async function fetchBlocksHeatmap(offset: number = 0, count: number = 160): Promise<BlocksHeatmapData> {
+  const res = await fetch(`${API_BASE}/api/blocks?offset=${offset}&count=${count}`)
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch blocks heatmap: ${res.status}`)
+  }
+
+  return res.json()
+}
+
 export interface BlockInstructions {
   block_id: number
   instructions: string[]

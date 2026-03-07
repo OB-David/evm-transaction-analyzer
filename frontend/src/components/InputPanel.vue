@@ -2,6 +2,19 @@
 import { ref } from 'vue'
 import { analyzeTransaction, fetchTransactionBlock, type AnalyzeResult } from '../api/analyze'
 
+async function copyToClipboard(text: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+  }
+}
+
 const emit = defineEmits<{
   'analysis-complete': [txHash: string]
   'block-number-changed': [blockNumber: number]
@@ -16,13 +29,18 @@ const errorMsg = ref('')
 const blockErrorMsg = ref('')
 const result = ref<AnalyzeResult | null>(null)
 
-// Expose method to update txHash from parent
+// Expose methods to update fields from parent
 function updateTxHash(hash: string) {
   txHash.value = hash
 }
 
+function updateBlockNumber(num: number) {
+  blockNumber.value = num.toString()
+}
+
 defineExpose({
-  updateTxHash
+  updateTxHash,
+  updateBlockNumber,
 })
 
 async function onSubmit() {
@@ -91,12 +109,16 @@ async function onBlockSubmit() {
     <label class="panel-label">(a) Input</label>
 
     <!-- Block Number Input -->
+    <div class="field-label-row">
+      <span class="field-label">Block Number</span>
+      <button class="copy-btn" @click="copyToClipboard(blockNumber)" title="Copy">&#x2750;</button>
+    </div>
     <form class="input-form" @submit.prevent="onBlockSubmit">
       <input
         v-model="blockNumber"
         type="text"
         class="hash-input"
-        placeholder="Block Number (e.g., 12345678)"
+        placeholder="e.g., 12345678"
         :disabled="blockStatus === 'loading'"
       />
       <button
@@ -109,6 +131,10 @@ async function onBlockSubmit() {
     </form>
 
     <!-- Transaction Hash Input -->
+    <div class="field-label-row">
+      <span class="field-label">Tx Hash</span>
+      <button class="copy-btn" @click="copyToClipboard(txHash)" title="Copy">&#x2750;</button>
+    </div>
     <form class="input-form" @submit.prevent="onSubmit">
       <input
         v-model="txHash"
@@ -128,10 +154,8 @@ async function onBlockSubmit() {
 
     <div class="status-line">
       <span v-if="blockStatus === 'loading'" class="status-loading">Loading block...</span>
-      <span v-else-if="blockStatus === 'success'" class="status-success">Block loaded</span>
       <span v-else-if="blockStatus === 'error'" class="status-error">{{ blockErrorMsg }}</span>
       <span v-else-if="status === 'loading'" class="status-loading">Processing transaction...</span>
-      <span v-else-if="status === 'success'" class="status-success">Done — {{ result?.files.length }} files generated</span>
       <span v-else-if="status === 'error'" class="status-error">{{ errorMsg }}</span>
     </div>
   </div>
@@ -151,6 +175,33 @@ async function onBlockSubmit() {
   color: var(--muted);
 
   letter-spacing: 0.5px;
+}
+
+.field-label-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.field-label {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.3px;
+}
+
+.copy-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.copy-btn:hover {
+  color: var(--accent);
 }
 
 .input-form {

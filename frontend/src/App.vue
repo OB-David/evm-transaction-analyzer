@@ -23,6 +23,22 @@ function handleBlockNumberChanged(blockNum: number) {
   console.log('Block number changed:', blockNum)
 }
 
+function handleBlockSelected(blockNum: number) {
+  currentBlockNumber.value = blockNum
+  if (inputPanelRef.value) {
+    inputPanelRef.value.updateBlockNumber(blockNum)
+  }
+  console.log('Block selected from heatmap:', blockNum)
+}
+
+function handleLatestBlock(blockNum: number) {
+  if (!currentBlockNumber.value) {
+    if (inputPanelRef.value) {
+      inputPanelRef.value.updateBlockNumber(blockNum)
+    }
+  }
+}
+
 async function handleTransactionSelected(txHash: string) {
   console.log('Transaction selected from heatmap:', txHash)
 
@@ -71,6 +87,8 @@ function handleCfgNavigate(blockIds: number[] | null) {
         class="block-panel"
         :block-number="currentBlockNumber"
         @transaction-selected="handleTransactionSelected"
+        @block-selected="handleBlockSelected"
+        @latest-block="handleLatestBlock"
       />
     </div>
     <div class="right-col">
