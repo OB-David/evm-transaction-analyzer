@@ -1,0 +1,25 @@
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@hpcc-js/wasm": "^2.33.0",
+    "d3-graphviz": "^5.6.0",
+    "vue": "^3.5.25"
+  },
+  "devDependencies": {
+    "@types/d3-graphviz": "^2.6.10",
+    "@types/node": "^24.10.1",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "@vue/tsconfig": "^0.8.1",
+    "typescript": "5.5",
+    "vite": "^5.4.21",
+    "vue-tsc": "^2.2.12"
+  }
+}
