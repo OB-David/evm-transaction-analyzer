@@ -71,7 +71,7 @@ async function loadBlocksHeatmap() {
   blocksError.value = ''
 
   try {
-    const data = await fetchBlocksHeatmap(blocksOffset.value, 230)
+    const data = await fetchBlocksHeatmap(blocksOffset.value, 200)
     if (data.status === 'error') {
       blocksError.value = data.error || 'Failed to fetch blocks'
       blocksLoading.value = false
@@ -580,6 +580,7 @@ async function copyToClipboard(text: string) {
   flex-direction: column;
   min-height: 0;
   padding: 8px 0;
+  margin: 0 -12px;
 }
 
 .plot-area {
