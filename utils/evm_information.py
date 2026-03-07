@@ -120,12 +120,6 @@ class TraceFormatter:
                 normalized.append(f"0x{str_item}")
         return normalized
 
-    # 获取交易初始目标地址
-    def _get_initial_address(self, tx_hash: str) -> str:
-        tx = self.web3.eth.get_transaction(tx_hash)
-        return tx.get("to", "")
-
-
     # 获取当前交易所属区块的矿工地址
     def get_miner_by_tx_hash(self, tx_hash: str) -> Optional[str]:
             tx = self.web3.eth.get_transaction(tx_hash)
@@ -136,15 +130,13 @@ class TraceFormatter:
             miner_address = self.web3.to_checksum_address(block.miner)
             return miner_address
 
-    # 获取交易发起者（from）地址
-    def _get_tx_sender_address(self, tx_hash: str) -> str:
-        """
-        获取交易的发起者（from）地址并标准化
-        """
+    # 获取交易发起者用户地址和根合约合约地址
+    def _get_tx_from_to(self, tx_hash: str) -> str:
         try:
             tx = self.web3.eth.get_transaction(tx_hash)
-            sender_addr = tx.get("from", "")
-            return self._normalize_address(sender_addr)
+            from_addr = tx.get("from", "")
+            to_addr = tx.get("to", "")
+            return self._normalize_address(from_addr), self._normalize_address(to_addr)
         except Exception as e:
             logger.error(f"获取交易发起者地址失败: {e}")
             return ""
@@ -152,9 +144,6 @@ class TraceFormatter:
     # 缓存 get_code 查询，减少 RPC 调用（基于地址）
     @lru_cache(maxsize=1024)
     def _get_code_cached(self, addr_checksum: str) -> bytes:
-        '''
-        使用缓存获取合约字节码
-        '''
         try:
             return self.web3.eth.get_code(Web3.to_checksum_address(addr_checksum))
         except Exception as e:
@@ -165,7 +154,6 @@ class TraceFormatter:
     # 识别ERC20 token合约，包括逻辑合约识别
     def identify_erc20_contracts(self, initial_contracts: Set[str], steps: List[StandardizedStep]) -> Tuple[Dict[str, str], Set[str]]:
         """
-        识别所有ERC20合约（代理+逻辑合约）并返回完整映射
         参数:
             initial_contracts: 初始识别的合约地址集合
             steps: 标准化的trace步骤列表
@@ -350,7 +338,7 @@ class TraceFormatter:
         """
         try:
             # ========== 新增：先获取交易发起者地址 ==========
-            tx_sender_address = self._get_tx_sender_address(tx_hash)
+            tx_sender_address, initial_address = self._get_tx_from_to(tx_hash)
             logger.info(f"交易 {tx_hash} 的发起者地址: {tx_sender_address}")
 
             cmd = [
@@ -366,9 +354,6 @@ class TraceFormatter:
 
             struct_logs = raw_trace.get("structLogs", [])
             steps: List[StandardizedStep] = []
-
-            
-            initial_address = self._normalize_address(self._get_initial_address(tx_hash))
 
             miner_address = self._normalize_address(self.get_miner_by_tx_hash(tx_hash))
 
@@ -531,7 +516,9 @@ class TraceFormatter:
                 contracts_addresses=contracts_addresses, 
                 erc20_token_map=erc20_token_map, 
                 users_addresses=final_users_addresses_set,
-                tx_sender_address=tx_sender_address  # 新增参数
+                tx_sender_address=tx_sender_address,
+                initial_address=initial_address,
+                miner_address=miner_address
             )
 
             # 返回时新增 erc20_token_map 和 tx_sender_address 字段
@@ -722,14 +709,16 @@ class TraceFormatter:
         erc20_token_map: Dict[str, str],
         users_addresses: Set[str],
         tx_sender_address: str = "",    #交易发起者地址
+        initial_address: str = "", # 根合约地址
         miner_address: str = ""  # 矿工地址
     ) -> Dict[str, str]:
         """
         构建全地址-名称映射表：
+        - 交易发起者：优先命名为 User_From
+        - 根合约： 优先命名为 contract_to
         - ERC20合约：使用token名称
         - 非ERC20合约：contract_a、contract_b...
-        - 交易发起者：优先命名为 User_From
-        - 其他用户地址：User_A、User_B...
+        - 用户地址：User_A、User_B...
         """
         full_name_map = {}
         
@@ -740,9 +729,11 @@ class TraceFormatter:
         # 2. 处理非ERC20合约
         non_erc20_contracts = [addr for addr in contracts_addresses if addr not in full_name_map]
         for idx, addr in enumerate(non_erc20_contracts):
-            # 生成contract_a、contract_b...（a=0, b=1...）
-            contract_suffix = chr(ord('a') + idx)
-            full_name_map[addr] = f"contract_{contract_suffix}"
+            if addr == initial_address: # 优先处理根合约
+                full_name_map[addr] = "contract_to"
+            else: # 生成contract_a、contract_b...
+                contract_suffix = chr(ord('a') + idx)
+                full_name_map[addr] = f"contract_{contract_suffix}"
         
         # 3. 处理用户地址
         sorted_users = sorted(list(users_addresses))
