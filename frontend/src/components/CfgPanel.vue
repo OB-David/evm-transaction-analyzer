@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, nextTick } from 'vue'
+import { ref, watch, nextTick } from 'vue'
 import { graphviz } from 'd3-graphviz'
 import { zoomIdentity, zoomTransform } from 'd3-zoom'
 import { select } from 'd3-selection'
@@ -345,14 +345,8 @@ function zoomToVisibleNodes() {
   // zoomIdentity.translate(tx, ty).scale(k)
   // 这会产生: k=k, x=tx*k, y=ty*k (translate 会被 scale 影响!)
   //
-  // 正确的做法是直接构造 transform 对象:
-  const transform = {
-    k: scale,
-    x: translateX,
-    y: translateY
-  }
-
-  console.log('Final transform:', transform)
+  // 使用 d3 ZoomTransform 实例（而非普通对象），确保后续缩放交互正常
+  const transform = zoomIdentity.translate(translateX, translateY).scale(scale)
 
   applyZoomTransform(transform)
 }
@@ -420,11 +414,6 @@ function resetFilter() {
   emit('cfg-navigate', null)
 }
 
-onMounted(() => {
-  if (props.txHash) {
-    loadCfgData(props.txHash)
-  }
-})
 </script>
 
 <template>

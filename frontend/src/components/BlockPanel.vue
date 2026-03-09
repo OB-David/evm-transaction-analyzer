@@ -196,6 +196,7 @@ function renderBlocksPlotly(data: BlocksHeatmapData) {
     responsive: true,
   })
 
+  ;(blockPlotContainer.value as any).removeAllListeners('plotly_click')
   ;(blockPlotContainer.value as any).on('plotly_click', (eventData: any) => {
     const pt = eventData.points?.[0]
     if (!pt) return
@@ -349,6 +350,7 @@ function renderPlotly(data: BlockGasData) {
     responsive: true,
   })
 
+  ;(txPlotContainer.value as any).removeAllListeners('plotly_click')
   ;(txPlotContainer.value as any).on('plotly_click', (eventData: any) => {
     const pt = eventData.points?.[0]
     if (!pt) return
