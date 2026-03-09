@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, nextTick } from 'vue'
+import { ref, watch, nextTick } from 'vue'
 import { graphviz } from 'd3-graphviz'
 import { fetchDotFile, fetchEdgeLink, type EdgeLink } from '../api/analyze'
 import LegendPanel from './LegendPanel.vue'
@@ -201,11 +201,6 @@ function handleEdgeClick(edgeId: number) {
   }
 }
 
-onMounted(() => {
-  if (props.txHash) {
-    loadAfgData(props.txHash)
-  }
-})
 </script>
 
 <template>
