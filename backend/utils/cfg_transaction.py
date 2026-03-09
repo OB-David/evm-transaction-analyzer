@@ -308,7 +308,7 @@ class CFGConstructor:
                             eth_event=None
                         )
                     except Exception as e:
-                        print(f"ERC20({action_type}) add_action调用失败 ❌: {type(e).__name__} = {e}")
+                        print(f"ERC20({action_type}) add_action调用失败: {type(e).__name__} = {e}")
                         raise
 
             # 处理ETH事件
@@ -328,7 +328,7 @@ class CFGConstructor:
                             eth_event=eth_event
                         )
                     except Exception as e:
-                        print(f"ETH add_action调用失败 ❌: {type(e).__name__} = {e}")
+                        print(f"ETH add_action调用失败: {type(e).__name__} = {e}")
                         raise
             
             node.fold_info["actions"] = node.actions.copy()
@@ -568,7 +568,7 @@ class CFGConstructor:
         try:
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(block_inst_map, f, ensure_ascii=False, indent=2)
-            print(f"✅ 极简版Block-Inst映射已导出: {output_path} (共{len(block_inst_map)}个节点)")
+            print(f"[OK] 极简版Block-Inst映射已导出: {output_path} (共{len(block_inst_map)}个节点)")
         except Exception as e:
-            print(f"❌ 导出失败: {e}")
+            print(f"[ERROR] 导出失败: {e}")
             raise

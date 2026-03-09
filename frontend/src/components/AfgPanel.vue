@@ -232,7 +232,6 @@ function handleEdgeClick(edgeId: number) {
   background: var(--panel-bg);
   display: flex;
   flex-direction: column;
-  height: 100%;
   overflow: hidden;
 }
 
@@ -248,8 +247,8 @@ function handleEdgeClick(edgeId: number) {
 
 .afg-container {
   position: relative;
-  width: 100%;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   padding-top: 28px;
 }
 

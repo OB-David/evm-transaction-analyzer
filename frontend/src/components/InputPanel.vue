@@ -168,6 +168,7 @@ async function onBlockSubmit() {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  overflow: hidden;
 }
 
 .panel-label {

@@ -138,7 +138,7 @@ def main():
         
     except Exception as e:
         import traceback
-        print(f"\n❌ 执行失败: {str(e)}")
+        print(f"\n[ERROR] 执行失败: {str(e)}")
         print("详细错误堆栈：")
         traceback.print_exc()
 

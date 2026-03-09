@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, nextTick } from 'vue'
+import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import {
   fetchBlockGasData,
   fetchBlocksHeatmap,
@@ -24,6 +24,52 @@ const emit = defineEmits<{
 const plotlyReady = ref(false)
 const viewMode = ref<ViewMode>('blocks')
 
+// Auto-refresh
+let refreshTimer: ReturnType<typeof setInterval> | null = null
+const REFRESH_INTERVAL_MS = 12000  // ~1 Ethereum block time
+
+function startAutoRefresh() {
+  stopAutoRefresh()
+  refreshTimer = setInterval(() => {
+    if (viewMode.value === 'blocks' && blocksOffset.value === 0 && !blocksLoading.value) {
+      loadBlocksHeatmap()
+    }
+  }, REFRESH_INTERVAL_MS)
+}
+
+function stopAutoRefresh() {
+  if (refreshTimer !== null) {
+    clearInterval(refreshTimer)
+    refreshTimer = null
+  }
+}
+
+// Per-second clock for "X seconds ago" display
+const nowTs = ref(Math.floor(Date.now() / 1000))
+let clockTimer: ReturnType<typeof setInterval> | null = null
+
+function startClock() {
+  clockTimer = setInterval(() => {
+    nowTs.value = Math.floor(Date.now() / 1000)
+  }, 1000)
+}
+
+function formatAge(blockTs: number): string {
+  if (!blockTs) return ''
+  const age = nowTs.value - blockTs
+  if (age < 0) return 'just now'
+  if (age < 60) return `${age}s ago`
+  const m = Math.floor(age / 60)
+  const s = age % 60
+  if (age < 3600) return `${m}m ${s}s ago`
+  return `${Math.floor(age / 3600)}h ago`
+}
+
+onUnmounted(() => {
+  stopAutoRefresh()
+  if (clockTimer !== null) clearInterval(clockTimer)
+})
+
 // Blocks view state
 const blockPlotContainer = ref<HTMLDivElement | null>(null)
 const blocksData = ref<BlocksHeatmapData | null>(null)
@@ -41,17 +87,18 @@ const selectedTxIndex = ref<number | null>(null)
 
 // Load Plotly from CDN
 onMounted(() => {
+  startClock()
   if (!(window as any).Plotly) {
     const script = document.createElement('script')
     script.src = 'https://cdn.plot.ly/plotly-2.24.1.min.js'
     script.onload = () => {
       plotlyReady.value = true
-      loadBlocksHeatmap()
+      loadBlocksHeatmap().then(startAutoRefresh)
     }
     document.head.appendChild(script)
   } else {
     plotlyReady.value = true
-    loadBlocksHeatmap()
+    loadBlocksHeatmap().then(startAutoRefresh)
   }
 })
 
@@ -66,7 +113,7 @@ watch(() => props.blockNumber, async (newBlock) => {
 
 // ─── Blocks View ───
 
-async function loadBlocksHeatmap() {
+async function loadBlocksHeatmap(): Promise<void> {
   blocksLoading.value = true
   blocksError.value = ''
 
@@ -161,18 +208,21 @@ function renderBlocksPlotly(data: BlocksHeatmapData) {
 }
 
 function navigateOlder() {
+  stopAutoRefresh()  // 翻到历史页时停止自动刷新
   blocksOffset.value += 100
   loadBlocksHeatmap()
 }
 
 function navigateNewer() {
   blocksOffset.value = Math.max(0, blocksOffset.value - 100)
-  loadBlocksHeatmap()
+  loadBlocksHeatmap().then(() => {
+    if (blocksOffset.value === 0) startAutoRefresh()
+  })
 }
 
 function navigateLatest() {
   blocksOffset.value = 0
-  loadBlocksHeatmap()
+  loadBlocksHeatmap().then(startAutoRefresh)
 }
 
 function backToBlocks() {
@@ -358,7 +408,9 @@ async function copyToClipboard(text: string) {
       <!-- Blocks view: time + navigation -->
       <template v-if="viewMode === 'blocks'">
         <div class="time-banner" v-if="blocksData">
-          {{ formatTimestamp(blocksData.page_timestamp) }}
+          <span class="latest-block-num">#{{ blocksData.latest_block }}</span>
+          <span class="age-text">{{ formatAge(blocksData.latest_block_timestamp || blocksData.page_timestamp) }}</span>
+          <span v-if="refreshTimer !== null" class="live-badge">LIVE</span>
         </div>
         <div class="nav-buttons">
           <button class="nav-btn" @click="navigateOlder">Older 100</button>
@@ -476,6 +528,36 @@ async function copyToClipboard(text: string) {
   font-size: 11px;
   color: var(--muted);
   text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.latest-block-num {
+  font-family: 'Consolas', 'Monaco', monospace;
+  color: var(--text);
+}
+
+.age-text {
+  color: var(--muted);
+}
+
+.live-badge {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: #4caf50;
+  border: 1px solid #4caf50;
+  border-radius: 2px;
+  padding: 1px 4px;
+  line-height: 1.2;
+  animation: pulse-live 2s ease-in-out infinite;
+}
+
+@keyframes pulse-live {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
 .nav-buttons {

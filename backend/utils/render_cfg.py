@@ -286,5 +286,5 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
     with open(final_output_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(dot_lines))
 
-    print(f"✅ CFG DOT文件已生成：{final_output_path}")
+    print(f"[OK] CFG DOT文件已生成：{final_output_path}")
     return addr_color_map

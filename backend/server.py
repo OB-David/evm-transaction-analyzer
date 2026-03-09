@@ -91,6 +91,7 @@ class BlockSummaryInfo(BaseModel):
 class BlocksHeatmapResponse(BaseModel):
     status: str
     latest_block: int
+    latest_block_timestamp: int = 0
     page_timestamp: int
     blocks: list[BlockSummaryInfo]
     error: str | None = None
@@ -104,6 +105,7 @@ async def analyze(req: AnalyzeRequest):
             ["uv", "run", "python", "main_api.py", req.tx_hash],
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         return proc
 
@@ -189,7 +191,8 @@ async def get_block_gas_data(req: BlockRequest):
 @app.get("/api/blocks", response_model=BlocksHeatmapResponse)
 async def get_blocks_heatmap(offset: int = 0, count: int = 160):
     """Get block-level gas summary data for the blocks heatmap."""
-    result = fetch_blocks_gas_summary(offset, count)
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(executor, fetch_blocks_gas_summary, offset, count)
     return BlocksHeatmapResponse(**result)
 
 
