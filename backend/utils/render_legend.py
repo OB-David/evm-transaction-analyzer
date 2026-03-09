@@ -207,4 +207,4 @@ def render_legend_matplotlib(
     )
 
     plt.close(fig)
-    print(f"✅ 最终版图例已生成（使用addr_color_map）：{svg_path}")
+    print(f"[OK] 最终版图例已生成（使用addr_color_map）：{svg_path}")

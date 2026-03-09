@@ -1,7 +1,11 @@
 """CLI wrapper that accepts tx_hash as argument and runs the analysis pipeline."""
 import sys
+import io
 import json
 import os
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 from dotenv import load_dotenv
 from utils.evm_information import TraceFormatter
 from utils.basic_block import BasicBlockProcessor

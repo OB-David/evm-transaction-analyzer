@@ -113,6 +113,7 @@ function handleCfgNavigate(blockIds: number[] | null) {
 <style scoped>
 .app-grid {
   height: 100vh;
+  min-width: 900px;
   display: grid;
   grid-template-columns: 20% 80%;
   grid-template-rows: 36px 1fr;
@@ -132,11 +133,10 @@ function handleCfgNavigate(blockIds: number[] | null) {
   background: var(--border);
   overflow: hidden;
   min-height: 0;
+  min-width: 180px;
 }
 
 .input-panel {
-  height: 15vh;
-  min-height: 120px;
   flex-shrink: 0;
 }
 

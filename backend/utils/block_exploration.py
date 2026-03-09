@@ -65,13 +65,44 @@ def _prefetch_worker(start_num: int):
     print(f"[*] Background prefetch completed. Cached {cached} new blocks.")
 
 
+def _new_block_watcher():
+    """Background thread that continuously caches new blocks as they arrive."""
+    print("[*] New block watcher started.")
+    last_seen = _latest_block_cache["num"]
+    while True:
+        time.sleep(6)
+        try:
+            current = w3.eth.block_number
+            if current > last_seen:
+                for num in range(last_seen + 1, current + 1):
+                    cache_key = str(num)
+                    if cache_key not in BLOCK_CACHE:
+                        block = w3.eth.get_block(num, full_transactions=False)
+                        tx_count = len(block.get('transactions', []))
+                        gas_used = block.get('gasUsed', 0)
+                        avg_gas = gas_used / tx_count if tx_count > 0 else 0
+                        base_fee = block.get('baseFeePerGas', 0) / 1e9
+                        BLOCK_CACHE[cache_key] = {
+                            "block_number": num,
+                            "avg_gas": avg_gas,
+                            "base_fee": base_fee,
+                            "tx_count": tx_count,
+                        }
+                last_seen = current
+                _latest_block_cache["num"] = current
+                _latest_block_cache["ts"] = time.time()
+        except Exception:
+            pass
+
+
 def start_prefetch():
-    """Start background prefetch thread from the latest block."""
+    """Start background prefetch thread from the latest block, then watch for new blocks."""
     try:
         initial_height = w3.eth.block_number
         _latest_block_cache["num"] = initial_height
         _latest_block_cache["ts"] = time.time()
         threading.Thread(target=_prefetch_worker, args=(initial_height,), daemon=True).start()
+        threading.Thread(target=_new_block_watcher, daemon=True).start()
     except Exception as e:
         print(f"Failed to start prefetch thread: {e}")
 
