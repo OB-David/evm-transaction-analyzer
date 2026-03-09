@@ -91,6 +91,7 @@ class BlockSummaryInfo(BaseModel):
 class BlocksHeatmapResponse(BaseModel):
     status: str
     latest_block: int
+    latest_block_timestamp: int = 0
     page_timestamp: int
     blocks: list[BlockSummaryInfo]
     error: str | None = None

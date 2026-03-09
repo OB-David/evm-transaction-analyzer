@@ -44,7 +44,31 @@ function stopAutoRefresh() {
   }
 }
 
-onUnmounted(stopAutoRefresh)
+// Per-second clock for "X seconds ago" display
+const nowTs = ref(Math.floor(Date.now() / 1000))
+let clockTimer: ReturnType<typeof setInterval> | null = null
+
+function startClock() {
+  clockTimer = setInterval(() => {
+    nowTs.value = Math.floor(Date.now() / 1000)
+  }, 1000)
+}
+
+function formatAge(blockTs: number): string {
+  if (!blockTs) return ''
+  const age = nowTs.value - blockTs
+  if (age < 0) return 'just now'
+  if (age < 60) return `${age}s ago`
+  const m = Math.floor(age / 60)
+  const s = age % 60
+  if (age < 3600) return `${m}m ${s}s ago`
+  return `${Math.floor(age / 3600)}h ago`
+}
+
+onUnmounted(() => {
+  stopAutoRefresh()
+  if (clockTimer !== null) clearInterval(clockTimer)
+})
 
 // Blocks view state
 const blockPlotContainer = ref<HTMLDivElement | null>(null)
@@ -63,6 +87,7 @@ const selectedTxIndex = ref<number | null>(null)
 
 // Load Plotly from CDN
 onMounted(() => {
+  startClock()
   if (!(window as any).Plotly) {
     const script = document.createElement('script')
     script.src = 'https://cdn.plot.ly/plotly-2.24.1.min.js'
@@ -381,7 +406,8 @@ async function copyToClipboard(text: string) {
       <!-- Blocks view: time + navigation -->
       <template v-if="viewMode === 'blocks'">
         <div class="time-banner" v-if="blocksData">
-          {{ formatTimestamp(blocksData.page_timestamp) }}
+          <span class="latest-block-num">#{{ blocksData.latest_block }}</span>
+          <span class="age-text">{{ formatAge(blocksData.latest_block_timestamp || blocksData.page_timestamp) }}</span>
           <span v-if="refreshTimer !== null" class="live-badge">LIVE</span>
         </div>
         <div class="nav-buttons">
@@ -504,6 +530,15 @@ async function copyToClipboard(text: string) {
   align-items: center;
   justify-content: center;
   gap: 6px;
+}
+
+.latest-block-num {
+  font-family: 'Consolas', 'Monaco', monospace;
+  color: var(--text);
+}
+
+.age-text {
+  color: var(--muted);
 }
 
 .live-badge {

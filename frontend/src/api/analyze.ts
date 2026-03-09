@@ -118,6 +118,7 @@ export interface BlockSummaryInfo {
 export interface BlocksHeatmapData {
   status: string
   latest_block: number
+  latest_block_timestamp: number
   page_timestamp: number
   blocks: BlockSummaryInfo[]
   error?: string | null
