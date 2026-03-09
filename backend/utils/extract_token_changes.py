@@ -22,7 +22,7 @@ def format_scientific_html(value: float, precision: int = 4, sup_size: int = 8) 
     exp = int(exp)
     return f"{mantissa}×10<sup><font point-size='{sup_size}'>{exp}</font></sup>"
 
-def pair_transactions(all_changes, token_decimals_map=None):
+def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
     """
     按 all_changes 顺序配对余额变化并确定交易顺序
     """
@@ -30,6 +30,18 @@ def pair_transactions(all_changes, token_decimals_map=None):
     node_annotations = defaultdict(list)
     order_counter = 0
     pending_erc20 = {}
+
+    # 交易发起时ETH Transfer
+    paired.append({
+        "order": order_counter,
+        "codecontract_address": None,
+        "from": original_transfer[0],
+        "to": original_transfer[1],
+        "amount":original_transfer[2]/ (10 ** 18),
+        "token": "ETH",
+        "token_addr": "ETH",
+        "source_pcs": None,
+    })
 
     for c in all_changes:
         # -------- ETH --------
@@ -180,7 +192,7 @@ def render_asset_flow(paired, node_annotations, users_addresses, full_address_na
     for p in sorted(paired, key=lambda x: x["order"]):
         src_id = get_merged_node_id(p["from"])
         tgt_id = get_merged_node_id(p["to"])
-        edge_color = addr_color_map.get(p["token_addr"] if p["token"] != "ETH" else p["from"], "#FFFFFF")
+        edge_color = addr_color_map.get(p["token_addr"] if p["token"] != "ETH" else p["from"], "#000000")
         amount_str = format_scientific_html(p["amount"])
         edge_label = f"({p['order']}) {p['token']}: {amount_str}"
         dot.edge(src_id, tgt_id, label="<" + edge_label + ">", color=edge_color, fontcolor=edge_color)
@@ -212,6 +224,8 @@ def render_asset_flow(paired, node_annotations, users_addresses, full_address_na
 def afg_to_cfg(paired, pending_erc20, cfg_constructor: CFGConstructor, tx_cfg: CFG, folded_node_map):
     edge_link = []
     for p in paired:
+        if p["order"] == 0:
+            continue
         if p["token"] == "ETH":
             matched_block = cfg_constructor.find_node_by_pc_address(tx_cfg, p["codecontract_address"], p["source_pcs"][0]).id
             if matched_block:

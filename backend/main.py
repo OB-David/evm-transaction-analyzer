@@ -34,7 +34,10 @@ def main():
         
         # 获取交易信息
         tx = web3.eth.get_transaction(TX_HASH)
+        from_address = tx.get('from')
         to_address = tx.get('to')
+        amount = tx.get('value')
+        print(amount)
         
         # 检查1：无to_address → 合约创建交易
         if to_address is None or to_address == "":
@@ -100,7 +103,9 @@ def main():
             decimals = formatter.get_token_decimals(token_addr)
             token_decimals_map[token_addr] = decimals
         # 调用 pair_transactions 时传入精度映射
-        pairs, annotations, pending_erc20 = pair_transactions(all_changes, token_decimals_map)
+        original_transfer = [from_address.lower(),to_address.lower(), int(amount)]
+        print(int(amount))
+        pairs, annotations, pending_erc20 = pair_transactions(original_transfer,all_changes, token_decimals_map)
         edge_link = afg_to_cfg(pairs, pending_erc20, cfg_constructor, tx_cfg, folded_node_map)
         json_output = edge_link_to_json(edge_link)
         print(f"共提取到 {len(all_changes)} 条资产变更事件，配对成功 {len(pairs)} 对交易流,存在孤立变动{len(annotations)}条\n")
