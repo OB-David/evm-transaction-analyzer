@@ -3,7 +3,7 @@ import sys
 import io
 import json
 import os
-
+from web3 import Web3
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 from dotenv import load_dotenv
@@ -21,6 +21,24 @@ def run(tx_hash: str):
 
     formatter = TraceFormatter(PROVIDER_URL)
     processor = BasicBlockProcessor()
+
+    web3 = Web3(Web3.HTTPProvider(PROVIDER_URL))
+    tx = web3.eth.get_transaction(tx_hash)
+    from_address = tx.get('from')
+    to_address = tx.get('to')
+    amount = tx.get('value')
+
+    # 检查1：无to_address → 合约创建交易
+    if to_address is None or to_address == "":
+        print("This contract creation transaction is not the type of transaction we are concerned about.")
+        return
+    
+    # 检查2：to_address不是合约地址 → 普通ETH转账
+    contract_code = web3.eth.get_code(to_address)
+    if len(contract_code) == 0:
+        print("This ETH transfer transaction is not the type of transaction we are concerned about.")
+        return
+
 
     standardized_trace = formatter.get_standardized_trace(tx_hash)
 
@@ -40,7 +58,8 @@ def run(tx_hash: str):
     for token_addr in erc20_token_map.keys():
         token_decimals_map[token_addr] = formatter.get_token_decimals(token_addr)
 
-    pairs, annotations, pending_erc20 = pair_transactions(all_changes, token_decimals_map)
+    original_transfer = [from_address.lower(),to_address.lower(), int(amount)]
+    pairs, annotations, pending_erc20 = pair_transactions(original_transfer, all_changes, token_decimals_map)
     edge_link = afg_to_cfg(pairs, pending_erc20, cfg_constructor, tx_cfg, folded_node_map)
     json_output = edge_link_to_json(edge_link)
 

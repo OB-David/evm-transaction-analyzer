@@ -37,7 +37,7 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
         "codecontract_address": None,
         "from": original_transfer[0],
         "to": original_transfer[1],
-        "amount":original_transfer[2]/ (10 ** 18),
+        "amount":original_transfer[2] / (10 ** 18),
         "token": "ETH",
         "token_addr": "ETH",
         "source_pcs": None,
@@ -132,6 +132,7 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
     # 注意：此处不再过滤 WETH，也不再存入 node_annotations，统一在渲染层处理为“边”
     
     paired.sort(key=lambda x: x["order"])
+    print(paired, node_annotations, pending_erc20)
     return paired, node_annotations, pending_erc20
 
 def render_asset_flow(paired, node_annotations, users_addresses, full_address_name_map, pending_erc20, addr_color_map, output_file="asset_flow.dot"):
