@@ -119,28 +119,35 @@ class CFGConstructor:
         return {e.target for e in cfg.edges if e.source == node and isinstance(e.target, FoldableBlockNode)}
 
     def _identify_linear_chain(self, cfg: CFG, start_node: FoldableBlockNode) -> List[FoldableBlockNode]:
-        """按唯一父子节点数识别线性链路（兼容反复执行场景）"""
+        """识别线性链路：遇到回环或入度/出度变化时立即截断并返回已识别部分"""
         chain = [start_node]
         current_node = start_node
         contract_addr = start_node.address
+        visited_nodes = {start_node} 
 
         while True:
-            # 1. 获取当前节点的唯一子节点（去重+同合约）
+            # 1. 获取唯一子节点
             unique_children = self._get_unique_children(cfg, current_node)
             unique_children = {n for n in unique_children if n.address == contract_addr}
             
-            # 唯一子节点数≠1 → 链路结束
             if len(unique_children) != 1:
                 break
             
             next_node = next(iter(unique_children))
-            # 2. 检查子节点的唯一父节点数是否=1（仅当前节点）
+
+            # 2. 回环检测：如果下一个节点已经在链里了，说明这一段到此为止
+            # 比如 A-B-A，处理 B 时发现 next 是 A，直接 break，返回 [A, B]
+            if next_node in visited_nodes:
+                break
+
+            # 3. 唯一父节点检测（入度安全性检查）
             unique_parents = self._get_unique_parents(cfg, next_node)
             if len(unique_parents) != 1 or next(iter(unique_parents)) != current_node:
                 break
             
-            # 3. 加入链路，继续遍历
+            # 4. 只有通过了所有检查，才加入链
             chain.append(next_node)
+            visited_nodes.add(next_node)
             current_node = next_node
 
         return chain
@@ -160,6 +167,7 @@ class CFGConstructor:
             
             # 识别线性链路
             chain = self._identify_linear_chain(cfg, node)
+            print(len(chain))
             if len(chain) <= 1:  # 非线性链路，跳过
                 processed_nodes.add(node)
                 # 非折叠节点也记录映射（值为自身列表），确保映射全覆盖
@@ -541,10 +549,10 @@ class CFGConstructor:
     
 
 
-    # 导出blockid和instructions映射
-    def export_folded_blocks_instructions(self, cfg: CFG, output_path: str):
+    # 导出blockid和内部信息映射
+    def export_folded_blocks_information(self, cfg: CFG, output_path: str):
         """
-        导出可见节点的block_id与instructions纯映射
+        导出可见节点的block_id与information(instructions, contract_name, 映射
         :param cfg: CFG对象
         :param output_path: JSON输出路径
         """
@@ -561,6 +569,12 @@ class CFGConstructor:
             # 极简序列化：所有指令转字符串
             block_inst_map[node.id] = {
                 "block_id": node.id,
+                "address": node.address,
+                "blocks_number": node.fold_info["blocks_number"],
+                "start_pc": node.start_pc,
+                "end_pc": node.fold_info["end_pc"],
+                "gas": node.fold_info["total_gas"],
+                "actions": node.fold_info.get("actions", node.actions),
                 "instructions": [str(instr) for instr in node.instructions]
             }
         
