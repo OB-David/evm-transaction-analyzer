@@ -102,6 +102,7 @@ def main():
         for token_addr in erc20_token_map.keys():
             decimals = formatter.get_token_decimals(token_addr)
             token_decimals_map[token_addr] = decimals
+            
         # 调用 pair_transactions 时传入精度映射
         original_transfer = [from_address.lower(),to_address.lower(), int(amount)]
         print(int(amount))
@@ -118,9 +119,9 @@ def main():
 
         # 8. 保存折叠后Block ID与Instructions映射数据
         print("正在导出可见Block ID与Instructions映射...")
-        folded_blocks_path = os.path.join(result_dir, "folded_blocks_instructions.json")
-        cfg_constructor.export_folded_blocks_instructions(tx_cfg, folded_blocks_path)
-        print(f"blcokid-instructions映射数据已保存到: {folded_blocks_path}")
+        folded_blocks_path = os.path.join(result_dir, "folded_blocks_information.json")
+        cfg_constructor.export_folded_blocks_information(tx_cfg, folded_blocks_path)
+        print(f"blcokid-information映射数据已保存到: {folded_blocks_path}")
         
         # 9. 保存资产变更数据
         changes_path = os.path.join(result_dir, "balance_and_eth_changes.json") 
