@@ -134,13 +134,19 @@ export async function fetchBlocksHeatmap(offset: number = 0, count: number = 160
   return res.json()
 }
 
-export interface BlockInstructions {
+export interface BlockInformation {
   block_id: number
+  address: string
+  blocks_number: number
+  start_pc: string
+  end_pc: string
+  gas: number
+  actions: string[]
   instructions: string[]
 }
 
-export interface BlockInstructionsMap {
-  [blockId: string]: BlockInstructions
+export interface BlockInformationMap {
+  [blockId: string]: BlockInformation
 }
 
 export interface LegendEntry {
@@ -165,11 +171,11 @@ export async function fetchLegendData(txHash: string): Promise<LegendData> {
   return res.json()
 }
 
-export async function fetchBlockInstructions(txHash: string): Promise<BlockInstructionsMap> {
-  const res = await fetch(`${API_BASE}/api/files/${txHash}/folded_blocks_instructions.json`)
+export async function fetchBlockInformation(txHash: string): Promise<BlockInformationMap> {
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/folded_blocks_information.json`)
 
   if (!res.ok) {
-    throw new Error(`Failed to fetch block instructions: ${res.status}`)
+    throw new Error(`Failed to fetch block information: ${res.status}`)
   }
 
   return res.json()

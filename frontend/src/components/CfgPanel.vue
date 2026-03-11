@@ -3,7 +3,7 @@ import { ref, watch, nextTick } from 'vue'
 import { graphviz } from 'd3-graphviz'
 import { zoomIdentity, zoomTransform } from 'd3-zoom'
 import { select } from 'd3-selection'
-import { fetchCfgDotFile, fetchBlockInstructions, type BlockInstructionsMap } from '../api/analyze'
+import { fetchCfgDotFile, fetchBlockInformation, fetchLegendData, type BlockInformationMap, type BlockInformation } from '../api/analyze'
 
 const props = defineProps<{
   txHash: string | null
@@ -19,42 +19,29 @@ const dotContent = ref<string>('')
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
 
-// Node metadata extracted from DOT labels
-interface NodeMetadata {
-  id: number
-  contractName: string
-  blocks: number
-  startPC: string
-  endPC: string
-  gas: string
-  actions: string[]
-  shape: 'record' | 'ellipse'
-}
-
-const nodeMetadataMap = ref<Map<number, NodeMetadata>>(new Map())
-const selectedNodeMetadata = ref<NodeMetadata | null>(null)
-
-// Block instructions state
-const blockInstructions = ref<BlockInstructionsMap>({})
+// Block information state (from folded_blocks_information.json)
+const blockInformation = ref<BlockInformationMap>({})
 const selectedBlockId = ref<number | null>(null)
+const selectedBlockInfo = ref<BlockInformation | null>(null)
 const instructionsPanel = ref<HTMLElement | null>(null)
+
+// Address-to-name mapping (from legend.json)
+const addressNameMap = ref<Map<string, string>>(new Map())
 
 const graphContainer = ref<HTMLElement | null>(null)
 let graphvizInstance: any = null
-let initialTransform: any = null  // 保存初始fit变换,用于reset
+let initialTransform: any = null
 
 // 过滤和高亮状态
 const highlightedNodes = ref<Set<string>>(new Set())
 const visibleNodes = ref<Set<string>>(new Set())
 const visibleEdges = ref<Set<string>>(new Set())
 const edgeConnections = ref<Map<string, {source: string, target: string}>>(new Map())
-// DOT节点名 -> SVG元素的映射 (graphviz自动生成的id与DOT名不同)
 const nodeNameToEl = ref<Map<string, Element>>(new Map())
 
 watch(() => props.txHash, (newHash) => {
-  selectedBlockId.value = null // Reset selection when switching transactions
-  selectedNodeMetadata.value = null
-  nodeMetadataMap.value.clear()
+  selectedBlockId.value = null
+  selectedBlockInfo.value = null
   if (newHash) {
     loadCfgData(newHash)
   }
@@ -65,21 +52,28 @@ async function loadCfgData(txHash: string) {
   errorMsg.value = ''
 
   try {
+    // DOT now only contains IDs, use directly without processing
     const dot = await fetchCfgDotFile(txHash)
-
-    // Parse metadata from DOT labels and simplify node labels to ID-only
-    const { simplifiedDot, metadataMap } = processDotContent(dot)
-    nodeMetadataMap.value = metadataMap
-    dotContent.value = simplifiedDot
+    dotContent.value = dot
     status.value = 'success'
 
-    // Fetch block instructions
+    // Fetch block information and legend data in parallel
     try {
-      const instructions = await fetchBlockInstructions(txHash)
-      blockInstructions.value = instructions
+      const [info, legend] = await Promise.all([
+        fetchBlockInformation(txHash),
+        fetchLegendData(txHash).catch(() => null)
+      ])
+      blockInformation.value = info
+
+      // Build address-to-name map from legend
+      addressNameMap.value.clear()
+      if (legend) {
+        for (const entry of [...legend.user_addresses, ...legend.erc20_tokens, ...legend.normal_contracts]) {
+          addressNameMap.value.set(entry.address.toLowerCase(), entry.name)
+        }
+      }
     } catch (e) {
-      console.warn('Failed to load block instructions:', e)
-      // Don't fail the whole load if instructions fail
+      console.warn('Failed to load block information:', e)
     }
 
     await nextTick()
@@ -120,14 +114,12 @@ function attachInteractivity() {
   const svg = graphContainer.value.querySelector('svg')
   if (!svg) return
 
-  // 保存初始fit变换(d3-graphviz渲染后的变换状态)
   try {
     initialTransform = zoomTransform(svg as Element)
   } catch {
     initialTransform = zoomIdentity
   }
 
-  // 构建 DOT节点名 -> SVG元素 的映射
   nodeNameToEl.value.clear()
   const nodes = svg.querySelectorAll('.node')
   nodes.forEach((node) => {
@@ -145,19 +137,16 @@ function attachInteractivity() {
       nodeEl.classList.remove('hovered')
     })
 
-    // Add click handler for selecting block
     nodeEl.addEventListener('click', (e) => {
       e.stopPropagation()
       handleNodeClick(title || '')
     })
   })
 
-  // 解析边连接关系
   parseEdgeConnections()
 }
 
 function handleNodeClick(nodeName: string) {
-  // Extract block ID from node name (format: "node_X")
   const match = nodeName.match(/^node_(\d+)$/)
   if (!match) return
 
@@ -175,13 +164,13 @@ function handleNodeClick(nodeName: string) {
   // Toggle: if clicking the same node, deselect
   if (selectedBlockId.value === blockId) {
     selectedBlockId.value = null
-    selectedNodeMetadata.value = null
+    selectedBlockInfo.value = null
     return
   }
 
   // Set selected block and add highlight
   selectedBlockId.value = blockId
-  selectedNodeMetadata.value = nodeMetadataMap.value.get(blockId) || null
+  selectedBlockInfo.value = blockInformation.value[String(blockId)] || null
   const currentNode = nodeNameToEl.value.get(nodeName)
   if (currentNode) {
     currentNode.classList.add('selected')
@@ -197,7 +186,6 @@ function handleNodeClick(nodeName: string) {
 }
 
 function formatInstruction(instr: string): string {
-  // Parse instruction format from "('0x2b', 'DUP1')" to "0x2b  DUP1"
   const match = instr.match(/\('([^']+)',\s*'([^']+)'\)/)
   if (match) {
     return `${match[1]}  ${match[2]}`
@@ -205,89 +193,45 @@ function formatInstruction(instr: string): string {
   return instr
 }
 
-function processDotContent(dot: string): { simplifiedDot: string, metadataMap: Map<number, NodeMetadata> } {
-  const metadataMap = new Map<number, NodeMetadata>()
-
-  const simplifiedDot = dot.replace(
-    /^(\s*node_(\d+)\s*\[)([^\]]*)\]/gm,
-    (fullMatch, prefix: string, idStr: string, attrs: string) => {
-      const nodeId = parseInt(idStr, 10)
-
-      const shapeMatch = attrs.match(/shape="(record|ellipse)"/)
-      const shape = (shapeMatch ? shapeMatch[1] : 'record') as 'record' | 'ellipse'
-
-      const labelMatch = attrs.match(/label="((?:[^"\\]|\\.)*)"/)
-      if (!labelMatch) return fullMatch
-      const rawLabel = labelMatch[1]
-
-      const metadata = shape === 'record'
-        ? parseRecordLabel(nodeId, rawLabel)
-        : parseEllipseLabel(nodeId, rawLabel)
-
-      metadataMap.set(nodeId, metadata)
-
-      const newLabel = shape === 'record' ? `{{${nodeId}}}` : `${nodeId}`
-      const newAttrs = attrs
-        .replace(/label="(?:[^"\\]|\\.)*"/, `label="${newLabel}"`)
-
-      return `${prefix}${newAttrs}]`
-    }
-  )
-
-  return { simplifiedDot, metadataMap }
+function addrToName(addr: string): string {
+  if (!addr) return addr
+  const name = addressNameMap.value.get(addr.toLowerCase())
+  if (name) return name
+  if (addr.length < 12) return addr
+  return `${addr.slice(0, 6)}...${addr.slice(-4)}`
 }
 
-function parseRecordLabel(nodeId: number, rawLabel: string): NodeMetadata {
-  // Strip outer {{ and }}
-  const inner = rawLabel.replace(/^\{\{/, '').replace(/\}\}$/, '')
-  const fields = inner.split(/\s*\|\s*/)
-
-  const contractName = fields[1]?.trim() || 'Unknown'
-  const blocksMatch = fields[2]?.match(/Blocks:\s*(\d+)/)
-  const blocks = blocksMatch ? parseInt(blocksMatch[1]) : 1
-  const startPCMatch = fields[3]?.match(/StartPC:\s*(\S+)/)
-  const startPC = startPCMatch ? startPCMatch[1] : '0x0'
-  const endPCMatch = fields[4]?.match(/EndPC:\s*(\S+)/)
-  const endPC = endPCMatch ? endPCMatch[1] : '0x0'
-  const gasMatch = fields[5]?.match(/Gas:\s*(\S+)/)
-  const gas = gasMatch ? gasMatch[1] : '0'
-
-  const actions: string[] = []
-  for (let i = 6; i < fields.length; i++) {
-    const actionStr = fields[i].trim()
-    if (actionStr) {
-      const parts = actionStr.split(/\\n/)
-      for (const part of parts) {
-        const trimmed = part.trim()
-        if (trimmed) actions.push(trimmed)
-      }
-    }
+function hexToEth(hex: string): string {
+  if (!hex) return '0'
+  try {
+    const wei = BigInt(hex)
+    const ethWhole = wei / BigInt(1e14)  // 保留4位小数精度
+    const ethNum = Number(ethWhole) / 10000
+    if (ethNum === 0 && wei > 0n) return '<0.0001 ETH'
+    return `${ethNum} ETH`
+  } catch {
+    return hex
   }
-
-  return { id: nodeId, contractName, blocks, startPC, endPC, gas, actions, shape: 'record' }
 }
 
-function parseEllipseLabel(nodeId: number, rawLabel: string): NodeMetadata {
-  const lines = rawLabel.split(/\\n/).map(l => l.trim())
+function formatAction(action: any, index: number): string {
+  const prefix = `Action${index + 1}`
 
-  const contractName = lines[1] || 'Unknown'
-  const blocksMatch = lines[2]?.match(/Blocks:\s*(\d+)/)
-  const blocks = blocksMatch ? parseInt(blocksMatch[1]) : 1
-
-  const pcMatch = lines[3]?.match(/StartPC:\s*(\S+)\s*\\\|\s*EndPC:\s*(\S+)/)
-  const startPC = pcMatch ? pcMatch[1] : '0x0'
-  const endPC = pcMatch ? pcMatch[2] : '0x0'
-
-  const gasMatch = lines[4]?.match(/Gas:\s*(\S+)/)
-  const gas = gasMatch ? gasMatch[1] : '0'
-
-  const actions: string[] = []
-  for (let i = 5; i < lines.length; i++) {
-    const trimmed = lines[i].trim()
-    if (trimmed) actions.push(trimmed)
+  if (action.action_type === 'eth_transfer' && action.eth_event) {
+    const ev = action.eth_event
+    return `${prefix}: Send_ETH ${addrToName(ev.from)} \u2192 ${addrToName(ev.to)} ${hexToEth(ev.amount)}`
   }
 
-  return { id: nodeId, contractName, blocks, startPC, endPC, gas, actions, shape: 'ellipse' }
+  if (action.erc20_events && action.erc20_events.length > 0) {
+    return action.erc20_events.map((ev: any, i: number) => {
+      const type = ev.type === 'read' ? 'Read' : 'Write'
+      const token = ev.tokenname || 'ERC20'
+      const user = addrToName(ev.user || '')
+      return `${prefix}${action.erc20_events.length > 1 ? `.${i + 1}` : ''}: ${type}_${token} ${user} bal:${ev.balance}`
+    }).join('\n')
+  }
+
+  return `${prefix}: ${action.action_type}`
 }
 
 function parseEdgeConnections() {
@@ -303,7 +247,6 @@ function parseEdgeConnections() {
     const title = edge.querySelector('title')?.textContent
     if (!title) return
 
-    // 解析 "node_X->node_Y" 格式
     const match = title.match(/^(node_\d+)->(node_\d+)$/)
     if (match) {
       edgeConnections.value.set(title, {
@@ -318,7 +261,6 @@ function calculateVisibleElements(targetBlockIds: number[]) {
   const targetNodeIds = targetBlockIds.map(id => `node_${id}`)
   const visible = new Set<string>(targetNodeIds)
 
-  // 找出所有直接相连的节点
   edgeConnections.value.forEach(({source, target}) => {
     if (targetNodeIds.includes(source)) {
       visible.add(target)
@@ -330,7 +272,6 @@ function calculateVisibleElements(targetBlockIds: number[]) {
 
   visibleNodes.value = visible
 
-  // 计算可见的边(两端节点都可见)
   const visibleEdgeSet = new Set<string>()
   edgeConnections.value.forEach(({source, target}, edgeId) => {
     if (visible.has(source) && visible.has(target)) {
@@ -348,7 +289,6 @@ function applyFilter() {
   const svg = graphContainer.value.querySelector('svg')
   if (!svg) return
 
-  // 处理节点 — 通过title匹配DOT节点名
   const nodes = svg.querySelectorAll('.node')
   nodes.forEach((node) => {
     const nodeName = node.querySelector('title')?.textContent || ''
@@ -367,7 +307,6 @@ function applyFilter() {
     }
   })
 
-  // 处理边
   const edges = svg.querySelectorAll('.edge')
   edges.forEach((edge) => {
     const title = edge.querySelector('title')?.textContent || ''
@@ -416,43 +355,17 @@ function zoomToVisibleNodes() {
 
   if (bbox.width === 0 || bbox.height === 0) return
 
-  console.log('Zoom to visible nodes:', {
-    bbox: { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height },
-    container: { width: containerWidth, height: containerHeight }
-  })
-
-  // 计算缩放比例(留20%边距)
   const padding = 0.2
   const scaleX = (containerWidth * (1 - padding)) / bbox.width
   const scaleY = (containerHeight * (1 - padding)) / bbox.height
   const scale = Math.min(scaleX, scaleY, 3)
 
-  // 计算bbox中心点在SVG坐标系中的位置
   const bboxCenterX = bbox.x + bbox.width / 2
   const bboxCenterY = bbox.y + bbox.height / 2
 
-  // d3-zoom transform: translate(x, y) then scale(k)
-  // To center bbox: we want (bboxCenter * k + translate) = containerCenter
-  // So: translate = containerCenter - bboxCenter * k
   const translateX = containerWidth / 2 - bboxCenterX * scale
   const translateY = containerHeight / 2 - bboxCenterY * scale
 
-  console.log('Transform calculation:', {
-    scale,
-    bboxCenter: { x: bboxCenterX, y: bboxCenterY },
-    translate: { x: translateX, y: translateY }
-  })
-
-  // d3-zoom transform 的数学模型:
-  // 屏幕坐标 = SVG坐标 * k + [x, y]
-  // 我们要让 bboxCenter * k + [x, y] = containerCenter
-  // 所以 [x, y] = containerCenter - bboxCenter * k
-  //
-  // 但是 d3-zoom 的 API 是:
-  // zoomIdentity.translate(tx, ty).scale(k)
-  // 这会产生: k=k, x=tx*k, y=ty*k (translate 会被 scale 影响!)
-  //
-  // 使用 d3 ZoomTransform 实例（而非普通对象），确保后续缩放交互正常
   const transform = zoomIdentity.translate(translateX, translateY).scale(scale)
 
   applyZoomTransform(transform)
@@ -468,14 +381,12 @@ function applyZoomTransform(transform: any) {
     const zoomBeh = graphvizInstance.zoomBehavior()
     zoomSel.transition().duration(300).call(zoomBeh.transform, transform)
   } catch {
-    // fallback: 直接操作SVG transform
     try {
       const svgSel = select(svg)
       const zoomBeh = (svgSel.node() as any).__zoom_behavior
       if (zoomBeh) {
         svgSel.transition().duration(300).call(zoomBeh.transform, transform)
       } else {
-        // 最终fallback
         const g = svg.querySelector('g')
         if (g) {
           const { x, y, k } = transform
@@ -500,12 +411,10 @@ watch(() => props.highlightedBlockId, (newBlockIds) => {
       zoomToVisibleNodes()
     })
   } else {
-    // 重置过滤
     visibleNodes.value.clear()
     visibleEdges.value.clear()
     highlightedNodes.value.clear()
     applyFilter()
-    // 重置缩放到fit
     nextTick(() => {
       resetZoom()
     })
@@ -588,39 +497,35 @@ const edgeTypes = [
         <div class="info-panel">
           <div class="panel-section-header">Information</div>
           <div class="info-content">
-            <template v-if="selectedNodeMetadata">
+            <template v-if="selectedBlockInfo">
               <div class="info-row">
                 <span class="info-label">ID</span>
-                <span class="info-value">{{ selectedNodeMetadata.id }}</span>
+                <span class="info-value">{{ selectedBlockInfo.block_id }}</span>
               </div>
               <div class="info-row">
                 <span class="info-label">Contract</span>
-                <span class="info-value">{{ selectedNodeMetadata.contractName }}</span>
+                <span class="info-value">{{ selectedBlockInfo.address }}</span>
               </div>
               <div class="info-row">
                 <span class="info-label">Blocks</span>
-                <span class="info-value">{{ selectedNodeMetadata.blocks }}</span>
+                <span class="info-value">{{ selectedBlockInfo.blocks_number }}</span>
               </div>
               <div class="info-row">
                 <span class="info-label">StartPC</span>
-                <span class="info-value">{{ selectedNodeMetadata.startPC }}</span>
+                <span class="info-value">{{ selectedBlockInfo.start_pc }}</span>
               </div>
               <div class="info-row">
                 <span class="info-label">EndPC</span>
-                <span class="info-value">{{ selectedNodeMetadata.endPC }}</span>
+                <span class="info-value">{{ selectedBlockInfo.end_pc }}</span>
               </div>
               <div class="info-row">
                 <span class="info-label">Gas</span>
-                <span class="info-value">{{ selectedNodeMetadata.gas }}</span>
+                <span class="info-value">{{ selectedBlockInfo.gas }}</span>
               </div>
-              <div class="info-row">
-                <span class="info-label">Type</span>
-                <span class="info-value">{{ selectedNodeMetadata.shape === 'ellipse' ? 'ERC20' : 'Contract' }}</span>
-              </div>
-              <div v-if="selectedNodeMetadata.actions.length > 0" class="info-actions">
+              <div v-if="selectedBlockInfo.actions.length > 0" class="info-actions">
                 <div class="info-label">Actions</div>
-                <div v-for="(action, idx) in selectedNodeMetadata.actions" :key="idx" class="action-line">
-                  {{ action }}
+                <div v-for="(action, idx) in selectedBlockInfo.actions" :key="idx" class="action-line">
+                  {{ formatAction(action, idx) }}
                 </div>
               </div>
             </template>
@@ -635,24 +540,24 @@ const edgeTypes = [
         <div ref="instructionsPanel" class="instructions-panel-section">
           <div class="panel-section-header">Instructions</div>
           <div class="instructions-content">
-            <div
-              v-for="(block, blockId) in blockInstructions"
-              :key="blockId"
-              :id="`block-${blockId}`"
-              class="block-section"
-              :class="{ 'selected': selectedBlockId === parseInt(blockId) }"
-            >
-              <div class="block-header">Block {{ blockId }}</div>
-              <div class="block-instructions">
-                <div
-                  v-for="(instr, idx) in block.instructions"
-                  :key="idx"
-                  class="instruction-line"
-                >
-                  {{ formatInstruction(instr) }}
+            <template v-if="selectedBlockInfo">
+              <div
+                :id="`block-${selectedBlockInfo.block_id}`"
+                class="block-section selected"
+              >
+                <div class="block-header">Block {{ selectedBlockInfo.block_id }}</div>
+                <div class="block-instructions">
+                  <div
+                    v-for="(instr, idx) in selectedBlockInfo.instructions"
+                    :key="idx"
+                    class="instruction-line"
+                  >
+                    {{ formatInstruction(instr) }}
+                  </div>
                 </div>
               </div>
-            </div>
+            </template>
+            <div v-else class="panel-placeholder">Click a node to view instructions</div>
           </div>
         </div>
       </div>
