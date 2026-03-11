@@ -297,9 +297,9 @@ function renderPlotly(data: BlockGasData) {
       size: 30,
       color: logGasValues,
       colorscale: [
-        [0, '#D5D9E8'],
-        [0.5, '#7B88B8'],
-        [1, '#3D4A6E'],
+        [0, '#D6E4E8'],
+        [0.5, '#7BA8B8'],
+        [1, '#3D5E6E'],
       ],
       showscale: false,
       line: { width: 1, color: 'white' },

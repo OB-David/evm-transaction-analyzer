@@ -3,7 +3,7 @@ import { ref, watch, nextTick } from 'vue'
 import { graphviz } from 'd3-graphviz'
 import { zoomIdentity, zoomTransform } from 'd3-zoom'
 import { select } from 'd3-selection'
-import { fetchCfgDotFile, fetchBlockInstructions, type BlockInstructionsMap } from '../api/analyze'
+import { fetchCfgDotFile, fetchBlockInformation, fetchLegendData, type BlockInformationMap, type BlockInformation } from '../api/analyze'
 
 const props = defineProps<{
   txHash: string | null
@@ -19,25 +19,29 @@ const dotContent = ref<string>('')
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
 
-// Block instructions state
-const blockInstructions = ref<BlockInstructionsMap>({})
+// Block information state (from folded_blocks_information.json)
+const blockInformation = ref<BlockInformationMap>({})
 const selectedBlockId = ref<number | null>(null)
+const selectedBlockInfo = ref<BlockInformation | null>(null)
 const instructionsPanel = ref<HTMLElement | null>(null)
+
+// Address-to-name mapping (from legend.json)
+const addressNameMap = ref<Map<string, string>>(new Map())
 
 const graphContainer = ref<HTMLElement | null>(null)
 let graphvizInstance: any = null
-let initialTransform: any = null  // 保存初始fit变换,用于reset
+let initialTransform: any = null
 
 // 过滤和高亮状态
 const highlightedNodes = ref<Set<string>>(new Set())
 const visibleNodes = ref<Set<string>>(new Set())
 const visibleEdges = ref<Set<string>>(new Set())
 const edgeConnections = ref<Map<string, {source: string, target: string}>>(new Map())
-// DOT节点名 -> SVG元素的映射 (graphviz自动生成的id与DOT名不同)
 const nodeNameToEl = ref<Map<string, Element>>(new Map())
 
 watch(() => props.txHash, (newHash) => {
-  selectedBlockId.value = null // Reset selection when switching transactions
+  selectedBlockId.value = null
+  selectedBlockInfo.value = null
   if (newHash) {
     loadCfgData(newHash)
   }
@@ -48,18 +52,28 @@ async function loadCfgData(txHash: string) {
   errorMsg.value = ''
 
   try {
+    // DOT now only contains IDs, use directly without processing
     const dot = await fetchCfgDotFile(txHash)
-
     dotContent.value = dot
     status.value = 'success'
 
-    // Fetch block instructions
+    // Fetch block information and legend data in parallel
     try {
-      const instructions = await fetchBlockInstructions(txHash)
-      blockInstructions.value = instructions
+      const [info, legend] = await Promise.all([
+        fetchBlockInformation(txHash),
+        fetchLegendData(txHash).catch(() => null)
+      ])
+      blockInformation.value = info
+
+      // Build address-to-name map from legend
+      addressNameMap.value.clear()
+      if (legend) {
+        for (const entry of [...legend.user_addresses, ...legend.erc20_tokens, ...legend.normal_contracts]) {
+          addressNameMap.value.set(entry.address.toLowerCase(), entry.name)
+        }
+      }
     } catch (e) {
-      console.warn('Failed to load block instructions:', e)
-      // Don't fail the whole load if instructions fail
+      console.warn('Failed to load block information:', e)
     }
 
     await nextTick()
@@ -100,14 +114,12 @@ function attachInteractivity() {
   const svg = graphContainer.value.querySelector('svg')
   if (!svg) return
 
-  // 保存初始fit变换(d3-graphviz渲染后的变换状态)
   try {
     initialTransform = zoomTransform(svg as Element)
   } catch {
     initialTransform = zoomIdentity
   }
 
-  // 构建 DOT节点名 -> SVG元素 的映射
   nodeNameToEl.value.clear()
   const nodes = svg.querySelectorAll('.node')
   nodes.forEach((node) => {
@@ -125,19 +137,16 @@ function attachInteractivity() {
       nodeEl.classList.remove('hovered')
     })
 
-    // Add click handler for selecting block
     nodeEl.addEventListener('click', (e) => {
       e.stopPropagation()
       handleNodeClick(title || '')
     })
   })
 
-  // 解析边连接关系
   parseEdgeConnections()
 }
 
 function handleNodeClick(nodeName: string) {
-  // Extract block ID from node name (format: "node_X")
   const match = nodeName.match(/^node_(\d+)$/)
   if (!match) return
 
@@ -155,11 +164,13 @@ function handleNodeClick(nodeName: string) {
   // Toggle: if clicking the same node, deselect
   if (selectedBlockId.value === blockId) {
     selectedBlockId.value = null
+    selectedBlockInfo.value = null
     return
   }
 
   // Set selected block and add highlight
   selectedBlockId.value = blockId
+  selectedBlockInfo.value = blockInformation.value[String(blockId)] || null
   const currentNode = nodeNameToEl.value.get(nodeName)
   if (currentNode) {
     currentNode.classList.add('selected')
@@ -175,12 +186,52 @@ function handleNodeClick(nodeName: string) {
 }
 
 function formatInstruction(instr: string): string {
-  // Parse instruction format from "('0x2b', 'DUP1')" to "0x2b  DUP1"
   const match = instr.match(/\('([^']+)',\s*'([^']+)'\)/)
   if (match) {
     return `${match[1]}  ${match[2]}`
   }
   return instr
+}
+
+function addrToName(addr: string): string {
+  if (!addr) return addr
+  const name = addressNameMap.value.get(addr.toLowerCase())
+  if (name) return name
+  if (addr.length < 12) return addr
+  return `${addr.slice(0, 6)}...${addr.slice(-4)}`
+}
+
+function hexToEth(hex: string): string {
+  if (!hex) return '0'
+  try {
+    const wei = BigInt(hex)
+    const ethWhole = wei / BigInt(1e14)  // 保留4位小数精度
+    const ethNum = Number(ethWhole) / 10000
+    if (ethNum === 0 && wei > 0n) return '<0.0001 ETH'
+    return `${ethNum} ETH`
+  } catch {
+    return hex
+  }
+}
+
+function formatAction(action: any, index: number): string {
+  const prefix = `Action${index + 1}`
+
+  if (action.action_type === 'eth_transfer' && action.eth_event) {
+    const ev = action.eth_event
+    return `${prefix}: Send_ETH ${addrToName(ev.from)} \u2192 ${addrToName(ev.to)} ${hexToEth(ev.amount)}`
+  }
+
+  if (action.erc20_events && action.erc20_events.length > 0) {
+    return action.erc20_events.map((ev: any, i: number) => {
+      const type = ev.type === 'read' ? 'Read' : 'Write'
+      const token = ev.tokenname || 'ERC20'
+      const user = addrToName(ev.user || '')
+      return `${prefix}${action.erc20_events.length > 1 ? `.${i + 1}` : ''}: ${type}_${token} ${user} bal:${ev.balance}`
+    }).join('\n')
+  }
+
+  return `${prefix}: ${action.action_type}`
 }
 
 function parseEdgeConnections() {
@@ -196,7 +247,6 @@ function parseEdgeConnections() {
     const title = edge.querySelector('title')?.textContent
     if (!title) return
 
-    // 解析 "node_X->node_Y" 格式
     const match = title.match(/^(node_\d+)->(node_\d+)$/)
     if (match) {
       edgeConnections.value.set(title, {
@@ -211,7 +261,6 @@ function calculateVisibleElements(targetBlockIds: number[]) {
   const targetNodeIds = targetBlockIds.map(id => `node_${id}`)
   const visible = new Set<string>(targetNodeIds)
 
-  // 找出所有直接相连的节点
   edgeConnections.value.forEach(({source, target}) => {
     if (targetNodeIds.includes(source)) {
       visible.add(target)
@@ -223,7 +272,6 @@ function calculateVisibleElements(targetBlockIds: number[]) {
 
   visibleNodes.value = visible
 
-  // 计算可见的边(两端节点都可见)
   const visibleEdgeSet = new Set<string>()
   edgeConnections.value.forEach(({source, target}, edgeId) => {
     if (visible.has(source) && visible.has(target)) {
@@ -241,7 +289,6 @@ function applyFilter() {
   const svg = graphContainer.value.querySelector('svg')
   if (!svg) return
 
-  // 处理节点 — 通过title匹配DOT节点名
   const nodes = svg.querySelectorAll('.node')
   nodes.forEach((node) => {
     const nodeName = node.querySelector('title')?.textContent || ''
@@ -260,7 +307,6 @@ function applyFilter() {
     }
   })
 
-  // 处理边
   const edges = svg.querySelectorAll('.edge')
   edges.forEach((edge) => {
     const title = edge.querySelector('title')?.textContent || ''
@@ -309,43 +355,17 @@ function zoomToVisibleNodes() {
 
   if (bbox.width === 0 || bbox.height === 0) return
 
-  console.log('Zoom to visible nodes:', {
-    bbox: { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height },
-    container: { width: containerWidth, height: containerHeight }
-  })
-
-  // 计算缩放比例(留20%边距)
   const padding = 0.2
   const scaleX = (containerWidth * (1 - padding)) / bbox.width
   const scaleY = (containerHeight * (1 - padding)) / bbox.height
   const scale = Math.min(scaleX, scaleY, 3)
 
-  // 计算bbox中心点在SVG坐标系中的位置
   const bboxCenterX = bbox.x + bbox.width / 2
   const bboxCenterY = bbox.y + bbox.height / 2
 
-  // d3-zoom transform: translate(x, y) then scale(k)
-  // To center bbox: we want (bboxCenter * k + translate) = containerCenter
-  // So: translate = containerCenter - bboxCenter * k
   const translateX = containerWidth / 2 - bboxCenterX * scale
   const translateY = containerHeight / 2 - bboxCenterY * scale
 
-  console.log('Transform calculation:', {
-    scale,
-    bboxCenter: { x: bboxCenterX, y: bboxCenterY },
-    translate: { x: translateX, y: translateY }
-  })
-
-  // d3-zoom transform 的数学模型:
-  // 屏幕坐标 = SVG坐标 * k + [x, y]
-  // 我们要让 bboxCenter * k + [x, y] = containerCenter
-  // 所以 [x, y] = containerCenter - bboxCenter * k
-  //
-  // 但是 d3-zoom 的 API 是:
-  // zoomIdentity.translate(tx, ty).scale(k)
-  // 这会产生: k=k, x=tx*k, y=ty*k (translate 会被 scale 影响!)
-  //
-  // 使用 d3 ZoomTransform 实例（而非普通对象），确保后续缩放交互正常
   const transform = zoomIdentity.translate(translateX, translateY).scale(scale)
 
   applyZoomTransform(transform)
@@ -361,14 +381,12 @@ function applyZoomTransform(transform: any) {
     const zoomBeh = graphvizInstance.zoomBehavior()
     zoomSel.transition().duration(300).call(zoomBeh.transform, transform)
   } catch {
-    // fallback: 直接操作SVG transform
     try {
       const svgSel = select(svg)
       const zoomBeh = (svgSel.node() as any).__zoom_behavior
       if (zoomBeh) {
         svgSel.transition().duration(300).call(zoomBeh.transform, transform)
       } else {
-        // 最终fallback
         const g = svg.querySelector('g')
         if (g) {
           const { x, y, k } = transform
@@ -393,12 +411,10 @@ watch(() => props.highlightedBlockId, (newBlockIds) => {
       zoomToVisibleNodes()
     })
   } else {
-    // 重置过滤
     visibleNodes.value.clear()
     visibleEdges.value.clear()
     highlightedNodes.value.clear()
     applyFilter()
-    // 重置缩放到fit
     nextTick(() => {
       resetZoom()
     })
@@ -414,11 +430,47 @@ function resetFilter() {
   emit('cfg-navigate', null)
 }
 
+const showEdgeTypes = ref(false)
+
+const edgeTypes = [
+  { type: 'NORMAL', color: '#939393', desc: 'Non-terminating opcodes' },
+  { type: 'JUMP', color: '#242424', desc: 'JUMP, JUMPI' },
+  { type: 'CALL', color: '#1F6800', desc: 'CALL, CALLCODE, STATICCALL' },
+  { type: 'DELEGATECALL', color: '#009DFF', desc: 'DELEGATECALL' },
+  { type: 'TERMINATE', color: '#C14A00', desc: 'RETURN, STOP, REVERT, INVALID, SELFDESTRUCT' },
+]
+
 </script>
 
 <template>
   <div class="cfg-panel">
-    <span class="panel-label">(d) Control Flow Graph</span>
+    <span class="panel-label">
+      (d) Control Flow Graph
+      <span
+        class="edge-info-icon"
+        :class="{ active: showEdgeTypes }"
+        @mouseenter="showEdgeTypes = true"
+        @mouseleave="showEdgeTypes = false"
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14">
+          <circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" stroke-width="1.2" />
+          <text x="7" y="10.5" text-anchor="middle" font-size="9" font-weight="600" fill="currentColor">?</text>
+        </svg>
+        <div v-show="showEdgeTypes" class="edge-types-tooltip">
+          <div class="edge-tooltip-title">CFG's Edge Types</div>
+          <div v-for="edge in edgeTypes" :key="edge.type" class="edge-type-item">
+            <svg width="32" height="12" viewBox="0 0 32 12">
+              <line x1="2" y1="6" x2="24" y2="6" :stroke="edge.color" stroke-width="2.5" />
+              <polygon :points="'24,3 30,6 24,9'" :fill="edge.color" />
+            </svg>
+            <div class="edge-type-text">
+              <span class="edge-type-name">{{ edge.type }}</span>
+              <span class="edge-type-desc">{{ edge.desc }}</span>
+            </div>
+          </div>
+        </div>
+      </span>
+    </span>
 
     <button
       v-if="visibleNodes.size > 0"
@@ -439,27 +491,73 @@ function resetFilter() {
     <div v-else-if="status === 'success'" class="cfg-container">
       <div ref="graphContainer" class="graph-viewport"></div>
 
-      <!-- Fixed Instructions Panel -->
-      <div ref="instructionsPanel" class="instructions-panel">
-        <div class="instructions-header">Instructions</div>
-        <div class="instructions-content">
-          <div
-            v-for="(block, blockId) in blockInstructions"
-            :key="blockId"
-            :id="`block-${blockId}`"
-            class="block-section"
-            :class="{ 'selected': selectedBlockId === parseInt(blockId) }"
-          >
-            <div class="block-header">Block {{ blockId }}</div>
-            <div class="block-instructions">
-              <div
-                v-for="(instr, idx) in block.instructions"
-                :key="idx"
-                class="instruction-line"
-              >
-                {{ formatInstruction(instr) }}
+      <!-- Right Side Panel: Information + Instructions -->
+      <div class="side-panel">
+        <!-- Upper: Information Panel -->
+        <div class="info-panel">
+          <div class="panel-section-header">Information</div>
+          <div class="info-content">
+            <template v-if="selectedBlockInfo">
+              <div class="info-row">
+                <span class="info-label">ID</span>
+                <span class="info-value">{{ selectedBlockInfo.block_id }}</span>
               </div>
-            </div>
+              <div class="info-row">
+                <span class="info-label">Contract</span>
+                <span class="info-value">{{ selectedBlockInfo.address }}</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">Blocks</span>
+                <span class="info-value">{{ selectedBlockInfo.blocks_number }}</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">StartPC</span>
+                <span class="info-value">{{ selectedBlockInfo.start_pc }}</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">EndPC</span>
+                <span class="info-value">{{ selectedBlockInfo.end_pc }}</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">Gas</span>
+                <span class="info-value">{{ selectedBlockInfo.gas }}</span>
+              </div>
+              <div v-if="selectedBlockInfo.actions.length > 0" class="info-actions">
+                <div class="info-label">Actions</div>
+                <div v-for="(action, idx) in selectedBlockInfo.actions" :key="idx" class="action-line">
+                  {{ formatAction(action, idx) }}
+                </div>
+              </div>
+            </template>
+            <div v-else class="panel-placeholder">Click a node to view details</div>
+          </div>
+        </div>
+
+        <!-- Divider -->
+        <div class="panel-divider"></div>
+
+        <!-- Lower: Instructions Panel -->
+        <div ref="instructionsPanel" class="instructions-panel-section">
+          <div class="panel-section-header">Instructions</div>
+          <div class="instructions-content">
+            <template v-if="selectedBlockInfo">
+              <div
+                :id="`block-${selectedBlockInfo.block_id}`"
+                class="block-section selected"
+              >
+                <div class="block-header">Block {{ selectedBlockInfo.block_id }}</div>
+                <div class="block-instructions">
+                  <div
+                    v-for="(instr, idx) in selectedBlockInfo.instructions"
+                    :key="idx"
+                    class="instruction-line"
+                  >
+                    {{ formatInstruction(instr) }}
+                  </div>
+                </div>
+              </div>
+            </template>
+            <div v-else class="panel-placeholder">Click a node to view instructions</div>
           </div>
         </div>
       </div>
@@ -613,9 +711,9 @@ function resetFilter() {
   font-size: 12px;
 }
 
-/* Fixed Instructions Panel */
-.instructions-panel {
-  width: 140px;
+/* Right Side Panel */
+.side-panel {
+  width: 160px;
   background: var(--bg);
   border-left: 1px solid var(--border);
   display: flex;
@@ -627,7 +725,7 @@ function resetFilter() {
   max-height: 100%;
 }
 
-.instructions-header {
+.panel-section-header {
   padding: 4px 8px;
   font-size: 9px;
   color: var(--muted);
@@ -636,6 +734,99 @@ function resetFilter() {
   border-bottom: 1px solid var(--border);
   background: var(--panel-bg);
   flex-shrink: 0;
+}
+
+.info-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.info-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 8px;
+  min-height: 0;
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 0;
+  font-size: 9px;
+  gap: 4px;
+}
+
+.info-label {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 9px;
+  flex-shrink: 0;
+}
+
+.info-value {
+  color: var(--text);
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 9px;
+  text-align: right;
+  word-break: break-all;
+}
+
+.info-actions {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.action-line {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 8px;
+  color: #666;
+  padding: 1px 0;
+  line-height: 1.3;
+  word-break: break-all;
+}
+
+.panel-placeholder {
+  color: var(--muted);
+  font-size: 9px;
+  text-align: center;
+  padding: 12px 4px;
+}
+
+.panel-divider {
+  height: 1px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.instructions-panel-section {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Scrollbar for info panel */
+.info-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.info-content::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+.info-content::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.info-content::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
 }
 
 .instructions-content {
@@ -697,5 +888,78 @@ function resetFilter() {
 
 .instructions-content::-webkit-scrollbar-thumb:hover {
   background: var(--muted);
+}
+
+/* Edge Types Info Icon & Tooltip */
+.edge-info-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  cursor: pointer;
+  color: var(--muted);
+  vertical-align: middle;
+  transition: color 0.15s;
+}
+
+.edge-info-icon.active,
+.edge-info-icon:hover {
+  color: var(--accent);
+}
+
+.edge-types-tooltip {
+  position: absolute;
+  top: 20px;
+  left: 0;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  padding: 8px 10px;
+  z-index: 200;
+  min-width: 220px;
+  white-space: nowrap;
+}
+
+.edge-tooltip-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.edge-type-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.edge-type-item:last-child {
+  margin-bottom: 0;
+}
+
+.edge-type-item svg {
+  flex-shrink: 0;
+}
+
+.edge-type-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.edge-type-name {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+}
+
+.edge-type-desc {
+  font-size: 9px;
+  color: var(--muted);
+  line-height: 1.2;
 }
 </style>
