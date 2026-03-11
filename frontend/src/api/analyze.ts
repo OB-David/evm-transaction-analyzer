@@ -143,6 +143,28 @@ export interface BlockInstructionsMap {
   [blockId: string]: BlockInstructions
 }
 
+export interface LegendEntry {
+  name: string
+  address: string
+  color?: string
+}
+
+export interface LegendData {
+  user_addresses: LegendEntry[]
+  erc20_tokens: LegendEntry[]
+  normal_contracts: LegendEntry[]
+}
+
+export async function fetchLegendData(txHash: string): Promise<LegendData> {
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/legend.json`)
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch legend data: ${res.status}`)
+  }
+
+  return res.json()
+}
+
 export async function fetchBlockInstructions(txHash: string): Promise<BlockInstructionsMap> {
   const res = await fetch(`${API_BASE}/api/files/${txHash}/folded_blocks_instructions.json`)
 

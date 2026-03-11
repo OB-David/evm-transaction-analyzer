@@ -185,16 +185,44 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
         rankdir="LR")
     print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
 
-    # 保存图例 
+    # 保存图例
     print("正在生成CFG图例...")
     render_legend_matplotlib(
         addr_color_map=addr_color_map,
-        edge_color_map = EDGE_COLOR_MAP,                       
+        edge_color_map = EDGE_COLOR_MAP,
         full_address_name_map=full_address_name_map,
-        erc20_token_map=erc20_token_map,        
-        users_addresses=users_addresses,             
-        output_path=tx_dot_path)          
+        erc20_token_map=erc20_token_map,
+        users_addresses=users_addresses,
+        output_path=tx_dot_path)
     print(f"CFG图例已保存到: {tx_dot_path}_legend.svg")
+
+    # 保存legend.json供前端使用
+    legend_data: Dict[str, Any] = {"user_addresses": [], "erc20_tokens": [], "normal_contracts": []}
+
+    # User addresses (same sorting as render_legend)
+    if users_addresses:
+        user_items = [(addr, full_address_name_map.get(addr, f"User_{addr[:6]}")) for addr in users_addresses]
+        user_items.sort(key=lambda item: (0, item[1].lower()) if item[1] == "User_From" else (1, item[1].lower()))
+        for addr, name in user_items:
+            legend_data["user_addresses"].append({"name": name, "address": addr})
+
+    # Split contracts into ERC20 and normal
+    for contract_addr, color in addr_color_map.items():
+        contract_addr_lower = contract_addr.lower()
+        contract_name = full_address_name_map.get(contract_addr_lower, contract_addr[:10])
+        entry = {"name": contract_name, "address": contract_addr, "color": color}
+        if contract_addr_lower in erc20_token_map:
+            legend_data["erc20_tokens"].append(entry)
+        else:
+            legend_data["normal_contracts"].append(entry)
+
+    legend_data["erc20_tokens"].sort(key=lambda x: x["name"].lower())
+    legend_data["normal_contracts"].sort(key=lambda x: x["name"].lower())
+
+    legend_json_path = os.path.join(result_dir, "legend.json")
+    with open(legend_json_path, "w", encoding="utf-8") as f:
+        json.dump(legend_data, f, indent=2, ensure_ascii=False)
+    print(f"图例JSON已保存到: {legend_json_path}")
     
     # 保存代币交易流图的DOT文件
     token_flow_dot_path = os.path.join(result_dir, "asset_flow.dot")

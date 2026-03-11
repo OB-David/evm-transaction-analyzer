@@ -19,6 +19,21 @@ const dotContent = ref<string>('')
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
 
+// Node metadata extracted from DOT labels
+interface NodeMetadata {
+  id: number
+  contractName: string
+  blocks: number
+  startPC: string
+  endPC: string
+  gas: string
+  actions: string[]
+  shape: 'record' | 'ellipse'
+}
+
+const nodeMetadataMap = ref<Map<number, NodeMetadata>>(new Map())
+const selectedNodeMetadata = ref<NodeMetadata | null>(null)
+
 // Block instructions state
 const blockInstructions = ref<BlockInstructionsMap>({})
 const selectedBlockId = ref<number | null>(null)
@@ -38,6 +53,8 @@ const nodeNameToEl = ref<Map<string, Element>>(new Map())
 
 watch(() => props.txHash, (newHash) => {
   selectedBlockId.value = null // Reset selection when switching transactions
+  selectedNodeMetadata.value = null
+  nodeMetadataMap.value.clear()
   if (newHash) {
     loadCfgData(newHash)
   }
@@ -50,7 +67,10 @@ async function loadCfgData(txHash: string) {
   try {
     const dot = await fetchCfgDotFile(txHash)
 
-    dotContent.value = dot
+    // Parse metadata from DOT labels and simplify node labels to ID-only
+    const { simplifiedDot, metadataMap } = processDotContent(dot)
+    nodeMetadataMap.value = metadataMap
+    dotContent.value = simplifiedDot
     status.value = 'success'
 
     // Fetch block instructions
@@ -155,11 +175,13 @@ function handleNodeClick(nodeName: string) {
   // Toggle: if clicking the same node, deselect
   if (selectedBlockId.value === blockId) {
     selectedBlockId.value = null
+    selectedNodeMetadata.value = null
     return
   }
 
   // Set selected block and add highlight
   selectedBlockId.value = blockId
+  selectedNodeMetadata.value = nodeMetadataMap.value.get(blockId) || null
   const currentNode = nodeNameToEl.value.get(nodeName)
   if (currentNode) {
     currentNode.classList.add('selected')
@@ -181,6 +203,91 @@ function formatInstruction(instr: string): string {
     return `${match[1]}  ${match[2]}`
   }
   return instr
+}
+
+function processDotContent(dot: string): { simplifiedDot: string, metadataMap: Map<number, NodeMetadata> } {
+  const metadataMap = new Map<number, NodeMetadata>()
+
+  const simplifiedDot = dot.replace(
+    /^(\s*node_(\d+)\s*\[)([^\]]*)\]/gm,
+    (fullMatch, prefix: string, idStr: string, attrs: string) => {
+      const nodeId = parseInt(idStr, 10)
+
+      const shapeMatch = attrs.match(/shape="(record|ellipse)"/)
+      const shape = (shapeMatch ? shapeMatch[1] : 'record') as 'record' | 'ellipse'
+
+      const labelMatch = attrs.match(/label="((?:[^"\\]|\\.)*)"/)
+      if (!labelMatch) return fullMatch
+      const rawLabel = labelMatch[1]
+
+      const metadata = shape === 'record'
+        ? parseRecordLabel(nodeId, rawLabel)
+        : parseEllipseLabel(nodeId, rawLabel)
+
+      metadataMap.set(nodeId, metadata)
+
+      const newLabel = shape === 'record' ? `{{${nodeId}}}` : `${nodeId}`
+      const newAttrs = attrs
+        .replace(/label="(?:[^"\\]|\\.)*"/, `label="${newLabel}"`)
+
+      return `${prefix}${newAttrs}]`
+    }
+  )
+
+  return { simplifiedDot, metadataMap }
+}
+
+function parseRecordLabel(nodeId: number, rawLabel: string): NodeMetadata {
+  // Strip outer {{ and }}
+  const inner = rawLabel.replace(/^\{\{/, '').replace(/\}\}$/, '')
+  const fields = inner.split(/\s*\|\s*/)
+
+  const contractName = fields[1]?.trim() || 'Unknown'
+  const blocksMatch = fields[2]?.match(/Blocks:\s*(\d+)/)
+  const blocks = blocksMatch ? parseInt(blocksMatch[1]) : 1
+  const startPCMatch = fields[3]?.match(/StartPC:\s*(\S+)/)
+  const startPC = startPCMatch ? startPCMatch[1] : '0x0'
+  const endPCMatch = fields[4]?.match(/EndPC:\s*(\S+)/)
+  const endPC = endPCMatch ? endPCMatch[1] : '0x0'
+  const gasMatch = fields[5]?.match(/Gas:\s*(\S+)/)
+  const gas = gasMatch ? gasMatch[1] : '0'
+
+  const actions: string[] = []
+  for (let i = 6; i < fields.length; i++) {
+    const actionStr = fields[i].trim()
+    if (actionStr) {
+      const parts = actionStr.split(/\\n/)
+      for (const part of parts) {
+        const trimmed = part.trim()
+        if (trimmed) actions.push(trimmed)
+      }
+    }
+  }
+
+  return { id: nodeId, contractName, blocks, startPC, endPC, gas, actions, shape: 'record' }
+}
+
+function parseEllipseLabel(nodeId: number, rawLabel: string): NodeMetadata {
+  const lines = rawLabel.split(/\\n/).map(l => l.trim())
+
+  const contractName = lines[1] || 'Unknown'
+  const blocksMatch = lines[2]?.match(/Blocks:\s*(\d+)/)
+  const blocks = blocksMatch ? parseInt(blocksMatch[1]) : 1
+
+  const pcMatch = lines[3]?.match(/StartPC:\s*(\S+)\s*\\\|\s*EndPC:\s*(\S+)/)
+  const startPC = pcMatch ? pcMatch[1] : '0x0'
+  const endPC = pcMatch ? pcMatch[2] : '0x0'
+
+  const gasMatch = lines[4]?.match(/Gas:\s*(\S+)/)
+  const gas = gasMatch ? gasMatch[1] : '0'
+
+  const actions: string[] = []
+  for (let i = 5; i < lines.length; i++) {
+    const trimmed = lines[i].trim()
+    if (trimmed) actions.push(trimmed)
+  }
+
+  return { id: nodeId, contractName, blocks, startPC, endPC, gas, actions, shape: 'ellipse' }
 }
 
 function parseEdgeConnections() {
@@ -414,11 +521,47 @@ function resetFilter() {
   emit('cfg-navigate', null)
 }
 
+const showEdgeTypes = ref(false)
+
+const edgeTypes = [
+  { type: 'NORMAL', color: '#939393', desc: 'Non-terminating opcodes' },
+  { type: 'JUMP', color: '#242424', desc: 'JUMP, JUMPI' },
+  { type: 'CALL', color: '#1F6800', desc: 'CALL, CALLCODE, STATICCALL' },
+  { type: 'DELEGATECALL', color: '#009DFF', desc: 'DELEGATECALL' },
+  { type: 'TERMINATE', color: '#C14A00', desc: 'RETURN, STOP, REVERT, INVALID, SELFDESTRUCT' },
+]
+
 </script>
 
 <template>
   <div class="cfg-panel">
-    <span class="panel-label">(d) Control Flow Graph</span>
+    <span class="panel-label">
+      (d) Control Flow Graph
+      <span
+        class="edge-info-icon"
+        :class="{ active: showEdgeTypes }"
+        @mouseenter="showEdgeTypes = true"
+        @mouseleave="showEdgeTypes = false"
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14">
+          <circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" stroke-width="1.2" />
+          <text x="7" y="10.5" text-anchor="middle" font-size="9" font-weight="600" fill="currentColor">?</text>
+        </svg>
+        <div v-show="showEdgeTypes" class="edge-types-tooltip">
+          <div class="edge-tooltip-title">CFG's Edge Types</div>
+          <div v-for="edge in edgeTypes" :key="edge.type" class="edge-type-item">
+            <svg width="32" height="12" viewBox="0 0 32 12">
+              <line x1="2" y1="6" x2="24" y2="6" :stroke="edge.color" stroke-width="2.5" />
+              <polygon :points="'24,3 30,6 24,9'" :fill="edge.color" />
+            </svg>
+            <div class="edge-type-text">
+              <span class="edge-type-name">{{ edge.type }}</span>
+              <span class="edge-type-desc">{{ edge.desc }}</span>
+            </div>
+          </div>
+        </div>
+      </span>
+    </span>
 
     <button
       v-if="visibleNodes.size > 0"
@@ -439,25 +582,75 @@ function resetFilter() {
     <div v-else-if="status === 'success'" class="cfg-container">
       <div ref="graphContainer" class="graph-viewport"></div>
 
-      <!-- Fixed Instructions Panel -->
-      <div ref="instructionsPanel" class="instructions-panel">
-        <div class="instructions-header">Instructions</div>
-        <div class="instructions-content">
-          <div
-            v-for="(block, blockId) in blockInstructions"
-            :key="blockId"
-            :id="`block-${blockId}`"
-            class="block-section"
-            :class="{ 'selected': selectedBlockId === parseInt(blockId) }"
-          >
-            <div class="block-header">Block {{ blockId }}</div>
-            <div class="block-instructions">
-              <div
-                v-for="(instr, idx) in block.instructions"
-                :key="idx"
-                class="instruction-line"
-              >
-                {{ formatInstruction(instr) }}
+      <!-- Right Side Panel: Information + Instructions -->
+      <div class="side-panel">
+        <!-- Upper: Information Panel -->
+        <div class="info-panel">
+          <div class="panel-section-header">Information</div>
+          <div class="info-content">
+            <template v-if="selectedNodeMetadata">
+              <div class="info-row">
+                <span class="info-label">ID</span>
+                <span class="info-value">{{ selectedNodeMetadata.id }}</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">Contract</span>
+                <span class="info-value">{{ selectedNodeMetadata.contractName }}</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">Blocks</span>
+                <span class="info-value">{{ selectedNodeMetadata.blocks }}</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">StartPC</span>
+                <span class="info-value">{{ selectedNodeMetadata.startPC }}</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">EndPC</span>
+                <span class="info-value">{{ selectedNodeMetadata.endPC }}</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">Gas</span>
+                <span class="info-value">{{ selectedNodeMetadata.gas }}</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">Type</span>
+                <span class="info-value">{{ selectedNodeMetadata.shape === 'ellipse' ? 'ERC20' : 'Contract' }}</span>
+              </div>
+              <div v-if="selectedNodeMetadata.actions.length > 0" class="info-actions">
+                <div class="info-label">Actions</div>
+                <div v-for="(action, idx) in selectedNodeMetadata.actions" :key="idx" class="action-line">
+                  {{ action }}
+                </div>
+              </div>
+            </template>
+            <div v-else class="panel-placeholder">Click a node to view details</div>
+          </div>
+        </div>
+
+        <!-- Divider -->
+        <div class="panel-divider"></div>
+
+        <!-- Lower: Instructions Panel -->
+        <div ref="instructionsPanel" class="instructions-panel-section">
+          <div class="panel-section-header">Instructions</div>
+          <div class="instructions-content">
+            <div
+              v-for="(block, blockId) in blockInstructions"
+              :key="blockId"
+              :id="`block-${blockId}`"
+              class="block-section"
+              :class="{ 'selected': selectedBlockId === parseInt(blockId) }"
+            >
+              <div class="block-header">Block {{ blockId }}</div>
+              <div class="block-instructions">
+                <div
+                  v-for="(instr, idx) in block.instructions"
+                  :key="idx"
+                  class="instruction-line"
+                >
+                  {{ formatInstruction(instr) }}
+                </div>
               </div>
             </div>
           </div>
@@ -613,9 +806,9 @@ function resetFilter() {
   font-size: 12px;
 }
 
-/* Fixed Instructions Panel */
-.instructions-panel {
-  width: 140px;
+/* Right Side Panel */
+.side-panel {
+  width: 160px;
   background: var(--bg);
   border-left: 1px solid var(--border);
   display: flex;
@@ -627,7 +820,7 @@ function resetFilter() {
   max-height: 100%;
 }
 
-.instructions-header {
+.panel-section-header {
   padding: 4px 8px;
   font-size: 9px;
   color: var(--muted);
@@ -636,6 +829,99 @@ function resetFilter() {
   border-bottom: 1px solid var(--border);
   background: var(--panel-bg);
   flex-shrink: 0;
+}
+
+.info-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.info-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 8px;
+  min-height: 0;
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 0;
+  font-size: 9px;
+  gap: 4px;
+}
+
+.info-label {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 9px;
+  flex-shrink: 0;
+}
+
+.info-value {
+  color: var(--text);
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 9px;
+  text-align: right;
+  word-break: break-all;
+}
+
+.info-actions {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.action-line {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 8px;
+  color: #666;
+  padding: 1px 0;
+  line-height: 1.3;
+  word-break: break-all;
+}
+
+.panel-placeholder {
+  color: var(--muted);
+  font-size: 9px;
+  text-align: center;
+  padding: 12px 4px;
+}
+
+.panel-divider {
+  height: 1px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.instructions-panel-section {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Scrollbar for info panel */
+.info-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.info-content::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+.info-content::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.info-content::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
 }
 
 .instructions-content {
@@ -697,5 +983,78 @@ function resetFilter() {
 
 .instructions-content::-webkit-scrollbar-thumb:hover {
   background: var(--muted);
+}
+
+/* Edge Types Info Icon & Tooltip */
+.edge-info-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  cursor: pointer;
+  color: var(--muted);
+  vertical-align: middle;
+  transition: color 0.15s;
+}
+
+.edge-info-icon.active,
+.edge-info-icon:hover {
+  color: var(--accent);
+}
+
+.edge-types-tooltip {
+  position: absolute;
+  top: 20px;
+  left: 0;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  padding: 8px 10px;
+  z-index: 200;
+  min-width: 220px;
+  white-space: nowrap;
+}
+
+.edge-tooltip-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.edge-type-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.edge-type-item:last-child {
+  margin-bottom: 0;
+}
+
+.edge-type-item svg {
+  flex-shrink: 0;
+}
+
+.edge-type-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.edge-type-name {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+}
+
+.edge-type-desc {
+  font-size: 9px;
+  color: var(--muted);
+  line-height: 1.2;
 }
 </style>
