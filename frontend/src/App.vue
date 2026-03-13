@@ -1,17 +1,44 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
 import TitleBar from './components/TitleBar.vue'
 import InputPanel from './components/InputPanel.vue'
 import CfgPanel from './components/CfgPanel.vue'
 import AfgPanel from './components/AfgPanel.vue'
+import FlameGraphPanel from './components/FlameGraphPanel.vue'
 import BlockPanel from './components/BlockPanel.vue'
-import { analyzeTransaction } from './api/analyze'
+import { analyzeTransaction, fetchEdgeStepMap, type EdgeStepMap } from './api/analyze'
 
 const currentTxHash = ref<string | null>(null)
 const currentBlockNumber = ref<number | null>(null)
 const highlightedBlockId = ref<number[] | null>(null)
 const inputPanelRef = ref<InstanceType<typeof InputPanel> | null>(null)
 const isAnalyzing = ref(false)
+
+// Flame graph state
+const flameStepRange = ref<{ entryStep: number; exitStep: number } | null>(null)
+const edgeStepMap = ref<EdgeStepMap | null>(null)
+
+// Load edge step map when txHash changes
+watch(currentTxHash, async (newHash) => {
+  edgeStepMap.value = null
+  if (newHash) {
+    try {
+      edgeStepMap.value = await fetchEdgeStepMap(newHash)
+    } catch (e) {
+      console.warn('Failed to load edge step map:', e)
+    }
+  }
+})
+
+// Compute filtered edge IDs from flame graph step range
+const filteredEdgeIds = computed<string[] | null>(() => {
+  if (!flameStepRange.value || !edgeStepMap.value) return null
+  const { entryStep, exitStep } = flameStepRange.value
+  const matched = Object.values(edgeStepMap.value)
+    .filter(e => e.edge_step >= entryStep && e.edge_step <= exitStep)
+    .map(e => e.edge_id)
+  return matched.length > 0 ? matched : null
+})
 
 function handleAnalysisComplete(txHash: string) {
   currentTxHash.value = txHash
@@ -68,8 +95,17 @@ async function handleTransactionSelected(txHash: string) {
 }
 
 function handleCfgNavigate(blockIds: number[] | null) {
+  // Clear flame graph selection when AFG navigates
+  flameStepRange.value = null
   highlightedBlockId.value = blockIds
   console.log('Navigate to CFG blocks:', blockIds)
+}
+
+function handleFlameSelect(stepRange: { entryStep: number; exitStep: number } | null) {
+  // Clear AFG highlight when flame graph selects
+  highlightedBlockId.value = null
+  flameStepRange.value = stepRange
+  console.log('Flame graph selection:', stepRange)
 }
 </script>
 
@@ -92,17 +128,26 @@ function handleCfgNavigate(blockIds: number[] | null) {
       />
     </div>
     <div class="right-col">
-      <AfgPanel
-        class="afg-panel"
-        :tx-hash="currentTxHash"
-        :highlighted-block-id="highlightedBlockId"
-        :is-analyzing="isAnalyzing"
-        @cfg-navigate="handleCfgNavigate"
-      />
+      <div class="top-row">
+        <AfgPanel
+          class="afg-panel"
+          :tx-hash="currentTxHash"
+          :highlighted-block-id="highlightedBlockId"
+          :is-analyzing="isAnalyzing"
+          @cfg-navigate="handleCfgNavigate"
+        />
+        <FlameGraphPanel
+          class="flame-panel"
+          :tx-hash="currentTxHash"
+          :is-analyzing="isAnalyzing"
+          @flame-select="handleFlameSelect"
+        />
+      </div>
       <CfgPanel
         class="cfg-panel"
         :tx-hash="currentTxHash"
         :highlighted-block-id="highlightedBlockId"
+        :filtered-edge-ids="filteredEdgeIds"
         :is-analyzing="isAnalyzing"
         @cfg-navigate="handleCfgNavigate"
       />
@@ -154,13 +199,29 @@ function handleCfgNavigate(blockIds: number[] | null) {
   overflow: hidden;
 }
 
-.cfg-panel {
+.top-row {
+  display: flex;
+  flex-direction: row;
   flex: 1;
+  min-height: 0;
+  gap: 1px;
+}
+
+.afg-panel {
+  flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
 
-.afg-panel {
+.flame-panel {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.cfg-panel {
   flex: 1;
   min-height: 0;
   overflow: hidden;

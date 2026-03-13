@@ -8,6 +8,7 @@ import { fetchCfgDotFile, fetchBlockInformation, fetchLegendData, type BlockInfo
 const props = defineProps<{
   txHash: string | null
   highlightedBlockId: number[] | null
+  filteredEdgeIds: string[] | null
   isAnalyzing: boolean
 }>()
 
@@ -38,6 +39,8 @@ const visibleNodes = ref<Set<string>>(new Set())
 const visibleEdges = ref<Set<string>>(new Set())
 const edgeConnections = ref<Map<string, {source: string, target: string}>>(new Map())
 const nodeNameToEl = ref<Map<string, Element>>(new Map())
+// Map edge label number (e.g., "28") to edge title (e.g., "node_5->node_12")
+const edgeLabelToTitle = ref<Map<string, string>>(new Map())
 
 watch(() => props.txHash, (newHash) => {
   selectedBlockId.value = null
@@ -144,6 +147,7 @@ function attachInteractivity() {
   })
 
   parseEdgeConnections()
+  buildEdgeLabelMap()
 }
 
 function handleNodeClick(nodeName: string) {
@@ -257,6 +261,66 @@ function parseEdgeConnections() {
   })
 }
 
+function buildEdgeLabelMap() {
+  if (!graphContainer.value) return
+
+  const svg = graphContainer.value.querySelector('svg')
+  if (!svg) return
+
+  edgeLabelToTitle.value.clear()
+
+  const edges = svg.querySelectorAll('.edge')
+  edges.forEach((edge) => {
+    const title = edge.querySelector('title')?.textContent || ''
+    if (!title) return
+
+    // Extract the edge label number from <text> elements
+    const textEls = edge.querySelectorAll('text')
+    textEls.forEach(t => {
+      const label = (t.textContent || '').trim()
+      if (label && /^\d+$/.test(label)) {
+        edgeLabelToTitle.value.set(label, title)
+      }
+    })
+  })
+}
+
+function applyEdgeFilter(edgeIds: string[]) {
+  // Convert edge IDs like "edge_28" to label numbers "28"
+  const labelNumbers = edgeIds.map(id => id.replace(/\D/g, ''))
+
+  // Find matching edge titles and their connected nodes
+  const matchedEdgeTitles = new Set<string>()
+  const matchedNodes = new Set<string>()
+
+  for (const label of labelNumbers) {
+    const edgeTitle = edgeLabelToTitle.value.get(label)
+    if (edgeTitle) {
+      matchedEdgeTitles.add(edgeTitle)
+      const conn = edgeConnections.value.get(edgeTitle)
+      if (conn) {
+        matchedNodes.add(conn.source)
+        matchedNodes.add(conn.target)
+      }
+    }
+  }
+
+  if (matchedNodes.size === 0) {
+    // No matches — show all
+    visibleNodes.value.clear()
+    visibleEdges.value.clear()
+    highlightedNodes.value.clear()
+    applyFilter()
+    nextTick(() => resetZoom())
+    return
+  }
+
+  visibleNodes.value = matchedNodes
+  visibleEdges.value = matchedEdgeTitles
+  highlightedNodes.value = new Set(matchedNodes)
+  applyFilter()
+}
+
 function calculateVisibleElements(targetBlockIds: number[]) {
   const targetNodeIds = targetBlockIds.map(id => `node_${id}`)
   const visible = new Set<string>(targetNodeIds)
@@ -320,57 +384,6 @@ function applyFilter() {
   })
 }
 
-function calculateVisibleBBox(): DOMRect | null {
-  if (!graphContainer.value || visibleNodes.value.size === 0) return null
-
-  const svg = graphContainer.value.querySelector('svg')
-  if (!svg) return null
-
-  let minX = Infinity, minY = Infinity
-  let maxX = -Infinity, maxY = -Infinity
-
-  visibleNodes.value.forEach(nodeName => {
-    const node = nodeNameToEl.value.get(nodeName)
-    if (node) {
-      const bbox = (node as SVGGraphicsElement).getBBox()
-      minX = Math.min(minX, bbox.x)
-      minY = Math.min(minY, bbox.y)
-      maxX = Math.max(maxX, bbox.x + bbox.width)
-      maxY = Math.max(maxY, bbox.y + bbox.height)
-    }
-  })
-
-  if (minX === Infinity) return null
-
-  return new DOMRect(minX, minY, maxX - minX, maxY - minY)
-}
-
-function zoomToVisibleNodes() {
-  const bbox = calculateVisibleBBox()
-  if (!bbox || !graphContainer.value) return
-
-  const container = graphContainer.value
-  const containerWidth = container.clientWidth
-  const containerHeight = container.clientHeight
-
-  if (bbox.width === 0 || bbox.height === 0) return
-
-  const padding = 0.2
-  const scaleX = (containerWidth * (1 - padding)) / bbox.width
-  const scaleY = (containerHeight * (1 - padding)) / bbox.height
-  const scale = Math.min(scaleX, scaleY, 3)
-
-  const bboxCenterX = bbox.x + bbox.width / 2
-  const bboxCenterY = bbox.y + bbox.height / 2
-
-  const translateX = containerWidth / 2 - bboxCenterX * scale
-  const translateY = containerHeight / 2 - bboxCenterY * scale
-
-  const transform = zoomIdentity.translate(translateX, translateY).scale(scale)
-
-  applyZoomTransform(transform)
-}
-
 function applyZoomTransform(transform: any) {
   if (!graphContainer.value) return
   const svg = graphContainer.value.querySelector('svg')
@@ -404,12 +417,12 @@ function applyZoomTransform(transform: any) {
 }
 
 watch(() => props.highlightedBlockId, (newBlockIds) => {
+  // Skip if edge filter from flame graph is active
+  if (props.filteredEdgeIds && props.filteredEdgeIds.length > 0) return
+
   if (newBlockIds && newBlockIds.length > 0) {
     calculateVisibleElements(newBlockIds)
     applyFilter()
-    nextTick(() => {
-      zoomToVisibleNodes()
-    })
   } else {
     visibleNodes.value.clear()
     visibleEdges.value.clear()
@@ -418,6 +431,19 @@ watch(() => props.highlightedBlockId, (newBlockIds) => {
     nextTick(() => {
       resetZoom()
     })
+  }
+})
+
+watch(() => props.filteredEdgeIds, (edgeIds) => {
+  if (edgeIds && edgeIds.length > 0) {
+    applyEdgeFilter(edgeIds)
+  } else if (!props.highlightedBlockId || props.highlightedBlockId.length === 0) {
+    // Only clear if no block highlight is active either
+    visibleNodes.value.clear()
+    visibleEdges.value.clear()
+    highlightedNodes.value.clear()
+    applyFilter()
+    nextTick(() => resetZoom())
   }
 })
 
@@ -445,7 +471,7 @@ const edgeTypes = [
 <template>
   <div class="cfg-panel">
     <span class="panel-label">
-      (d) Control Flow Graph
+      (e) Control Flow Graph
       <span
         class="edge-info-icon"
         :class="{ active: showEdgeTypes }"
@@ -472,14 +498,6 @@ const edgeTypes = [
       </span>
     </span>
 
-    <button
-      v-if="visibleNodes.size > 0"
-      class="reset-button"
-      @click="resetFilter"
-    >
-      Show All
-    </button>
-
     <div v-if="isAnalyzing || status === 'loading'" class="status-overlay">
       Loading control flow graph...
     </div>
@@ -490,6 +508,11 @@ const edgeTypes = [
 
     <div v-else-if="status === 'success'" class="cfg-container">
       <div ref="graphContainer" class="graph-viewport"></div>
+      <button
+        v-if="visibleNodes.size > 0"
+        class="reset-button"
+        @click="resetFilter"
+      >Show All</button>
 
       <!-- Right Side Panel: Information + Instructions -->
       <div class="side-panel">
@@ -633,7 +656,8 @@ const edgeTypes = [
 /* 过滤掉的元素 */
 .graph-viewport :deep(.node.filtered-out),
 .graph-viewport :deep(.edge.filtered-out) {
-  display: none;
+  opacity: 0.08;
+  pointer-events: none;
 }
 
 /* 高亮的目标节点 */
@@ -669,14 +693,14 @@ const edgeTypes = [
 
 .reset-button {
   position: absolute;
-  top: 8px;
-  right: 12px;
-  padding: 4px 12px;
-  font-size: 11px;
+  top: 32px;
+  right: 168px;
+  padding: 3px 10px;
+  font-size: 10px;
   background: var(--accent);
   color: white;
   border: none;
-  border-radius: 4px;
+  border-radius: 3px;
   cursor: pointer;
   z-index: 10;
   transition: background 0.15s;

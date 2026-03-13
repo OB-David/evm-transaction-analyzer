@@ -180,3 +180,30 @@ export async function fetchBlockInformation(txHash: string): Promise<BlockInform
 
   return res.json()
 }
+
+export interface EdgeStepEntry {
+  edge_id: string
+  edge_step: number
+}
+
+export type EdgeStepMap = Record<string, EdgeStepEntry>
+
+export async function fetchFlameGraphSvg(txHash: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/trace_flame_graph.svg`)
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch flame graph: ${res.status}`)
+  }
+
+  return res.text()
+}
+
+export async function fetchEdgeStepMap(txHash: string): Promise<EdgeStepMap> {
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/edge_id-step.json`)
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch edge step map: ${res.status}`)
+  }
+
+  return res.json()
+}
