@@ -9,7 +9,7 @@ from utils.cfg_transaction import CFGConstructor
 from utils.render_cfg import render_transaction
 from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_cfg, edge_link_to_json
 from utils.render_legend import render_legend_matplotlib
-# from utils.render_token_table import generate_table_excel
+from utils.cfg_abstract import  build_refined_hierarchical_trace, export_visual_trace
 
 # 加载环境变量
 load_dotenv()
@@ -21,7 +21,7 @@ except Exception:
 def main():
     # 配置参数
     PROVIDER_URL = os.environ.get("GETH_API")
-    TX_HASH = "0x840ecb2b5d55a682afd529138b36e97992eda9706e206237b57ec4697e4f8186"
+    TX_HASH = "0x8626efddf8a047693519708eeb7620a7d7bca00615967d0d796605e4175015b6"
 
     try:
         # ========== 前置检查 ==========
@@ -37,7 +37,6 @@ def main():
         from_address = tx.get('from')
         to_address = tx.get('to')
         amount = tx.get('value')
-        print(amount)
         
         # 检查1：无to_address → 合约创建交易
         if to_address is None or to_address == "":
@@ -63,6 +62,14 @@ def main():
         # 1. 获取交易的标准化trace（包含 contracts_addresses、slot_map、users_addresses）
         print(f"正在获取交易 {TX_HASH} 的执行轨迹...")
         standardized_trace = formatter.get_standardized_trace(TX_HASH)
+
+        # 生成调用树
+        tree_data = build_refined_hierarchical_trace(standardized_trace["steps"])
+        # tree_path = os.path.join(result_dir, "trace_tree.json") 
+        
+        # with open(tree_path, 'w', encoding='utf-8') as f:
+        #     json.dump(tree_data, f, indent=4, ensure_ascii=False)
+
 
         # 2. 提取关键映射数据
         contracts_addresses = standardized_trace.get("contracts_addresses", [])
@@ -122,6 +129,11 @@ def main():
         folded_blocks_path = os.path.join(result_dir, "folded_blocks_information.json")
         cfg_constructor.export_folded_blocks_information(tx_cfg, folded_blocks_path)
         print(f"blcokid-information映射数据已保存到: {folded_blocks_path}")
+
+        print("正在导出边id与step映射...")
+        edge_info_path = os.path.join(result_dir, "edge_id-step.json")
+        cfg_constructor.export_edge_step_information(tx_cfg, edge_info_path)
+        print(f"边id-step映射数据已保存到: {folded_blocks_path}")
         
         # 9. 保存资产变更数据
         changes_path = os.path.join(result_dir, "balance_and_eth_changes.json") 
@@ -140,7 +152,7 @@ def main():
 
         # 10. 渲染并保存三个核心图
         save_graphs(result_dir=result_dir, tx_cfg=tx_cfg, full_address_name_map = full_address_name_map, erc20_token_map=erc20_token_map, 
-                    users_addresses=users_addresses, pairs=pairs, annotations=annotations, pending_erc20=pending_erc20)
+                    users_addresses=users_addresses, pairs=pairs, annotations=annotations, pending_erc20=pending_erc20, tree_data = tree_data)
         
     except Exception as e:
         import traceback
@@ -158,13 +170,21 @@ def create_result_directory(tx_hash: str) -> str:
     os.makedirs(result_dir, exist_ok=True)
     return result_dir
 
-def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]]):
+def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]], tree_data):
     '''渲染并保存所有图：交易级CFG图、CFG图例、代币交易流图'''
 
     # 定义Tx_CFG,Asset_Flow和图例的共用颜色规则
     CONTRACT_COLORS = [
-    "#FF9E9E", "#81C784", "#64B5F6", "#BA68C8", "#FFCD07", 
-    "#4DD0E1", "#FD9800", "#F48FB1", "#AED581", "#7986CB"
+    "#FD6767E6", # 1. 纯火焰红 (起始核心)
+    "#FF956EE6", # 2. 猩红色
+    "#FFA500E6", # 3. 鲜橙色
+    "#FFD700E6", # 4. 金黄色
+    "#FFFF00E6", # 5. 纯亮黄
+    "#B36EF985", # 6. 深天蓝 (蓝焰区开始)
+    "#1B87F3BB", # 7. 亮蓝
+    "#87CEFAE6", # 8. 浅蓝
+    "#ADD8E6E6", # 9. 淡蓝色
+    "#FFFFFFE6"  # 10. 纯白 (最高温/最外层)
     ]
     EDGE_COLOR_MAP = {
         "NORMAL": "#939393",
@@ -185,6 +205,11 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
         erc20_token_map = erc20_token_map,
         rankdir="LR")
     print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
+
+
+    # --- 新增：使用相同的 addr_color_map 导出火焰图 ---
+    print("Generating Flame Graph Trace...")
+    export_visual_trace(result_dir, tree_data, full_address_name_map, erc20_token_map, addr_color_map)
 
     # 保存图例 
     print("正在生成CFG图例...")

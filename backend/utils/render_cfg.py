@@ -14,13 +14,6 @@ def addr_short(s: Any) -> str:
     s = str(s)
     return s[:8] + "..." + s[-4:] if s.startswith("0x") and len(s) > 8 else s
 
-def extract_edge_seq(edge_id: Optional[str]) -> str:
-    """提取边的序号"""
-    if not edge_id or not str(edge_id).startswith("edge_"):
-        return "0"
-    parts = str(edge_id).split("_")
-    return parts[1] if len(parts)>=2 and parts[1].isdigit() else "0"
-
 def get_valid_nodes_and_colors(cfg: object, contract_colors: List[str]) -> Tuple[List[object], List[str], List[str], Dict[str, int]]:
     """
     按合约第一次出现顺序依次分配颜色
@@ -136,12 +129,13 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
         if src_id not in rendered_node_ids or tgt_id not in rendered_node_ids:
             continue
 
-        edge_seq = getattr(edge, "merged_ids", extract_edge_seq(getattr(edge, "edge_id", "")))
+        edge_seq = edge.edge_id
         edge_type = escape_dot(getattr(edge, 'edge_type', 'UNKNOWN'))
         edge_color = edge_color_map.get(edge_type, "#607D8B")
+        edge_step = edge.edge_step
         
         # 边属性（仅布局参数，文字保留）
-        dot_lines.append(f'  {src_id} -> {tgt_id} [label="{edge_seq}", color="{edge_color}", style="solid",minlen=1];')
+        dot_lines.append(f'  {src_id} -> {tgt_id} [label="{edge_seq}", color="{edge_color}", style="solid",minlen=1], comment="{edge_step}"')
     dot_lines.append("}")
 
     # 写入DOT文件

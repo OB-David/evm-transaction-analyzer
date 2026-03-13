@@ -167,7 +167,6 @@ class CFGConstructor:
             
             # 识别线性链路
             chain = self._identify_linear_chain(cfg, node)
-            print(len(chain))
             if len(chain) <= 1:  # 非线性链路，跳过
                 processed_nodes.add(node)
                 # 非折叠节点也记录映射（值为自身列表），确保映射全覆盖
@@ -192,7 +191,8 @@ class CFGConstructor:
                     edge_id=original_edge_id,  
                     source=first_node,
                     target=edge.target,
-                    edge_type=edge.edge_type
+                    edge_type=edge.edge_type,
+                    edge_step = edge.edge_step
                 )
                 # 标记边属性
                 setattr(new_edge, "folded_edge", False)  
@@ -405,7 +405,7 @@ class CFGConstructor:
                                 processed_nodes[prev_node_key] = prev_node
                                 cfg.add_node(prev_node)
                             # 调用add_edge生成递增编号
-                            cfg.add_edge(prev_node, jumpdest_node, "NOTJUMP")
+                            cfg.add_edge(prev_node, jumpdest_node, "NOTJUMP",current_step_idx)
 
                 current_node = jumpdest_node
                 current_node_key = jumpdest_node_key
@@ -535,7 +535,7 @@ class CFGConstructor:
                     edge_type = "TERMINATE"
 
                 # 调用add_edge生成递增编号
-                cfg.add_edge(current_node, next_node, edge_type)
+                cfg.add_edge(current_node, next_node, edge_type, current_step_idx)
                 current_node = next_node
                 current_node_key = next_node_key
 
@@ -582,7 +582,43 @@ class CFGConstructor:
         try:
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(block_inst_map, f, ensure_ascii=False, indent=2)
-            print(f"[OK] 极简版Block-Inst映射已导出: {output_path} (共{len(block_inst_map)}个节点)")
+            print(f"[OK] Baisc Block Information映射已导出: {output_path} (共{len(block_inst_map)}个节点)")
         except Exception as e:
             print(f"[ERROR] 导出失败: {e}")
+            raise
+
+    # 导出边id和边对应的step的映射
+    def export_edge_step_information(self, cfg: CFG, output_path: str):
+        """
+        导出可见边的edge_id与edge_step的映射JSON文件
+        :param cfg: CFG对象
+        :param output_path: JSON输出路径
+        """
+        edge_step_map = {}
+        
+        # 遍历所有边
+        for edge in cfg.edges:
+            # 过滤掉被折叠隐藏的内部边，只保留可见边
+            if hasattr(edge, "visible") and not getattr(edge, "visible", True):
+                continue
+            
+            # 提取边 ID（处理可能存在的 merged_ids 情况）
+            edge_id = getattr(edge, "edge_id", "unknown")
+            
+            # 提取 edge_step
+            edge_step = getattr(edge, "edge_step", None)
+            
+            # 记录映射
+            edge_step_map[edge_id] = {
+                "edge_id": edge_id,
+                "edge_step": edge_step,
+            }
+
+        # 写入JSON
+        try:
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(edge_step_map, f, ensure_ascii=False, indent=2)
+            print(f"[OK] Edge Step 信息映射已导出: {output_path} (共{len(edge_step_map)}条边)")
+        except Exception as e:
+            print(f"[ERROR] 边信息导出失败: {e}")
             raise
