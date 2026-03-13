@@ -85,6 +85,10 @@ const error = ref('')
 const selectedTxInfo = ref<TransactionGasInfo | null>(null)
 const selectedTxIndex = ref<number | null>(null)
 
+// Gas range for legend
+const gasMin = ref<string>('')
+const gasMax = ref<string>('')
+
 // Load Plotly from CDN
 onMounted(() => {
   startClock()
@@ -146,6 +150,9 @@ function renderBlocksPlotly(data: BlocksHeatmapData) {
 
   const blocks = data.blocks
   const avgGasValues = blocks.map(b => b.avg_gas)
+
+  gasMin.value = Math.round(Math.min(...avgGasValues)).toLocaleString()
+  gasMax.value = Math.round(Math.max(...avgGasValues)).toLocaleString()
 
   const hoverTexts = blocks.map(b =>
     `Block: ${b.block_number}<br>` +
@@ -274,6 +281,10 @@ function renderPlotly(data: BlockGasData) {
   let vMax = Math.max(...logGasValues)
   if (vMin === vMax) { vMin -= 0.1; vMax += 0.1 }
 
+  const gasValues = txs.map(tx => tx.gas)
+  gasMin.value = Math.min(...gasValues).toLocaleString()
+  gasMax.value = Math.max(...gasValues).toLocaleString()
+
   const hoverTexts = txs.map((tx) => {
     const toDisplay = tx.to_addr
       ? `${tx.to_addr.substring(0, 10)}...`
@@ -401,6 +412,13 @@ async function copyToClipboard(text: string) {
         <button v-if="viewMode === 'transactions'" class="nav-btn back-btn-inline" @click="backToBlocks">← Back</button>
         <span class="view-label">{{ viewMode === 'blocks' ? 'Block View' : 'Transaction View' }}</span>
       </div>
+    </div>
+
+    <div v-if="gasMin && gasMax" class="gas-legend">
+      <span class="gas-unit">Gas</span>
+      <span class="gas-label">{{ gasMin }}</span>
+      <div class="gas-bar" :class="viewMode"></div>
+      <span class="gas-label">{{ gasMax }}</span>
     </div>
 
     <!-- Header area -->
@@ -655,6 +673,42 @@ async function copyToClipboard(text: string) {
   color: var(--error);
   font-size: 11px;
   padding: 10px;
+}
+
+.gas-legend {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 2px 0;
+  flex-shrink: 0;
+}
+
+.gas-unit {
+  font-size: 9px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.gas-label {
+  font-size: 9px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.gas-bar {
+  flex: 1;
+  max-width: 160px;
+  height: 3px;
+  border-radius: 1.5px;
+}
+
+.gas-bar.blocks {
+  background: linear-gradient(to right, #D5D9E8, #7B88B8, #3D4A6E);
+}
+
+.gas-bar.transactions {
+  background: linear-gradient(to right, #D6E4E8, #7BA8B8, #3D5E6E);
 }
 
 .heatmap-container {

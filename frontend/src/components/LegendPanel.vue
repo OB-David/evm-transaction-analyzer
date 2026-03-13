@@ -38,9 +38,9 @@ function truncateAddr(addr: string): string {
           :key="'user-' + item.address"
           class="legend-item"
         >
-          <svg width="36" height="24" viewBox="0 0 36 24">
+          <svg width="28" height="20" viewBox="0 0 28 20">
             <polygon
-              points="18,4 30,12 18,20 6,12"
+              points="14,3 23,10 14,17 5,10"
               fill="#FFFFFF"
               stroke="#2C2C2C"
               stroke-width="1.2"
@@ -61,12 +61,12 @@ function truncateAddr(addr: string): string {
           :key="'erc20-' + item.address"
           class="legend-item"
         >
-          <svg width="36" height="24" viewBox="0 0 36 24">
+          <svg width="28" height="20" viewBox="0 0 28 20">
             <ellipse
-              cx="18"
-              cy="12"
-              rx="13"
-              ry="7"
+              cx="14"
+              cy="10"
+              rx="10"
+              ry="6"
               :fill="item.color || '#4DD0E1'"
               stroke="#2C2C2C"
               stroke-width="1.2"
@@ -87,12 +87,12 @@ function truncateAddr(addr: string): string {
           :key="'contract-' + item.address"
           class="legend-item"
         >
-          <svg width="36" height="24" viewBox="0 0 36 24">
+          <svg width="28" height="20" viewBox="0 0 28 20">
             <rect
-              x="6"
-              y="6"
-              width="24"
-              height="12"
+              x="5"
+              y="5"
+              width="18"
+              height="10"
               rx="1"
               :fill="item.color || '#FF9E9E'"
               stroke="#2C2C2C"
@@ -111,7 +111,7 @@ function truncateAddr(addr: string): string {
 
 <style scoped>
 .legend-panel {
-  width: 200px;
+  width: 133px;
   flex-shrink: 0;
   background: rgba(255, 255, 255, 0.96);
   border: 1px solid var(--border);
@@ -125,7 +125,7 @@ function truncateAddr(addr: string): string {
 
 .legend-scroll {
   overflow-y: auto;
-  padding: 10px 12px;
+  padding: 8px 8px;
 }
 
 .legend-scroll::-webkit-scrollbar {
@@ -162,7 +162,7 @@ function truncateAddr(addr: string): string {
 .legend-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   margin-bottom: 3px;
 }
 
@@ -177,7 +177,7 @@ function truncateAddr(addr: string): string {
 }
 
 .legend-name {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text);
   line-height: 1.3;
 }

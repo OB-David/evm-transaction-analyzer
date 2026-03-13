@@ -11,6 +11,7 @@ from utils.evm_information import TraceFormatter
 from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
 from utils.extract_token_changes import pair_transactions, afg_to_cfg, edge_link_to_json
+from utils.cfg_abstract import build_refined_hierarchical_trace
 from main import create_result_directory, save_graphs
 
 load_dotenv()
@@ -79,6 +80,13 @@ def run(tx_hash: str):
     folded_blocks_path = os.path.join(result_dir, "folded_blocks_information.json")
     cfg_constructor.export_folded_blocks_information(tx_cfg, folded_blocks_path)
 
+    # Save edge step mapping
+    edge_info_path = os.path.join(result_dir, "edge_id-step.json")
+    cfg_constructor.export_edge_step_information(tx_cfg, edge_info_path)
+
+    # Build hierarchical trace for flame graph
+    tree_data = build_refined_hierarchical_trace(standardized_trace["steps"])
+
     # Render graphs
     save_graphs(
         result_dir=result_dir,
@@ -89,6 +97,7 @@ def run(tx_hash: str):
         pairs=pairs,
         annotations=annotations,
         pending_erc20=pending_erc20,
+        tree_data=tree_data,
     )
 
     print(f"RESULT_DIR={os.path.abspath(result_dir)}")
