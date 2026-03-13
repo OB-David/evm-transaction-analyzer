@@ -217,7 +217,7 @@ function handleEdgeClick(edgeId: number) {
 
     <div v-else-if="status === 'success'" class="afg-container">
       <div ref="graphContainer" class="graph-viewport"></div>
-      <LegendPanel />
+      <LegendPanel :tx-hash="props.txHash" />
     </div>
 
     <div v-else class="placeholder">
@@ -250,10 +250,14 @@ function handleEdgeClick(edgeId: number) {
   flex: 1;
   min-height: 0;
   padding-top: 28px;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
 }
 
 .graph-viewport {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   height: 100%;
   overflow: hidden;
 }
