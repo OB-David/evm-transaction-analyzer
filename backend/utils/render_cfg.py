@@ -129,13 +129,13 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
         if src_id not in rendered_node_ids or tgt_id not in rendered_node_ids:
             continue
 
-        edge_seq = edge.edge_id
+        edge_seq = int(''.join(filter(str.isdigit, str(edge.edge_id))))
         edge_type = escape_dot(getattr(edge, 'edge_type', 'UNKNOWN'))
         edge_color = edge_color_map.get(edge_type, "#607D8B")
         edge_step = edge.edge_step
         
         # 边属性（仅布局参数，文字保留）
-        dot_lines.append(f'  {src_id} -> {tgt_id} [label="{edge_seq}", color="{edge_color}", style="solid",minlen=1], comment="{edge_step}"')
+        dot_lines.append(f'  {src_id} -> {tgt_id} [label="{edge_seq}", color="{edge_color}", style="solid",minlen=1]')
     dot_lines.append("}")
 
     # 写入DOT文件
