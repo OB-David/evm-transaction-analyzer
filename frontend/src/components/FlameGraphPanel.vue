@@ -164,7 +164,7 @@ function clearSelection() {
 
 <template>
   <div class="flame-panel">
-    <span class="panel-label">(e) Flame Graph</span>
+    <span class="panel-label">(d) Flame Graph</span>
 
     <div v-if="isAnalyzing || status === 'loading'" class="status-overlay">
       Loading flame graph...

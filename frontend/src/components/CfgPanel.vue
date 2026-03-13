@@ -471,7 +471,7 @@ const edgeTypes = [
 <template>
   <div class="cfg-panel">
     <span class="panel-label">
-      (d) Control Flow Graph
+      (e) Control Flow Graph
       <span
         class="edge-info-icon"
         :class="{ active: showEdgeTypes }"
