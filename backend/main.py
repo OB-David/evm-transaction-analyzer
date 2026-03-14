@@ -221,6 +221,18 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
         rankdir="LR")
     print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
 
+    # Render DOT to SVG using Graphviz CLI for frontend display
+    import subprocess
+    cfg_dot_file = f"{tx_dot_path}.dot"
+    cfg_svg_file = os.path.join(result_dir, "transaction_cfg.svg")
+    try:
+        subprocess.run(
+            ["dot", "-Tsvg", cfg_dot_file, "-o", cfg_svg_file],
+            check=True, capture_output=True, text=True, timeout=120
+        )
+        print(f"CFG SVG已生成: {cfg_svg_file}")
+    except Exception as e:
+        print(f"WARNING: CFG SVG生成失败: {e}")
 
     # --- 新增：使用相同的 addr_color_map 导出火焰图 ---
     print("Generating Flame Graph Trace...")

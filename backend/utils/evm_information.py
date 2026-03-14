@@ -345,7 +345,7 @@ class TraceFormatter:
                 "cast", "rpc",
                 "debug_traceTransaction",
                 tx_hash,
-                '{"enableMemory":true,"disableStack":false,"disableStorage":false,"enableReturnData":true}',
+                '{"enableMemory":true,"disableStack":false,"disableStorage":false,"enableReturnData":true,"timeout":"300s"}',
                 "-r", self.provider_url
             ]
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)

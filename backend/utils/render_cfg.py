@@ -106,7 +106,7 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
         has_action = len(actions) > 0
 
         # 节点属性（仅布局参数）
-        style_str = "filled, shadow" + (", bold" if has_action else "")
+        style_str = "filled" + (", bold" if has_action else "")
         current_penwidth = 40 if has_action else 10
         node_attrs = [
             f'shape="{node_shape}"',

@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
-import { graphviz } from 'd3-graphviz'
-import { zoomIdentity, zoomTransform } from 'd3-zoom'
+import { zoom, zoomIdentity, type ZoomBehavior } from 'd3-zoom'
 import { select } from 'd3-selection'
-import { fetchCfgDotFile, fetchBlockInformation, fetchLegendData, type BlockInformationMap, type BlockInformation } from '../api/analyze'
+import { fetchCfgSvg, fetchBlockInformation, fetchLegendData, type BlockInformationMap, type BlockInformation } from '../api/analyze'
 
 const props = defineProps<{
   txHash: string | null
@@ -16,7 +15,6 @@ const emit = defineEmits<{
   'cfg-navigate': [blockIds: number[] | null]
 }>()
 
-const dotContent = ref<string>('')
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
 
@@ -30,8 +28,9 @@ const instructionsPanel = ref<HTMLElement | null>(null)
 const addressNameMap = ref<Map<string, string>>(new Map())
 
 const graphContainer = ref<HTMLElement | null>(null)
-let graphvizInstance: any = null
-let initialTransform: any = null
+let zoomBehavior: ZoomBehavior<SVGSVGElement, unknown> | null = null
+let savedVbWidth = 0
+let savedVbHeight = 0
 
 // 过滤和高亮状态
 const highlightedNodes = ref<Set<string>>(new Set())
@@ -55,60 +54,92 @@ async function loadCfgData(txHash: string) {
   errorMsg.value = ''
 
   try {
-    // DOT now only contains IDs, use directly without processing
-    const dot = await fetchCfgDotFile(txHash)
-    dotContent.value = dot
-    status.value = 'success'
+    // Fetch pre-rendered SVG, block information and legend data in parallel
+    const [svgContent, info, legend] = await Promise.all([
+      fetchCfgSvg(txHash),
+      fetchBlockInformation(txHash).catch(() => ({} as BlockInformationMap)),
+      fetchLegendData(txHash).catch(() => null)
+    ])
 
-    // Fetch block information and legend data in parallel
-    try {
-      const [info, legend] = await Promise.all([
-        fetchBlockInformation(txHash),
-        fetchLegendData(txHash).catch(() => null)
-      ])
-      blockInformation.value = info
+    blockInformation.value = info
 
-      // Build address-to-name map from legend
-      addressNameMap.value.clear()
-      if (legend) {
-        for (const entry of [...legend.user_addresses, ...legend.erc20_tokens, ...legend.normal_contracts]) {
-          addressNameMap.value.set(entry.address.toLowerCase(), entry.name)
-        }
+    // Build address-to-name map from legend
+    addressNameMap.value.clear()
+    if (legend) {
+      for (const entry of [...legend.user_addresses, ...legend.erc20_tokens, ...legend.normal_contracts]) {
+        addressNameMap.value.set(entry.address.toLowerCase(), entry.name)
       }
-    } catch (e) {
-      console.warn('Failed to load block information:', e)
     }
 
+    status.value = 'success'
     await nextTick()
-    await renderGraph()
+    renderSvg(svgContent)
   } catch (e: any) {
     status.value = 'error'
     errorMsg.value = e.message || 'Failed to load CFG data'
   }
 }
 
-async function renderGraph() {
-  if (!graphContainer.value || !dotContent.value) return
+function renderSvg(svgContent: string) {
+  if (!graphContainer.value) return
 
-  try {
-    const container = graphContainer.value
+  const container = graphContainer.value
+  container.innerHTML = svgContent
 
-    graphvizInstance = graphviz(container, {
-      useWorker: false,
-      zoom: true,
-      fit: true,
-      width: container.clientWidth,
-      height: container.clientHeight,
+  const svg = container.querySelector('svg')
+  if (!svg) return
+
+  // Parse viewBox to get graph dimensions
+  const viewBox = svg.getAttribute('viewBox')
+  const vb = viewBox ? viewBox.split(/[\s,]+/).map(Number) : null
+  savedVbWidth = vb ? (vb[2] ?? 0) : 0
+  savedVbHeight = vb ? (vb[3] ?? 0) : 0
+  const vbWidth = savedVbWidth
+  const vbHeight = savedVbHeight
+
+  // Remove fixed width/height/viewBox — we control all positioning via d3-zoom
+  svg.removeAttribute('width')
+  svg.removeAttribute('height')
+  svg.removeAttribute('viewBox')
+  svg.style.width = '100%'
+  svg.style.height = '100%'
+
+  // Wrap original <g> (which has Graphviz's own transform) inside a zoom <g>
+  const svgSel = select(svg as SVGSVGElement)
+  const origG = svg.querySelector('g')
+  if (!origG) return
+
+  const zoomG = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+  zoomG.setAttribute('id', 'zoom-layer')
+  svg.insertBefore(zoomG, origG)
+  zoomG.appendChild(origG)  // move original <g> inside zoom layer
+
+  zoomBehavior = zoom<SVGSVGElement, unknown>()
+    .scaleExtent([0.005, 10])
+    .on('zoom', (event: any) => {
+      zoomG.setAttribute('transform', event.transform.toString())
     })
 
-    await graphvizInstance
-      .renderDot(dotContent.value)
-      .on('end', attachInteractivity)
-  } catch (e) {
-    console.error('Graphviz render error:', e)
-    errorMsg.value = 'Failed to render graph'
-    status.value = 'error'
+  svgSel.call(zoomBehavior)
+
+  // Fit the graph to the container
+  const containerWidth = container.clientWidth
+  const containerHeight = container.clientHeight
+
+  if (vbWidth > 0 && vbHeight > 0) {
+    const padding = 20
+    const scale = Math.min(
+      (containerWidth - padding * 2) / vbWidth,
+      (containerHeight - padding * 2) / vbHeight
+    )
+    const tx = (containerWidth - vbWidth * scale) / 2
+    const ty = (containerHeight - vbHeight * scale) / 2
+
+    const initialTransform = zoomIdentity.translate(tx, ty).scale(scale)
+    svgSel.call(zoomBehavior.transform, initialTransform)
   }
+
+  attachInteractivity()
 }
 
 function attachInteractivity() {
@@ -116,12 +147,6 @@ function attachInteractivity() {
 
   const svg = graphContainer.value.querySelector('svg')
   if (!svg) return
-
-  try {
-    initialTransform = zoomTransform(svg as Element)
-  } catch {
-    initialTransform = zoomIdentity
-  }
 
   nodeNameToEl.value.clear()
   const nodes = svg.querySelectorAll('.node')
@@ -154,7 +179,7 @@ function handleNodeClick(nodeName: string) {
   const match = nodeName.match(/^node_(\d+)$/)
   if (!match) return
 
-  const blockId = parseInt(match[1], 10)
+  const blockId = parseInt(match[1]!, 10)
 
   // Remove previous selection highlight
   if (selectedBlockId.value !== null) {
@@ -254,8 +279,8 @@ function parseEdgeConnections() {
     const match = title.match(/^(node_\d+)->(node_\d+)$/)
     if (match) {
       edgeConnections.value.set(title, {
-        source: match[1],
-        target: match[2]
+        source: match[1]!,
+        target: match[2]!
       })
     }
   })
@@ -322,14 +347,14 @@ function applyEdgeFilter(edgeIds: string[]) {
 }
 
 function calculateVisibleElements(targetBlockIds: number[]) {
-  const targetNodeIds = targetBlockIds.map(id => `node_${id}`)
-  const visible = new Set<string>(targetNodeIds)
+  const targetNodeSet = new Set(targetBlockIds.map(id => `node_${id}`))
+  const visible = new Set<string>(targetNodeSet)
 
   edgeConnections.value.forEach(({source, target}) => {
-    if (targetNodeIds.includes(source)) {
+    if (targetNodeSet.has(source)) {
       visible.add(target)
     }
-    if (targetNodeIds.includes(target)) {
+    if (targetNodeSet.has(target)) {
       visible.add(source)
     }
   })
@@ -344,7 +369,7 @@ function calculateVisibleElements(targetBlockIds: number[]) {
   })
   visibleEdges.value = visibleEdgeSet
 
-  highlightedNodes.value = new Set(targetNodeIds)
+  highlightedNodes.value = new Set(targetNodeSet)
 }
 
 function applyFilter() {
@@ -384,38 +409,6 @@ function applyFilter() {
   })
 }
 
-function applyZoomTransform(transform: any) {
-  if (!graphContainer.value) return
-  const svg = graphContainer.value.querySelector('svg')
-  if (!svg) return
-
-  try {
-    const zoomSel = graphvizInstance.zoomSelection()
-    const zoomBeh = graphvizInstance.zoomBehavior()
-    zoomSel.transition().duration(300).call(zoomBeh.transform, transform)
-  } catch {
-    try {
-      const svgSel = select(svg)
-      const zoomBeh = (svgSel.node() as any).__zoom_behavior
-      if (zoomBeh) {
-        svgSel.transition().duration(300).call(zoomBeh.transform, transform)
-      } else {
-        const g = svg.querySelector('g')
-        if (g) {
-          const { x, y, k } = transform
-          g.setAttribute('transform', `translate(${x}, ${y}) scale(${k})`)
-        }
-      }
-    } catch {
-      const g = svg.querySelector('g')
-      if (g) {
-        const { x, y, k } = transform
-        g.setAttribute('transform', `translate(${x}, ${y}) scale(${k})`)
-      }
-    }
-  }
-}
-
 watch(() => props.highlightedBlockId, (newBlockIds) => {
   // Skip if edge filter from flame graph is active
   if (props.filteredEdgeIds && props.filteredEdgeIds.length > 0) return
@@ -448,8 +441,28 @@ watch(() => props.filteredEdgeIds, (edgeIds) => {
 })
 
 function resetZoom() {
-  if (!graphvizInstance || !initialTransform) return
-  applyZoomTransform(initialTransform)
+  if (!graphContainer.value || !zoomBehavior) return
+  const svg = graphContainer.value.querySelector('svg')
+  if (!svg) return
+
+  const containerWidth = graphContainer.value.clientWidth
+  const containerHeight = graphContainer.value.clientHeight
+
+  if (savedVbWidth > 0 && savedVbHeight > 0) {
+    const padding = 20
+    const scale = Math.min(
+      (containerWidth - padding * 2) / savedVbWidth,
+      (containerHeight - padding * 2) / savedVbHeight
+    )
+    const tx = (containerWidth - savedVbWidth * scale) / 2
+    const ty = (containerHeight - savedVbHeight * scale) / 2
+
+    const svgSel = select(svg as SVGSVGElement)
+    svgSel.transition().duration(300).call(
+      zoomBehavior!.transform,
+      zoomIdentity.translate(tx, ty).scale(scale)
+    )
+  }
 }
 
 function resetFilter() {
@@ -637,7 +650,6 @@ const edgeTypes = [
 }
 
 .graph-viewport :deep(.node) {
-  transition: opacity 0.15s;
   cursor: pointer;
 }
 
@@ -683,12 +695,6 @@ const edgeTypes = [
   stroke: #6478c8;
   stroke-width: 4;
   fill: rgba(100, 120, 200, 0.15);
-}
-
-/* 平滑过渡 */
-.graph-viewport :deep(.node),
-.graph-viewport :deep(.edge) {
-  transition: opacity 0.2s ease;
 }
 
 .reset-button {

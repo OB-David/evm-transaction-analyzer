@@ -345,16 +345,21 @@ def afg_to_cfg(paired, pending_erc20, cfg_constructor: CFGConstructor, tx_cfg: C
         if p["order"] == 0:
             continue
         if p["token"] == "ETH":
-            matched_block = cfg_constructor.find_node_by_pc_address(tx_cfg, p["codecontract_address"], p["source_pcs"][0]).id
-            if matched_block:
-               edge_link.append({"edge_id": p["order"], "type": "ETH_TRANSFER", "matched_blocks": matched_block})
+            matched_node = cfg_constructor.find_node_by_pc_address(tx_cfg, p["codecontract_address"], p["source_pcs"][0])
+            if matched_node is None:
+                continue
+            matched_block = matched_node.id
+            edge_link.append({"edge_id": p["order"], "type": "ETH_TRANSFER", "matched_blocks": matched_block})
         else:
             # ERC20 Transfer 配对
             # from_codecontract_address 对应的 sload/sstore
-            s_l = cfg_constructor.find_node_by_pc_address(tx_cfg, p["from_codecontract"], p["source_pcs"]["sender_sload_pc"]).id
-            s_s = cfg_constructor.find_node_by_pc_address(tx_cfg, p["from_codecontract"], p["source_pcs"]["sender_sstore_pc"]).id
-            r_l = cfg_constructor.find_node_by_pc_address(tx_cfg, p["to_codecontract"], p["source_pcs"]["receiver_sload_pc"]).id
-            r_s = cfg_constructor.find_node_by_pc_address(tx_cfg, p["to_codecontract"], p["source_pcs"]["receiver_sstore_pc"]).id
+            s_l_node = cfg_constructor.find_node_by_pc_address(tx_cfg, p["from_codecontract"], p["source_pcs"]["sender_sload_pc"])
+            s_s_node = cfg_constructor.find_node_by_pc_address(tx_cfg, p["from_codecontract"], p["source_pcs"]["sender_sstore_pc"])
+            r_l_node = cfg_constructor.find_node_by_pc_address(tx_cfg, p["to_codecontract"], p["source_pcs"]["receiver_sload_pc"])
+            r_s_node = cfg_constructor.find_node_by_pc_address(tx_cfg, p["to_codecontract"], p["source_pcs"]["receiver_sstore_pc"])
+            if any(n is None for n in (s_l_node, s_s_node, r_l_node, r_s_node)):
+                continue
+            s_l, s_s, r_l, r_s = s_l_node.id, s_s_node.id, r_l_node.id, r_s_node.id
             blocks = {
                 "s_l": next((rid for rid, nids in folded_node_map.items() if s_l in nids), s_l),
                 "s_s": next((rid for rid, nids in folded_node_map.items() if s_s in nids), s_s),
@@ -368,10 +373,12 @@ def afg_to_cfg(paired, pending_erc20, cfg_constructor: CFGConstructor, tx_cfg: C
                 })  
 
     for v in pending_erc20.values():
-        sload_block = cfg_constructor.find_node_by_pc_address(tx_cfg, v["token_addr"], v["source_pcs"][0]).id
-        sload_block = next((rid for rid, nids in folded_node_map.items() if sload_block in nids), sload_block)
-        sstore_block = cfg_constructor.find_node_by_pc_address(tx_cfg, v["token_addr"], v["source_pcs"][1]).id
-        sstore_block = next((rid for rid, nids in folded_node_map.items() if sstore_block in nids), sstore_block)
+        sload_node = cfg_constructor.find_node_by_pc_address(tx_cfg, v["token_addr"], v["source_pcs"][0])
+        sstore_node = cfg_constructor.find_node_by_pc_address(tx_cfg, v["token_addr"], v["source_pcs"][1])
+        if sload_node is None or sstore_node is None:
+            continue
+        sload_block = next((rid for rid, nids in folded_node_map.items() if sload_node.id in nids), sload_node.id)
+        sstore_block = next((rid for rid, nids in folded_node_map.items() if sstore_node.id in nids), sstore_node.id)
         edge_link.append({
             "edge_id": v["order"], "type": "ERC20_BALANCE_CHANGE",
             "matched_blocks": [sload_block, sstore_block]

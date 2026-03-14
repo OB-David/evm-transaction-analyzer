@@ -71,6 +71,16 @@ export async function fetchCfgDotFile(txHash: string): Promise<string> {
   return res.text()
 }
 
+export async function fetchCfgSvg(txHash: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/transaction_cfg.svg`)
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch CFG SVG: ${res.status}`)
+  }
+
+  return res.text()
+}
+
 export async function fetchEdgeLink(txHash: string): Promise<EdgeLink[]> {
   const res = await fetch(`${API_BASE}/api/files/${txHash}/edge_link.json`)
 
