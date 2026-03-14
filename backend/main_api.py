@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from utils.evm_information import TraceFormatter
 from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
-from utils.extract_token_changes import pair_transactions, afg_to_cfg, edge_link_to_json
+from utils.extract_token_changes import pair_transactions, afg_to_cfg, edge_link_to_json, detect_arbitrage, compute_address_balances
 from utils.cfg_abstract import build_refined_hierarchical_trace
 from main import create_result_directory, save_graphs
 
@@ -84,6 +84,21 @@ def run(tx_hash: str):
     edge_info_path = os.path.join(result_dir, "edge_id-step.json")
     cfg_constructor.export_edge_step_information(tx_cfg, edge_info_path)
 
+    # Save arbitrage results
+    arb_result = detect_arbitrage(pairs, pending_erc20)
+    arb_json_path = os.path.join(result_dir, "arbitrage.json")
+    with open(arb_json_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "is_arbitrage": len(arb_result["cycles"]) > 0,
+            "cycles": arb_result["cycles"],
+            "arb_edge_orders": list(arb_result["arb_edge_orders"])
+        }, f, indent=2, ensure_ascii=False)
+
+    addr_balances = compute_address_balances(pairs, pending_erc20)
+    addr_balances_path = os.path.join(result_dir, "address_balances.json")
+    with open(addr_balances_path, "w", encoding="utf-8") as f:
+        json.dump(addr_balances, f, indent=2, ensure_ascii=False)
+
     # Build hierarchical trace for flame graph
     tree_data = build_refined_hierarchical_trace(standardized_trace["steps"])
 
@@ -98,6 +113,7 @@ def run(tx_hash: str):
         annotations=annotations,
         pending_erc20=pending_erc20,
         tree_data=tree_data,
+        arb_result=arb_result
     )
 
     print(f"RESULT_DIR={os.path.abspath(result_dir)}")

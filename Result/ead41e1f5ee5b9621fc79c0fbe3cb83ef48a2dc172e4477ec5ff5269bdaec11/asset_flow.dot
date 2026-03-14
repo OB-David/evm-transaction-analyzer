@@ -1,0 +1,16 @@
+digraph {
+	graph [rankdir=LR]
+	contract_a [label=<contract_a> fillcolor="#81C784" shape=record style=filled]
+	contract_b [label=<contract_b> fillcolor="#F48FB1" shape=record style=filled]
+	"Pancake LPs" [label=<Pancake LPs> fillcolor="#AED581" shape=ellipse style=filled]
+	contract_d [label=<contract_d> fillcolor="#FF9E9E" shape=record style=filled]
+	contract_e [label=<contract_e> fillcolor="#FFCD07" shape=record style=filled]
+	contract_a -> contract_d [label=<(1) Singularity Finance: 1.0082×10<sup><font point-size='8'>3</font></sup>> color="#64B5F6" fontcolor="#64B5F6"]
+	contract_e -> contract_d [label=<(2) Singularity Dao: 9.0737×10<sup><font point-size='8'>2</font></sup>> color="#4DD0E1" fontcolor="#4DD0E1"]
+	contract_d -> contract_e [label=<(3) Singularity Finance: 1.0082×10<sup><font point-size='8'>3</font></sup>> color="#64B5F6" fontcolor="#64B5F6"]
+	contract_d -> contract_b [label=<(4) Singularity Dao: 6.6175×10<sup><font point-size='8'>2</font></sup>> color="#4DD0E1" fontcolor="#4DD0E1"]
+	contract_b -> contract_d [label=<(5) Wrapped Ether: 2.5920×10<sup><font point-size='8'>-3</font></sup>> color="#BA68C8" fontcolor="#BA68C8"]
+	contract_d -> "Pancake LPs" [label=<(6) Singularity Dao: 2.4563×10<sup><font point-size='8'>2</font></sup>> color="#4DD0E1" fontcolor="#4DD0E1"]
+	"Pancake LPs" -> contract_d [label=<(7) Wrapped Ether: 9.6967×10<sup><font point-size='8'>-4</font></sup>> color="#BA68C8" fontcolor="#BA68C8"]
+	contract_d -> contract_a [label=<(8) Wrapped Ether: 3.5367×10<sup><font point-size='8'>-3</font></sup>> color="#BA68C8" fontcolor="#BA68C8"]
+}

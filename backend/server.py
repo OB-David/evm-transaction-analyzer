@@ -1,7 +1,7 @@
 """FastAPI server wrapping the EVM transaction analysis pipeline."""
 import asyncio
 import mimetypes
-import os
+import json, os
 import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -208,3 +208,11 @@ async def get_transaction_block(tx_hash: str):
         raise HTTPException(status_code=404, detail="Transaction not found")
 
     return BlockNumberResponse(block_number=block_number)
+
+@app.get("/api/arbitrage/{tx_hash}")
+async def get_arbitrage(tx_hash: str):
+    path = os.path.join("Result", tx_hash.lstrip("0x"), "arbitrage.json")
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Not found")
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)

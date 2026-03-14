@@ -134,7 +134,117 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
     paired.sort(key=lambda x: x["order"])
     return paired, node_annotations, pending_erc20
 
-def render_asset_flow(paired, node_annotations, users_addresses, full_address_name_map, pending_erc20, addr_color_map, output_file="asset_flow.dot"):
+def detect_arbitrage(paired: list, pending_erc20: dict = None) -> dict:
+    from collections import defaultdict
+
+    graph = defaultdict(list)
+
+    for e in paired:
+        frm = e.get("from")
+        to  = e.get("to")
+        tok = e["token"]
+        ord_= e["order"]
+        if frm and to and frm != to:
+            graph[frm].append((to, tok, ord_))
+
+    if pending_erc20:
+        for v in pending_erc20.values():
+            user       = v.get("user")
+            token_addr = v.get("token_addr")
+            tok        = v.get("token")
+            ord_       = v.get("order")
+            if not (user and token_addr and tok and ord_):
+                continue
+            if v["value"] > 0:
+                graph[token_addr].append((user, tok, ord_))
+            else:
+                graph[user].append((token_addr, tok, ord_))
+
+    node_arb_orders = defaultdict(set)
+
+    def dfs(start, current, path_edges, visited_tokens, path_edge_keys):
+        for (nxt, tok, ord_) in graph[current]:
+            edge_key = (current, nxt, ord_)
+
+            if nxt == start and len(path_edges) >= 2:
+                all_tokens = visited_tokens | {tok}
+                first_tok = path_edges[0][2]
+                if len(all_tokens) > 1 and tok == first_tok:
+                    cycle_orders = [o for (_, _, _, o) in path_edges] + [ord_]
+                    node_arb_orders[start].update(cycle_orders)
+
+            elif edge_key not in path_edge_keys and len(path_edges) < 10:
+                path_edge_keys.add(edge_key)
+                dfs(start, nxt,
+                    path_edges + [(current, nxt, tok, ord_)],
+                    visited_tokens | {tok},
+                    path_edge_keys)
+                path_edge_keys.discard(edge_key)
+
+    for node in list(graph.keys()):
+        dfs(node, node, [], set(), set())
+
+    seen = set()
+    unique_cycles = []
+    all_arb_orders = set()
+
+    for start_node, orders in node_arb_orders.items():
+        key = frozenset(orders)
+        if key not in seen:
+            seen.add(key)
+            unique_cycles.append(list(orders))
+            all_arb_orders.update(orders)
+
+    return {"cycles": unique_cycles, "arb_edge_orders": all_arb_orders}
+
+def compute_address_balances(paired: list, pending_erc20: dict = None) -> dict:
+    """
+    计算每个地址在本次交易中各代币的净变化量。
+    返回格式：
+    {
+        "0xcontract_to": {"USDC": -100.0, "WETH": 0.0},
+        "0xUser_A":      {"USDC": +100.0},
+        ...
+    }
+    """
+    from collections import defaultdict
+
+    # 格式：balances[address][token] = net_amount
+    balances = defaultdict(lambda: defaultdict(float))
+
+    for p in paired:
+        if p.get("order", 0) == 0:
+            continue
+        frm   = p.get("from")
+        to    = p.get("to")
+        tok   = p.get("token")
+        amount = p.get("amount", 0)
+        if frm and tok:
+            balances[frm][tok] -= amount
+        if to and tok:
+            balances[to][tok]  += amount
+
+    if pending_erc20:
+        for v in pending_erc20.values():
+            user    = v.get("user")
+            tok     = v.get("token")
+            decimals = v.get("decimals", 18)
+            raw_val  = v.get("value", 0)
+            amount   = abs(raw_val) / (10 ** decimals)
+            if not (user and tok):
+                continue
+            if raw_val > 0:
+                balances[user][tok] += amount   # mint
+            else:
+                balances[user][tok] -= amount   # burn
+
+    # 转成普通 dict 方便序列化
+    return {addr: dict(tokens) for addr, tokens in balances.items()}
+
+def render_asset_flow(paired, node_annotations, users_addresses,
+                      full_address_name_map, pending_erc20, addr_color_map,
+                      output_file="asset_flow.dot",
+                      arb_edge_orders: set = None):
     dot = Digraph(engine="dot")
     dot.graph_attr['rankdir'] = 'LR'
 
@@ -195,7 +305,15 @@ def render_asset_flow(paired, node_annotations, users_addresses, full_address_na
         edge_color = addr_color_map.get(p["token_addr"] if p["token"] != "ETH" else p["from"], "#000000")
         amount_str = format_scientific_html(p["amount"])
         edge_label = f"({p['order']}) {p['token']}: {amount_str}"
-        dot.edge(src_id, tgt_id, label="<" + edge_label + ">", color=edge_color, fontcolor=edge_color)
+        is_arb = arb_edge_orders and p["order"] in arb_edge_orders
+        penwidth = "4.0" if is_arb else "1.0"
+        arrowsize = "1.5" if is_arb else "0.8"
+        extra_style = ", bold" if is_arb else ""
+        dot.edge(src_id, tgt_id,
+                 label="<" + edge_label + ">",
+                 color=edge_color, fontcolor=edge_color,
+                 penwidth=penwidth, arrowsize=arrowsize,
+                 style="solid" + extra_style)
 
     # 2. 绘制所有孤立的 ERC20/NFT 变化（虚线边：表示铸造或销毁）
     for v in pending_erc20.values():

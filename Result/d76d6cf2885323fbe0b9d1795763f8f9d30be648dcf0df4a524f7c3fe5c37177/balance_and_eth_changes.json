@@ -1,0 +1,100 @@
+[
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "token_name": "Wrapped Ether",
+    "user_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "changed_balance": "-20103967052537141",
+    "SLOAD_pc": "0x914",
+    "SSTORE_pc": "0x91b"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "token_name": "Wrapped Ether",
+    "user_address": "0xaf682de1f2e6f710731121a05a44cb3c1b511f7d",
+    "changed_balance": "20103967052537141",
+    "SLOAD_pc": "0x961",
+    "SSTORE_pc": "0x968"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "token_name": "Wrapped Ether",
+    "user_address": "0xaf682de1f2e6f710731121a05a44cb3c1b511f7d",
+    "changed_balance": "-20103967052537141",
+    "SLOAD_pc": "0xa6c",
+    "SSTORE_pc": "0xa73"
+  },
+  {
+    "type": "ETH_TRANSFER",
+    "codecontract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "from_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "to_address": "0xaf682de1f2e6f710731121a05a44cb3c1b511f7d",
+    "eth_value": "20103967052537141",
+    "pc": "0xaa4"
+  },
+  {
+    "type": "ETH_TRANSFER",
+    "codecontract_address": "0xaf682de1f2e6f710731121a05a44cb3c1b511f7d",
+    "from_address": "0xaf682de1f2e6f710731121a05a44cb3c1b511f7d",
+    "to_address": "0xd26f20001a72a18c002b00e6710000d68700ce00",
+    "eth_value": "20103967052537141",
+    "pc": "0xa03"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "erc20_token_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "token_name": "Tether USD",
+    "user_address": "0x00000000000014aa86c5d3c41765bb24e11bd701",
+    "changed_balance": "-57415948",
+    "SLOAD_pc": "0x274a",
+    "SSTORE_pc": "0x279a"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "erc20_token_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "token_name": "Tether USD",
+    "user_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "changed_balance": "57415948",
+    "SLOAD_pc": "0x27df",
+    "SSTORE_pc": "0x282f"
+  },
+  {
+    "type": "ETH_TRANSFER",
+    "codecontract_address": "0xd26f20001a72a18c002b00e6710000d68700ce00",
+    "from_address": "0xd26f20001a72a18c002b00e6710000d68700ce00",
+    "to_address": "0x00000000000014aa86c5d3c41765bb24e11bd701",
+    "eth_value": "20090090888687913",
+    "pc": "0x2822"
+  },
+  {
+    "type": "ETH_TRANSFER",
+    "codecontract_address": "0xd26f20001a72a18c002b00e6710000d68700ce00",
+    "from_address": "0xd26f20001a72a18c002b00e6710000d68700ce00",
+    "to_address": "0xaf682de1f2e6f710731121a05a44cb3c1b511f7d",
+    "eth_value": "13876163849228",
+    "pc": "0x2822"
+  },
+  {
+    "type": "ETH_TRANSFER",
+    "codecontract_address": "0xaf682de1f2e6f710731121a05a44cb3c1b511f7d",
+    "from_address": "0xaf682de1f2e6f710731121a05a44cb3c1b511f7d",
+    "to_address": "0x4838b106fce9647bdf1e7877bf73ce8b0bad5f97",
+    "eth_value": "345516479845",
+    "pc": "0xc1c"
+  },
+  {
+    "type": "ETH_TRANSFER",
+    "codecontract_address": "0xaf682de1f2e6f710731121a05a44cb3c1b511f7d",
+    "from_address": "0xaf682de1f2e6f710731121a05a44cb3c1b511f7d",
+    "to_address": "0x6e2c8549ecc8615f14351889066a4ef196a688cd",
+    "eth_value": "13530647369383",
+    "pc": "0xccf"
+  }
+]

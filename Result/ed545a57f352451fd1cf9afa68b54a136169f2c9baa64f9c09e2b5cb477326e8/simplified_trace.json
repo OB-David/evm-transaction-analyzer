@@ -1,0 +1,1412 @@
+[
+  {
+    "opcode": "CALL",
+    "contract_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "pc": "0x3e15",
+    "call_addr": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x20f6",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "balance": "0x100c8d701f4fd042400000000000000000003b8199200923730d14aeb"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x3fb3",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000006",
+    "balance": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x2138",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000006",
+    "balance": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428"
+  },
+  {
+    "opcode": "CALL",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x21fc",
+    "call_addr": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x6e6",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x100642134003b0000ea60000002d00a8c0032"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0xfef",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000010003",
+    "balance": "0x6f3b1b184b3640b997cb524e2954c6a8144f45f2010bb803e8"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x1009",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000010003",
+    "balance": "0x6f3b1b184b3640b997cb524e2954c6a8144f45f2010bb803e8"
+  },
+  {
+    "opcode": "CALL",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x1047",
+    "call_addr": "0x6f3b1b184b3640b997cb524e2954c6a8144f45f2",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x6f3b1b184b3640b997cb524e2954c6a8144f45f2",
+    "pc": "0x1b5",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "STATICCALL",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x1138",
+    "call_addr": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x9c3",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "balance": "0x100c8d701f4fd042400000000000000000003b8199200923730d14aeb"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x1182",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000010001",
+    "balance": "0x1695ca3d71fc4"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x11af",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000001fc5",
+    "balance": "0x184bfd03dbfd04270000000000002fbefda951ffff126d8c28b4695ca3d701"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x122c",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000010001",
+    "balance": "0x1695ca3d71fc4"
+  },
+  {
+    "opcode": "STATICCALL",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x1138",
+    "call_addr": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x9c3",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "balance": "0x100c8d701f4fd042400000000000000000003b8199200923730d14aeb"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x1cd2",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000001fc5",
+    "balance": "0x184bfd03dbfd04270000000000002fbefda951ffff126d8c28b4695ca3d701"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x1d7c",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000001fc6",
+    "balance": "0x1c46fd018bfd01740000000000000fbdb8cc32ffffcb510b681c691ee56701"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x2d19",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000001fc6",
+    "balance": "0x1c46fd018bfd01740000000000000fbdb8cc32ffffcb510b681c691ee56701"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x2d3e",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000001fc6",
+    "balance": "0x1c46fd018bfd01740000000000000fbdb8cc32ffffcb510b681c691ee56701"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x24d5",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000001fc5",
+    "balance": "0x184bfd03dbfd04270000000000002fbefda951ffff126d8c28b4695ca3d701"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x2570",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000184c",
+    "balance": "0x10dffd0343fd034c0000000000002f81f2298cffff165daa4dbc695b521b01"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x3050",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000184d",
+    "balance": "0x10dffd0343fd034a0000000000002f81f242d0ffff165c1fffe4695b529f01"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x3050",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000184c",
+    "balance": "0x10dffd0343fd034c0000000000002f81f2298cffff165daa4dbc695b521b01"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x3094",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000184d",
+    "balance": "0x10dffd0343fd034a0000000000002f81f242d0ffff165c1fffe4695b529f01"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x318c",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000184c",
+    "balance": "0x10dffd0343fd034c0000000000002f81f2298cffff165daa4dbc695b521b01"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x31f0",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000184d",
+    "balance": "0x10dffd0343fd034a0000000000002f81f242d0ffff165c1fffe4695b529f01"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x1de4",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000001fc6",
+    "balance": "0x1c46fd018bfd01740000000000000fbdb8cc32ffffcb510b681c691ee56701"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x1ed0",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000001fc6",
+    "balance": "0x184bfd03dbfd04240000000000002fbeff9ce9ffff126d448c14695ca3ef01"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x12c7",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000010001",
+    "balance": "0x1695ca3d71fc4"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x12f0",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000010001",
+    "balance": "0x1695ca3ef1fc5"
+  },
+  {
+    "opcode": "STATICCALL",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x1138",
+    "call_addr": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x9c3",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "balance": "0x100c8d701f4fd042400000000000000000003b8199200923730d14aeb"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x130a",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000010001",
+    "balance": "0x1695ca3ef1fc5"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x188d",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000001fc7",
+    "balance": "0x1c48fd018bfd017a0000000000000fbdb8f4d6ffffcb509f9d44691ee58b01"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x1f0d",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000001fc6",
+    "balance": "0x184bfd03dbfd04240000000000002fbeff9ce9ffff126d448c14695ca3ef01"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x1f72",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000001fc7",
+    "balance": "0x1c48fd018bfd017a0000000000000fbdb8f4d6ffffcb509f9d44691ee58b01"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x1fb7",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000184c",
+    "balance": "0x10dffd0343fd034c0000000000002f81f2298cffff165daa4dbc695b521b01"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x1fdc",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000184c",
+    "balance": "0x10dffd0343fd034c0000000000002f81f2298cffff165daa4dbc695b521b01"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x2011",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000184d",
+    "balance": "0x10dffd0343fd034a0000000000002f81f242d0ffff165c1fffe4695b529f01"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x2056",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000184d",
+    "balance": "0x10dffd0343fd034a0000000000002f81f242d0ffff165c1fffe4695b529f01"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x133d",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x100642134003b0000ea60000002d00a8c0032"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x73f",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000010003",
+    "balance": "0x6f3b1b184b3640b997cb524e2954c6a8144f45f2010bb803e8"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x1394",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000010003",
+    "balance": "0x6f3b1b184b3640b997cb524e2954c6a8144f45f2010bb803e8"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x22b6",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000010002",
+    "balance": "0xded71eaaf784cdb3bf1bcf86000000012128e155087b324c40e4307a"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x13ef",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000010002",
+    "balance": "0xdec376826ee3e1ba572cfe6e00000001213c897d911c1e45a8d30192"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x22aa",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "balance": "0x100c8d701f4fd042400000000000000000003b8199200923730d14aeb"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x22d5",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "balance": "0x100c8d701f4fd042400000000000000000003b8199200923730d14aeb"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x22de",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "balance": "0xc8d701f4fd042400000000000000000003b8199200923730d14aeb"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x237b",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000009",
+    "balance": "0x800040100000a000000000000000001520a46ae3c14c7fd03e6fd0440"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x2397",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "balance": "0xc8d701f4fd042400000000000000000003b8199200923730d14aeb"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x24ec",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x18924acc3bf2f3552fefd60f19c3aab325"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x28aa",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "balance": "0xc8d701f4fd042400000000000000000003b8199200923730d14aeb"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x28d8",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "balance": "0xc8d701f4fd042200000000000000000003b7f8b0ae353672a65b40"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x294c",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x18925e1ef17208911a515ded31105e3837"
+  },
+  {
+    "opcode": "STATICCALL",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x2c3e",
+    "call_addr": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "pc": "0xb2d",
+    "user_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "slot": "0x89b7e09f07c30095a240771e55e9b61d0a3445c35bebc17606f50f8355738ac7",
+    "balance": "0x4576b57b61928a784"
+  },
+  {
+    "opcode": "STATICCALL",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x2c3e",
+    "call_addr": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x1241",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000000a",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x2694",
+    "user_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "slot": "0x65ed50ab58fc8989507a1531044b26996a0460d8b19537900a24f549f5868f64",
+    "balance": "0x6e9a7ab370"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x2a50",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000009",
+    "balance": "0x800040100000a000000000000000001520a46ae3c14c7fd03e6fd0440"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x2a71",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000000c",
+    "balance": "0x6e9a7ab3700000000000000004576b57b61928a784"
+  },
+  {
+    "opcode": "CALL",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x45ba",
+    "call_addr": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x14fa",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0xc6cde7c39eb2f0f0095f41570af89efc2c1ea828"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x1553",
+    "user_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "slot": "0x4d044c044c6946ebc044f43c63272481d1d0c2e75153d4dda8b96de62f36cc3b",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x156f",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000000a",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x26c2",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000003",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x26e4",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000004",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x274a",
+    "user_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "slot": "0x65ed50ab58fc8989507a1531044b26996a0460d8b19537900a24f549f5868f64",
+    "balance": "0x6e9a7ab370"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x279a",
+    "user_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "slot": "0x65ed50ab58fc8989507a1531044b26996a0460d8b19537900a24f549f5868f64",
+    "balance": "0x6e6f0fe2d0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x27df",
+    "user_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "slot": "0x3abf392ce00d3b479a09c50c1f1dc1125b3387c2ea61a9d5d8b5ee0c5a634023",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x282f",
+    "user_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "slot": "0x3abf392ce00d3b479a09c50c1f1dc1125b3387c2ea61a9d5d8b5ee0c5a634023",
+    "balance": "0x2b6ad0a0"
+  },
+  {
+    "opcode": "CALL",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x2bc8",
+    "call_addr": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "call_value": 0
+  },
+  {
+    "opcode": "CALL",
+    "contract_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "pc": "0x1f9",
+    "call_addr": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "pc": "0x943",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x144003300330002fd041f00000000000000000003b7d673142cf1345d7001"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "pc": "0xaa7",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x144003300330002fd041f00000000000000000003b7d673142cf1345d7001"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "pc": "0xab0",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x44003300330002fd041f00000000000000000003b7d673142cf1345d7001"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "pc": "0xaed",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000004",
+    "balance": "0xa35574cb2ab4239"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "pc": "0xb7d",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "balance": "0x89cede112b3084ab44ce77e26434"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "pc": "0x2d24",
+    "user_address": "unknown",
+    "slot": "0xece48ac7caed865450d0a7dee3a8b9f4e7ab625cc32713f32244c02913ee75b1",
+    "balance": "0x802530200000200000004000000106000010000000200000120004002800"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "pc": "0x1083",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x44003300330002fd041f00000000000000000003b7d673142cf1345d7001"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "pc": "0x10ab",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x44003300330002fd041f00000000000000000003b7dab39bd76c0d4edbcd"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "pc": "0x114a",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "balance": "0x89cede261218a3a0338470eef0c5"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "pc": "0x1166",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000003",
+    "balance": "0x8e94f06000000000000000000a525996466dbe7"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "pc": "0x1187",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000003",
+    "balance": "0x8e99626000000000000000000a525996466dbe7"
+  },
+  {
+    "opcode": "CALL",
+    "contract_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "pc": "0x3c35",
+    "call_addr": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "pc": "0x6cf",
+    "user_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "slot": "0x2a306d7595987ab10375e6e054d7489cc80c1cf5351587e21ffbd126573f06c6",
+    "balance": "0x4c7e3af19a0ab06f57"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "pc": "0x914",
+    "user_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "slot": "0x2a306d7595987ab10375e6e054d7489cc80c1cf5351587e21ffbd126573f06c6",
+    "balance": "0x4c7e3af19a0ab06f57"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "pc": "0x91b",
+    "user_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "slot": "0x2a306d7595987ab10375e6e054d7489cc80c1cf5351587e21ffbd126573f06c6",
+    "balance": "0x4c7b1727256b8f5fee"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "pc": "0x961",
+    "user_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "slot": "0x89b7e09f07c30095a240771e55e9b61d0a3445c35bebc17606f50f8355738ac7",
+    "balance": "0x4576b57b61928a784"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "pc": "0x968",
+    "user_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "slot": "0x89b7e09f07c30095a240771e55e9b61d0a3445c35bebc17606f50f8355738ac7",
+    "balance": "0x45a8f222ab849b6ed"
+  },
+  {
+    "opcode": "STATICCALL",
+    "contract_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "pc": "0x3d9e",
+    "call_addr": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x1241",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000000a",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x2694",
+    "user_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "slot": "0xd06ef82a07326a6e964ce1700825547c428fbc96deb2e33e7e20498001080d7d",
+    "balance": "0x44b4bff7ee9"
+  },
+  {
+    "opcode": "CALL",
+    "contract_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "pc": "0x13af",
+    "call_addr": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "pc": "0x4347",
+    "user_address": "unknown",
+    "slot": "0xada5013122d395ba3c54772283fb069b10426056ef8ca54750cb9bb552a59e7d",
+    "balance": "0xdac17f958d2ee523a2206206994597c13d831ec7"
+  },
+  {
+    "opcode": "CALL",
+    "contract_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "pc": "0x43bc",
+    "call_addr": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x14fa",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0xc6cde7c39eb2f0f0095f41570af89efc2c1ea828"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x1553",
+    "user_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "slot": "0xe7efbd430e20dee1a6ac7a2fe3eba594e42e5125b51a7060c36b11068f91f354",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x156f",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000000a",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x26c2",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000003",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x26e4",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000004",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x274a",
+    "user_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "slot": "0x3abf392ce00d3b479a09c50c1f1dc1125b3387c2ea61a9d5d8b5ee0c5a634023",
+    "balance": "0x2b6ad0a0"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x279a",
+    "user_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "slot": "0x3abf392ce00d3b479a09c50c1f1dc1125b3387c2ea61a9d5d8b5ee0c5a634023",
+    "balance": "0x1982c"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x27df",
+    "user_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "slot": "0xd06ef82a07326a6e964ce1700825547c428fbc96deb2e33e7e20498001080d7d",
+    "balance": "0x44b4bff7ee9"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x282f",
+    "user_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "slot": "0xd06ef82a07326a6e964ce1700825547c428fbc96deb2e33e7e20498001080d7d",
+    "balance": "0x44b7768b75d"
+  },
+  {
+    "opcode": "STATICCALL",
+    "contract_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "pc": "0x3d9e",
+    "call_addr": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x1241",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000000a",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x2694",
+    "user_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "slot": "0xd06ef82a07326a6e964ce1700825547c428fbc96deb2e33e7e20498001080d7d",
+    "balance": "0x44b7768b75d"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "pc": "0x148f",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x44003300330002fd041f00000000000000000003b7dab39bd76c0d4edbcd"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xc7bbec68d12a0d1830360f8ec58fa599ba1b0e9b",
+    "pc": "0x149e",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x144003300330002fd041f00000000000000000003b7dab39bd76c0d4edbcd"
+  },
+  {
+    "opcode": "STATICCALL",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x2c3e",
+    "call_addr": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "pc": "0xb2d",
+    "user_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "slot": "0x89b7e09f07c30095a240771e55e9b61d0a3445c35bebc17606f50f8355738ac7",
+    "balance": "0x45a8f222ab849b6ed"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x2ca6",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000004",
+    "balance": "0x695c8913000000000000000000000c4b1b000000000000014c2b5d9d0fd6"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x4606",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000004",
+    "balance": "0x695c8913000000000000000000000c4b1b000000000000014c2b5d9d0fd6"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x2d24",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000004",
+    "balance": "0x695c8913000000000000000000000c4b1b000000000000014c2b5d9d0fd6"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x2d56",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000004",
+    "balance": "0x695c8913000000000000000000000c4b1b00000000000001528c5c29b92e"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x2ee6",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000000c",
+    "balance": "0x6e9a7ab3700000000000000004576b57b61928a784"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x2f5e",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000000c",
+    "balance": "0x6e6f0fe2d000000000000000045a8f222aac5a0dca"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x3040",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "balance": "0xc8d701f4fd042200000000000000000003b7f8b0ae353672a65b40"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x304f",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "balance": "0x100c8d701f4fd042200000000000000000003b7f8b0ae353672a65b40"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x3055",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "balance": "0x100c8d701f4fd042200000000000000000003b7f8b0ae353672a65b40"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x3fb3",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000006",
+    "balance": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x307f",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000006",
+    "balance": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428"
+  },
+  {
+    "opcode": "CALL",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x3149",
+    "call_addr": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "call_value": 0
+  },
+  {
+    "opcode": "STATICCALL",
+    "contract_address": "0xc9b5e4fdcee51e2acaa54dd2e147015ad7b9d428",
+    "pc": "0x1138",
+    "call_addr": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x915fd34cadd63907b51eb64dddc2eadd114a0bed",
+    "pc": "0x9c3",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "balance": "0x100c8d701f4fd042200000000000000000003b7f8b0ae353672a65b40"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "pc": "0x46d4",
+    "user_address": "unknown",
+    "slot": "0xada5013122d395ba3c54772283fb069b10426056ef8ca54750cb9bb552a59e7d",
+    "balance": "0xdac17f958d2ee523a2206206994597c13d831ec7"
+  },
+  {
+    "opcode": "CALL",
+    "contract_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "pc": "0x4707",
+    "call_addr": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x1241",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000000a",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x2694",
+    "user_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "slot": "0x3abf392ce00d3b479a09c50c1f1dc1125b3387c2ea61a9d5d8b5ee0c5a634023",
+    "balance": "0x1982c"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "pc": "0x4720",
+    "user_address": "unknown",
+    "slot": "0xe90b7bceb6e7df5418fb78d8ee546e97c83a08bbccc01a0644d599ccd2a7c2e0",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "pc": "0x472f",
+    "user_address": "unknown",
+    "slot": "0xcc69885fda6bcc1a4ace058b4a62bf5e179ea78fd58a1ccd71c22cc9b688792f",
+    "balance": "0x11b815efb8f581194ae79006d24e0d814b7697f6"
+  },
+  {
+    "opcode": "CALL",
+    "contract_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "pc": "0x47cc",
+    "call_addr": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "pc": "0x943",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x144019001900115fd042500000000000000000003b81a0d3652b2c30931bf"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "pc": "0xaa7",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x144019001900115fd042500000000000000000003b81a0d3652b2c30931bf"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "pc": "0xab0",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x44019001900115fd042500000000000000000003b81a0d3652b2c30931bf"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "pc": "0xaed",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000004",
+    "balance": "0x1caa19b20ca9067b"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "pc": "0xb7d",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "balance": "0xfba6439c35c8f2bf230299c3459b"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "pc": "0x2d24",
+    "user_address": "unknown",
+    "slot": "0x51e86470d074b2eb973e9c895b2858f9860cc48a7abc1578969424279e898438",
+    "balance": "0x7deafffffe9f8d21466b656ffde872d0f7c11db81bc10078dc7487599f9f0c09"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "pc": "0x1083",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x44019001900115fd042500000000000000000003b81a0d3652b2c30931bf"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "pc": "0x10ab",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x44019001900115fd042500000000000000000003b81a0d448e334b989e38"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "pc": "0x114a",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "balance": "0xfba6439c372e2f62918a06d36436"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "pc": "0x1166",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000003",
+    "balance": "0x11bb0c5f0000000000000000014034381a733da0"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "pc": "0x1187",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000003",
+    "balance": "0x11bb0c6c0000000000000000014034381a733da0"
+  },
+  {
+    "opcode": "CALL",
+    "contract_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "pc": "0x3c35",
+    "call_addr": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "pc": "0x6cf",
+    "user_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "slot": "0x0cb865ff1951c90111975d77bc75fa8312f25b08bb19b908f6b9c43691ac0caf",
+    "balance": "0xc66b029bdba7e295ae"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "pc": "0x914",
+    "user_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "slot": "0x0cb865ff1951c90111975d77bc75fa8312f25b08bb19b908f6b9c43691ac0caf",
+    "balance": "0xc66b029bdba7e295ae"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "pc": "0x91b",
+    "user_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "slot": "0x0cb865ff1951c90111975d77bc75fa8312f25b08bb19b908f6b9c43691ac0caf",
+    "balance": "0xc66b027e5d27118a6d"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "pc": "0x961",
+    "user_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "slot": "0xf7c4a9ba79d9057bc50070f45090e5ea5e581b0418731d70a4d220f5d01be4a8",
+    "balance": "0xa"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "pc": "0x968",
+    "user_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "slot": "0xf7c4a9ba79d9057bc50070f45090e5ea5e581b0418731d70a4d220f5d01be4a8",
+    "balance": "0x1d7e80d10b4b"
+  },
+  {
+    "opcode": "STATICCALL",
+    "contract_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "pc": "0x3d9e",
+    "call_addr": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x1241",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000000a",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x2694",
+    "user_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "slot": "0x169228ca33ea854d54aa1e506e59ec687f618a41074f5f5de937a0e9c6343e5a",
+    "balance": "0x8d40fbb8634"
+  },
+  {
+    "opcode": "CALL",
+    "contract_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "pc": "0x13af",
+    "call_addr": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "pc": "0x43d3",
+    "user_address": "unknown",
+    "slot": "0xada5013122d395ba3c54772283fb069b10426056ef8ca54750cb9bb552a59e7d",
+    "balance": "0xdac17f958d2ee523a2206206994597c13d831ec7"
+  },
+  {
+    "opcode": "CALL",
+    "contract_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "pc": "0x4421",
+    "call_addr": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x14fa",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0xc6cde7c39eb2f0f0095f41570af89efc2c1ea828"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x1553",
+    "user_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "slot": "0xe7efbd430e20dee1a6ac7a2fe3eba594e42e5125b51a7060c36b11068f91f354",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x156f",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000000a",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x26c2",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000003",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x26e4",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000004",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x274a",
+    "user_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "slot": "0x3abf392ce00d3b479a09c50c1f1dc1125b3387c2ea61a9d5d8b5ee0c5a634023",
+    "balance": "0x1982c"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x279a",
+    "user_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "slot": "0x3abf392ce00d3b479a09c50c1f1dc1125b3387c2ea61a9d5d8b5ee0c5a634023",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x27df",
+    "user_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "slot": "0x169228ca33ea854d54aa1e506e59ec687f618a41074f5f5de937a0e9c6343e5a",
+    "balance": "0x8d40fbb8634"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x282f",
+    "user_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "slot": "0x169228ca33ea854d54aa1e506e59ec687f618a41074f5f5de937a0e9c6343e5a",
+    "balance": "0x8d40fbd1e60"
+  },
+  {
+    "opcode": "STATICCALL",
+    "contract_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "pc": "0x3d9e",
+    "call_addr": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x1241",
+    "user_address": "unknown",
+    "slot": "0x000000000000000000000000000000000000000000000000000000000000000a",
+    "balance": "0x0"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "pc": "0x2694",
+    "user_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "slot": "0x169228ca33ea854d54aa1e506e59ec687f618a41074f5f5de937a0e9c6343e5a",
+    "balance": "0x8d40fbd1e60"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "pc": "0x148f",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x44019001900115fd042500000000000000000003b81a0d448e334b989e38"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0x11b815efb8f581194ae79006d24e0d814b7697f6",
+    "pc": "0x149e",
+    "user_address": "unknown",
+    "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "balance": "0x144019001900115fd042500000000000000000003b81a0d448e334b989e38"
+  },
+  {
+    "opcode": "CALL",
+    "contract_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "pc": "0x481e",
+    "call_addr": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "pc": "0xb2d",
+    "user_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "slot": "0xf7c4a9ba79d9057bc50070f45090e5ea5e581b0418731d70a4d220f5d01be4a8",
+    "balance": "0x1d7e80d10b4b"
+  },
+  {
+    "opcode": "CALL",
+    "contract_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "pc": "0x485b",
+    "call_addr": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "call_value": 0
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "pc": "0xa1a",
+    "user_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "slot": "0xf7c4a9ba79d9057bc50070f45090e5ea5e581b0418731d70a4d220f5d01be4a8",
+    "balance": "0x1d7e80d10b4b"
+  },
+  {
+    "opcode": "SLOAD",
+    "contract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "pc": "0xa6c",
+    "user_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "slot": "0xf7c4a9ba79d9057bc50070f45090e5ea5e581b0418731d70a4d220f5d01be4a8",
+    "balance": "0x1d7e80d10b4b"
+  },
+  {
+    "opcode": "SSTORE",
+    "contract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "pc": "0xa73",
+    "user_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "slot": "0xf7c4a9ba79d9057bc50070f45090e5ea5e581b0418731d70a4d220f5d01be4a8",
+    "balance": "0xa"
+  },
+  {
+    "opcode": "CALL",
+    "contract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "pc": "0xaa4",
+    "call_addr": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "call_value": 32429164268353
+  },
+  {
+    "opcode": "CALL",
+    "contract_address": "0x282886d79c7495df43ad3d734b636644a0a3f320",
+    "pc": "0x48b9",
+    "call_addr": "0xdadb0d80178819f2319190d340ce9a924f783711",
+    "call_value": 4359136650880
+  }
+]

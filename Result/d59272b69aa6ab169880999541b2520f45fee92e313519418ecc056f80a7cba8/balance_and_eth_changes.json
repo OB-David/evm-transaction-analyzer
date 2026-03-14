@@ -1,0 +1,93 @@
+[
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "erc20_token_address": "0x6096b8765eb48cd2193f840a977f3727e7800356",
+    "token_name": "CRABBY",
+    "user_address": "0x4fdc5def1dd96f525b2b62d341c51178814fba15",
+    "changed_balance": "-20397426923928595935081",
+    "SLOAD_pc": "0xb8c",
+    "SSTORE_pc": "0xc15"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "erc20_token_address": "0x6096b8765eb48cd2193f840a977f3727e7800356",
+    "token_name": "CRABBY",
+    "user_address": "0xc5f93997e111fc3dff6cb1f9ef84fd7040996de6",
+    "changed_balance": "20397426923928595935081",
+    "SLOAD_pc": "0xc5a",
+    "SSTORE_pc": "0xc61"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "token_name": "Wrapped Ether",
+    "user_address": "0xc5f93997e111fc3dff6cb1f9ef84fd7040996de6",
+    "changed_balance": "-9902499782538887",
+    "SLOAD_pc": "0x914",
+    "SSTORE_pc": "0x91b"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "token_name": "Wrapped Ether",
+    "user_address": "0xfeecbe8036d95acf84a2c9b8974fa0ced1c4cc17",
+    "changed_balance": "9902499782538887",
+    "SLOAD_pc": "0x961",
+    "SSTORE_pc": "0x968"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "token_name": "Wrapped Ether",
+    "user_address": "0xfeecbe8036d95acf84a2c9b8974fa0ced1c4cc17",
+    "changed_balance": "-9853331863439356",
+    "SLOAD_pc": "0x914",
+    "SSTORE_pc": "0x91b"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "token_name": "Wrapped Ether",
+    "user_address": "0x111111125421ca6dc452d289314280a0f8842a65",
+    "changed_balance": "9853331863439356",
+    "SLOAD_pc": "0x961",
+    "SSTORE_pc": "0x968"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "token_name": "Wrapped Ether",
+    "user_address": "0x111111125421ca6dc452d289314280a0f8842a65",
+    "changed_balance": "-9853331863439356",
+    "SLOAD_pc": "0xa6c",
+    "SSTORE_pc": "0xa73"
+  },
+  {
+    "type": "ETH_TRANSFER",
+    "from_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "to_address": "0x111111125421ca6dc452d289314280a0f8842a65",
+    "eth_value": "9853331863439356",
+    "pc": "0xaa4"
+  },
+  {
+    "type": "ETH_TRANSFER",
+    "from_address": "0x111111125421ca6dc452d289314280a0f8842a65",
+    "to_address": "0x399740157391a9f1bf4e9921a8834f9bc8f2678e",
+    "eth_value": "9853331863439356",
+    "pc": "0x37fe"
+  },
+  {
+    "type": "ETH_TRANSFER",
+    "from_address": "0x399740157391a9f1bf4e9921a8834f9bc8f2678e",
+    "to_address": "0x90cbe4bdd538d6e9b379bff5fe72c3d67a521de5",
+    "eth_value": "29471580847774",
+    "pc": "0x15f2"
+  },
+  {
+    "type": "ETH_TRANSFER",
+    "from_address": "0x111111125421ca6dc452d289314280a0f8842a65",
+    "to_address": "0x4fdc5def1dd96f525b2b62d341c51178814fba15",
+    "eth_value": "9823860282591582",
+    "pc": "0x15f2"
+  }
+]

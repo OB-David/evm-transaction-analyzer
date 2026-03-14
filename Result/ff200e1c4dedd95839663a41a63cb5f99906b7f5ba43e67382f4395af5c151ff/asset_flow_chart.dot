@@ -1,0 +1,27 @@
+// Asset Flow
+digraph {
+	rankdir=LR size="20,20"
+	"0x561599fff95a3104a43025dddf277332fe5ece2a" -> "0x828ae1566824a9835acb6f565e1e9ea22bfb883a" [label="(1) Wrapped Ether: 51845600181747713" color=blue fontcolor=blue]
+	"0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2" -> "0x828ae1566824a9835acb6f565e1e9ea22bfb883a" [label="(2) ETH: 49675712021397504" color=gold fontcolor=darkgoldenrod]
+	"0x828ae1566824a9835acb6f565e1e9ea22bfb883a" -> "0x66a9893cc07d91d95644aedd05d03f95e1dba8af" [label="(4) ETH: 49675712004620288" color=gold fontcolor=darkgoldenrod]
+	"0x66a9893cc07d91d95644aedd05d03f95e1dba8af" -> "0x000000000004444c5dc75cb358380d2e3de08a90" [label="(5) ETH: 49675712004620288" color=gold fontcolor=darkgoldenrod]
+	"0x000000000004444c5dc75cb358380d2e3de08a90" -> "0x561599fff95a3104a43025dddf277332fe5ece2a" [label="(6) Cross The Ages: 6602488318671053948646" color=green fontcolor=green]
+	"0x561599fff95a3104a43025dddf277332fe5ece2a" -> "0x828ae1566824a9835acb6f565e1e9ea22bfb883a" [label="(7) Wrapped Ether: 16401283317497857" color=blue fontcolor=blue]
+	"0x0c5bcc403ad2471b16e9364741c6498abb9856d9" -> "0x561599fff95a3104a43025dddf277332fe5ece2a" [label="(8) Cross The Ages: 2161251780827477609235" color=green fontcolor=green]
+	"0x828ae1566824a9835acb6f565e1e9ea22bfb883a" -> "0x4e9e73c0170f09e709573127c4ab02e57b868178" [label="(9) Wrapped Ether: 16179451058454528" color=blue fontcolor=blue]
+	"0x4e9e73c0170f09e709573127c4ab02e57b868178" -> "0x0c5bcc403ad2471b16e9364741c6498abb9856d9" [label="(10) TOWER: 82823964580095011151645" color=red fontcolor=red]
+	"0x561599fff95a3104a43025dddf277332fe5ece2a" -> "0x828ae1566824a9835acb6f565e1e9ea22bfb883a" [label="(11) Wrapped Ether: 4866989025656833" color=blue fontcolor=blue]
+	"0x63caa808cbde017d88f8a5aa4efbe02710f356c3" -> "0x561599fff95a3104a43025dddf277332fe5ece2a" [label="(12) Cross The Ages: 648300232515879053175" color=green fontcolor=green]
+	"0x828ae1566824a9835acb6f565e1e9ea22bfb883a" -> "0x4c083084c9d50334b343c44ec97d16011303cc73" [label="(13) Wrapped Ether: 4849559259840512" color=blue fontcolor=blue]
+	"0x4c083084c9d50334b343c44ec97d16011303cc73" -> "0x63caa808cbde017d88f8a5aa4efbe02710f356c3" [label="(14) GAMEE: 5817568643726693003622" color=purple fontcolor=purple]
+	"0x4e9e73c0170f09e709573127c4ab02e57b868178" [label="0x4e9e73c0...7b868178" shape=box style=rounded]
+	"0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2" [label="0xc02aaa39...3c756cc2" shape=box style=rounded]
+	"0x66a9893cc07d91d95644aedd05d03f95e1dba8af" [label="0x66a9893c...e1dba8af" shape=box style=rounded]
+	"0x828ae1566824a9835acb6f565e1e9ea22bfb883a" [label="0x828ae156...2bfb883a
+(3) Wrapped Ether: -49675712021397504" shape=box style=rounded]
+	"0x000000000004444c5dc75cb358380d2e3de08a90" [label="0x00000000...3de08a90" shape=box style=rounded]
+	"0x4c083084c9d50334b343c44ec97d16011303cc73" [label="0x4c083084...1303cc73" shape=box style=rounded]
+	"0x561599fff95a3104a43025dddf277332fe5ece2a" [label="0x561599ff...fe5ece2a" shape=box style=rounded]
+	"0x63caa808cbde017d88f8a5aa4efbe02710f356c3" [label="0x63caa808...10f356c3" shape=box style=rounded]
+	"0x0c5bcc403ad2471b16e9364741c6498abb9856d9" [label="0x0c5bcc40...bb9856d9" shape=box style=rounded]
+}

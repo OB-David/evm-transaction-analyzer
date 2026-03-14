@@ -207,3 +207,30 @@ export async function fetchEdgeStepMap(txHash: string): Promise<EdgeStepMap> {
 
   return res.json()
 }
+
+export interface ArbitrageResult {
+  is_arbitrage: boolean
+  cycles: number[][]
+  arb_edge_orders: number[]
+}
+
+export async function fetchArbitrageResult(txHash: string): Promise<ArbitrageResult> {
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/arbitrage.json`)
+  if (!res.ok) {
+    // 404 = 文件不存在（旧结果或后端未生成），静默降级，不影响其他面板
+    if (res.status === 404) {
+      return { is_arbitrage: false, cycles: [], arb_edge_orders: [] }
+    }
+    throw new Error(`Failed to fetch arbitrage result: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function fetchAddressBalances(txHash: string): Promise<Record<string, Record<string, number>>> {
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/address_balances.json`)
+  if (!res.ok) {
+    if (res.status === 404) return {}
+    throw new Error(`Failed to fetch address balances: ${res.status}`)
+  }
+  return res.json()
+}

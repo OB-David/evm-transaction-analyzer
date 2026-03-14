@@ -1,0 +1,162 @@
+[
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0x7636d8722fdf7cd34232a915e48e96aa3eb386bf",
+    "erc20_token_address": "0x7636d8722fdf7cd34232a915e48e96aa3eb386bf",
+    "token_name": "Singularity Finance",
+    "user_address": "0xe76154de890a34a3af778f06b2af535a584aeb1e",
+    "changed_balance": "-1008163083277784991198",
+    "SLOAD_pc": "0xc3a",
+    "SSTORE_pc": "0xcab"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0x7636d8722fdf7cd34232a915e48e96aa3eb386bf",
+    "erc20_token_address": "0x7636d8722fdf7cd34232a915e48e96aa3eb386bf",
+    "token_name": "Singularity Finance",
+    "user_address": "0x00000000ecfb25b63e2bc620a08e2c0272c551d8",
+    "changed_balance": "1008163083277784991198",
+    "SLOAD_pc": "0xce2",
+    "SSTORE_pc": "0xce6"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0x993864e43caa7f7f12953ad6feb1d1ca635b875f",
+    "erc20_token_address": "0x993864e43caa7f7f12953ad6feb1d1ca635b875f",
+    "token_name": "Singularity Dao",
+    "user_address": "0x65e70a0a2aa7ba2c6655149ac94f45bf073f47b7",
+    "changed_balance": "-907372760216283326525",
+    "SLOAD_pc": "0x10f6",
+    "SSTORE_pc": "0x110e"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0x993864e43caa7f7f12953ad6feb1d1ca635b875f",
+    "erc20_token_address": "0x993864e43caa7f7f12953ad6feb1d1ca635b875f",
+    "token_name": "Singularity Dao",
+    "user_address": "0x00000000ecfb25b63e2bc620a08e2c0272c551d8",
+    "changed_balance": "907372760216283326525",
+    "SLOAD_pc": "0x115d",
+    "SSTORE_pc": "0x117a"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0x7636d8722fdf7cd34232a915e48e96aa3eb386bf",
+    "erc20_token_address": "0x7636d8722fdf7cd34232a915e48e96aa3eb386bf",
+    "token_name": "Singularity Finance",
+    "user_address": "0x00000000ecfb25b63e2bc620a08e2c0272c551d8",
+    "changed_balance": "-1008163083277784991198",
+    "SLOAD_pc": "0xc3a",
+    "SSTORE_pc": "0xcab"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0x7636d8722fdf7cd34232a915e48e96aa3eb386bf",
+    "erc20_token_address": "0x7636d8722fdf7cd34232a915e48e96aa3eb386bf",
+    "token_name": "Singularity Finance",
+    "user_address": "0x65e70a0a2aa7ba2c6655149ac94f45bf073f47b7",
+    "changed_balance": "1008163083277784991198",
+    "SLOAD_pc": "0xce2",
+    "SSTORE_pc": "0xce6"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0x993864e43caa7f7f12953ad6feb1d1ca635b875f",
+    "erc20_token_address": "0x993864e43caa7f7f12953ad6feb1d1ca635b875f",
+    "token_name": "Singularity Dao",
+    "user_address": "0x00000000ecfb25b63e2bc620a08e2c0272c551d8",
+    "changed_balance": "-661746954025735430034",
+    "SLOAD_pc": "0x10f6",
+    "SSTORE_pc": "0x110e"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0x993864e43caa7f7f12953ad6feb1d1ca635b875f",
+    "erc20_token_address": "0x993864e43caa7f7f12953ad6feb1d1ca635b875f",
+    "token_name": "Singularity Dao",
+    "user_address": "0x424485f89ea52839fdb30640eb7dd7e0078e12fb",
+    "changed_balance": "661746954025735430034",
+    "SLOAD_pc": "0x115d",
+    "SSTORE_pc": "0x117a"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "token_name": "Wrapped Ether",
+    "user_address": "0x424485f89ea52839fdb30640eb7dd7e0078e12fb",
+    "changed_balance": "-2591975572520994",
+    "SLOAD_pc": "0x914",
+    "SSTORE_pc": "0x91b"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "token_name": "Wrapped Ether",
+    "user_address": "0x00000000ecfb25b63e2bc620a08e2c0272c551d8",
+    "changed_balance": "2591975572520994",
+    "SLOAD_pc": "0x961",
+    "SSTORE_pc": "0x968"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0x993864e43caa7f7f12953ad6feb1d1ca635b875f",
+    "erc20_token_address": "0x993864e43caa7f7f12953ad6feb1d1ca635b875f",
+    "token_name": "Singularity Dao",
+    "user_address": "0x00000000ecfb25b63e2bc620a08e2c0272c551d8",
+    "changed_balance": "-245625806190547896491",
+    "SLOAD_pc": "0x10f6",
+    "SSTORE_pc": "0x110e"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0x993864e43caa7f7f12953ad6feb1d1ca635b875f",
+    "erc20_token_address": "0x993864e43caa7f7f12953ad6feb1d1ca635b875f",
+    "token_name": "Singularity Dao",
+    "user_address": "0xda7cf6a0cd5d5e8d10ab55d8ba58257813a239ca",
+    "changed_balance": "245625806190547896491",
+    "SLOAD_pc": "0x115d",
+    "SSTORE_pc": "0x117a"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "token_name": "Wrapped Ether",
+    "user_address": "0xda7cf6a0cd5d5e8d10ab55d8ba58257813a239ca",
+    "changed_balance": "-969668490744318",
+    "SLOAD_pc": "0x914",
+    "SSTORE_pc": "0x91b"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "token_name": "Wrapped Ether",
+    "user_address": "0x00000000ecfb25b63e2bc620a08e2c0272c551d8",
+    "changed_balance": "969668490744318",
+    "SLOAD_pc": "0x961",
+    "SSTORE_pc": "0x968"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "token_name": "Wrapped Ether",
+    "user_address": "0x00000000ecfb25b63e2bc620a08e2c0272c551d8",
+    "changed_balance": "-3536726009775036",
+    "SLOAD_pc": "0x914",
+    "SSTORE_pc": "0x91b"
+  },
+  {
+    "type": "ERC20_BALANCE_CHANGE",
+    "codecontract_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "token_name": "Wrapped Ether",
+    "user_address": "0xe76154de890a34a3af778f06b2af535a584aeb1e",
+    "changed_balance": "3536726009775036",
+    "SLOAD_pc": "0x961",
+    "SSTORE_pc": "0x968"
+  }
+]

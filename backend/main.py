@@ -7,9 +7,10 @@ from utils.evm_information import TraceFormatter
 from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
 from utils.render_cfg import render_transaction
-from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_cfg, edge_link_to_json
+from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_cfg, edge_link_to_json, detect_arbitrage, compute_address_balances
 from utils.render_legend import render_legend_matplotlib
 from utils.cfg_abstract import  build_refined_hierarchical_trace, export_visual_trace
+
 
 # 加载环境变量
 load_dotenv()
@@ -147,13 +148,27 @@ def main():
             f.write(json_output)
         print(f"边映射数据已保存到: {edge_link_path}")
 
+        arb_result = detect_arbitrage(pairs, pending_erc20)
+        arb_json_path = os.path.join(result_dir, "arbitrage.json")
+        with open(arb_json_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "is_arbitrage": len(arb_result["cycles"]) > 0,
+                "cycles": arb_result["cycles"],
+                "arb_edge_orders": list(arb_result["arb_edge_orders"])
+            }, f, indent=2, ensure_ascii=False)
+
+        addr_balances = compute_address_balances(pairs, pending_erc20)
+        addr_balances_path = os.path.join(result_dir, "address_balances.json")
+        with open(addr_balances_path, "w", encoding="utf-8") as f:
+            json.dump(addr_balances, f, indent=2, ensure_ascii=False)
+
         print("\n===== 处理完成 =====")
         print(f"所有结果已保存到: {os.path.abspath(result_dir)}")
 
         # 10. 渲染并保存三个核心图
         save_graphs(result_dir=result_dir, tx_cfg=tx_cfg, full_address_name_map = full_address_name_map, erc20_token_map=erc20_token_map, 
-                    users_addresses=users_addresses, pairs=pairs, annotations=annotations, pending_erc20=pending_erc20, tree_data = tree_data)
-        
+                    users_addresses=users_addresses, pairs=pairs, annotations=annotations, pending_erc20=pending_erc20, tree_data = tree_data, arb_result  = arb_result)
+
     except Exception as e:
         import traceback
         print(f"\n[ERROR] 执行失败: {str(e)}")
@@ -170,7 +185,7 @@ def create_result_directory(tx_hash: str) -> str:
     os.makedirs(result_dir, exist_ok=True)
     return result_dir
 
-def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]], tree_data):
+def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]], tree_data, arb_result):
     '''渲染并保存所有图：交易级CFG图、CFG图例、代币交易流图'''
 
     # 定义Tx_CFG,Asset_Flow和图例的共用颜色规则
@@ -251,8 +266,12 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
     print(f"图例JSON已保存到: {legend_json_path}")
     
     # 保存代币交易流图的DOT文件
+    arb_orders  = arb_result["arb_edge_orders"]
     token_flow_dot_path = os.path.join(result_dir, "asset_flow.dot")
-    render_asset_flow(pairs, annotations, users_addresses, full_address_name_map, pending_erc20, addr_color_map, token_flow_dot_path)
+    render_asset_flow(pairs, annotations, users_addresses,
+                  full_address_name_map, pending_erc20,
+                  addr_color_map, token_flow_dot_path,
+                  arb_edge_orders=arb_orders)
     print(f"代币交易流图DOT文件已保存到: {token_flow_dot_path}.dot")
 
 

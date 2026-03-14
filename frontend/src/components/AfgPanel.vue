@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
 import { graphviz } from 'd3-graphviz'
-import { fetchDotFile, fetchEdgeLink, type EdgeLink } from '../api/analyze'
 import LegendPanel from './LegendPanel.vue'
+import { fetchDotFile, fetchEdgeLink, fetchArbitrageResult, fetchAddressBalances, fetchLegendData, type EdgeLink } from '../api/analyze'
 
 const props = defineProps<{
   txHash: string | null
@@ -23,6 +23,23 @@ const errorMsg = ref('')
 const graphContainer = ref<HTMLElement | null>(null)
 let graphvizInstance: any = null
 
+// 套利相关状态
+const isArbitrage = ref(false)
+const arbCycles = ref<number[][]>([])
+const arbOrders = ref<Set<number>>(new Set())
+
+// 地址余额数据：地址(小写) -> { token -> 净变化量 }
+const addressBalances = ref<Record<string, Record<string, number>>>({})
+// display name(小写) -> 地址(小写) 的反向映射，用于节点名匹配
+const nameToAddress = ref<Record<string, string>>({})
+
+// tooltip 状态
+const tooltipVisible = ref(false)
+const tooltipX = ref(0)
+const tooltipY = ref(0)
+const tooltipName = ref('')
+const tooltipBalances = ref<Record<string, number>>({})
+
 watch(() => props.txHash, (newHash) => {
   if (newHash) {
     loadAfgData(newHash)
@@ -39,15 +56,49 @@ async function loadAfgData(txHash: string) {
   status.value = 'loading'
   errorMsg.value = ''
   selectedEdgeId.value = null
+  tooltipVisible.value = false
+
+  isArbitrage.value = false
+  arbCycles.value = []
+  arbOrders.value = new Set()
+  addressBalances.value = {}
+  nameToAddress.value = {}   // ← 重置
 
   try {
-    const [dot, links] = await Promise.all([
+    const [dot, links, arb, balances, legend] = await Promise.all([
       fetchDotFile(txHash),
-      fetchEdgeLink(txHash)
+      fetchEdgeLink(txHash),
+      fetchArbitrageResult(txHash),
+      fetchAddressBalances(txHash),
+      fetchLegendData(txHash),
     ])
 
     dotContent.value = dot
     edgeLinks.value = links
+
+    isArbitrage.value = arb.is_arbitrage
+    arbCycles.value = arb.cycles
+    arbOrders.value = new Set(arb.arb_edge_orders)
+
+    // 地址统一转小写
+    addressBalances.value = Object.fromEntries(
+      Object.entries(balances).map(([addr, tokens]) => [addr.toLowerCase(), tokens])
+    )
+
+    // ← 建立 displayName -> address 反向映射
+    const nameMap: Record<string, string> = {}
+    const allEntries = [
+      ...legend.user_addresses,
+      ...legend.erc20_tokens,
+      ...legend.normal_contracts,
+    ]
+    for (const entry of allEntries) {
+      if (entry.name && entry.address) {
+        nameMap[entry.name.toLowerCase()] = entry.address.toLowerCase()
+      }
+    }
+    nameToAddress.value = nameMap
+
     status.value = 'success'
 
     await nextTick()
@@ -92,21 +143,34 @@ function attachInteractivity() {
   nodes.forEach((node) => {
     const nodeEl = node as SVGElement
 
-    nodeEl.addEventListener('mouseenter', () => {
-      nodeEl.classList.add('hovered')
-    })
+    nodeEl.addEventListener('mouseenter', () => nodeEl.classList.add('hovered'))
+    nodeEl.addEventListener('mouseleave', () => nodeEl.classList.remove('hovered'))
 
-    nodeEl.addEventListener('mouseleave', () => {
-      nodeEl.classList.remove('hovered')
-    })
+    // graphviz SVG 里 .node 的 <title> 存的是 DOT 节点名（display name 或地址）
+    const titleEl = node.querySelector('title')
+    const nodeId = titleEl?.textContent?.trim() || ''
+    const balances = findBalancesForNode(nodeId)
+
+    if (balances && Object.keys(balances).length > 0) {
+      const capturedName = nodeId
+      const capturedBalances = balances
+
+      nodeEl.addEventListener('mouseenter', (e) => {
+        showTooltip(e as MouseEvent, capturedName, capturedBalances)
+      })
+      nodeEl.addEventListener('mousemove', (e) => {
+        moveTooltip(e as MouseEvent)
+      })
+      nodeEl.addEventListener('mouseleave', () => {
+        hideTooltip()
+      })
+    }
   })
 
   const edges = svg.querySelectorAll('.edge')
   edges.forEach((edge) => {
     const edgeEl = edge as SVGElement
 
-    // 从text元素中提取边ID (格式: "(1) ETH: ...")
-    // graphviz SVG中,<title>是"source->target",标签文字在<text>中
     const textEls = edge.querySelectorAll('text')
     let edgeId: number | null = null
     textEls.forEach(t => {
@@ -115,13 +179,15 @@ function attachInteractivity() {
       if (m) edgeId = parseInt(m[1])
     })
 
+    if (edgeId !== null && arbOrders.value.has(edgeId)) {
+      edgeEl.classList.add('arb-highlight')
+    }
+
     if (edgeId !== null) {
       const capturedId = edgeId
 
-      // 标记为可交互边,统一设置pointer光标
       edgeEl.classList.add('interactive')
 
-      // 为每条边的path创建一个透明的宽stroke覆盖层,扩大可点击区域
       const paths = edge.querySelectorAll('path')
       paths.forEach(path => {
         const hitArea = path.cloneNode(false) as SVGPathElement
@@ -134,30 +200,78 @@ function attachInteractivity() {
           e.stopPropagation()
           handleEdgeClick(capturedId)
         })
-        hitArea.addEventListener('mouseenter', () => {
-          edgeEl.classList.add('hovered')
-        })
-        hitArea.addEventListener('mouseleave', () => {
-          edgeEl.classList.remove('hovered')
-        })
+        hitArea.addEventListener('mouseenter', () => edgeEl.classList.add('hovered'))
+        hitArea.addEventListener('mouseleave', () => edgeEl.classList.remove('hovered'))
         path.parentNode?.insertBefore(hitArea, path)
       })
 
-      // polygon(箭头)也可点击
       const polygons = edge.querySelectorAll('polygon')
       polygons.forEach(el => {
         el.addEventListener('click', (e) => {
           e.stopPropagation()
           handleEdgeClick(capturedId)
         })
-        el.addEventListener('mouseenter', () => {
-          edgeEl.classList.add('hovered')
-        })
-        el.addEventListener('mouseleave', () => {
-          edgeEl.classList.remove('hovered')
-        })
+        el.addEventListener('mouseenter', () => edgeEl.classList.add('hovered'))
+        el.addEventListener('mouseleave', () => edgeEl.classList.remove('hovered'))
       })
     }
+  })
+}
+
+// 根据节点 DOT 名查找余额
+// 匹配顺序：① legend name -> address 映射 ② 节点名本身就是地址
+function findBalancesForNode(nodeId: string): Record<string, number> | null {
+  if (!nodeId) return null
+  const lower = nodeId.toLowerCase()
+
+  // ① 用 legend 映射把 display name 转成地址再查
+  const addr = nameToAddress.value[lower]
+  if (addr && addressBalances.value[addr]) return addressBalances.value[addr]
+
+  // ② 节点名本身就是地址（0x...）
+  if (addressBalances.value[lower]) return addressBalances.value[lower]
+
+  return null
+}
+
+// tooltip 显示 / 移动 / 隐藏
+function showTooltip(e: MouseEvent, name: string, balances: Record<string, number>) {
+  tooltipName.value = name
+  tooltipBalances.value = balances
+  tooltipVisible.value = true
+  moveTooltip(e)
+}
+
+function moveTooltip(e: MouseEvent) {
+  if (!graphContainer.value) return
+  const rect = graphContainer.value.getBoundingClientRect()
+  let x = e.clientX - rect.left + 14
+  let y = e.clientY - rect.top + 14
+  if (x + 200 > rect.width) x = e.clientX - rect.left - 214
+  tooltipX.value = x
+  tooltipY.value = y
+}
+
+function hideTooltip() {
+  tooltipVisible.value = false
+}
+
+// 格式化余额：正数显示 +，负数显示 -，保留5位有效数字
+function formatAmount(val: number): string {
+  if (val === 0) return '0'
+  const sign = val > 0 ? '+' : ''
+  const abs = Math.abs(val)
+  if (abs >= 0.0001 && abs < 1e8) return sign + parseFloat(val.toPrecision(5)).toString()
+  return sign + val.toExponential(3)
+}
+
+function highlightAllArb() {
+  if (!graphContainer.value) return
+  const svg = graphContainer.value.querySelector('svg')
+  if (!svg) return
+  svg.querySelectorAll('.edge.arb-highlight').forEach(el => {
+    el.classList.add('arb-flash')
+    setTimeout(() => (el as SVGElement).classList.remove('arb-flash'), 900)
   })
 }
 
@@ -184,15 +298,10 @@ function handleEdgeClick(edgeId: number) {
   } else if (Array.isArray(link.matched_blocks)) {
     blockIds.push(...link.matched_blocks)
   } else if (typeof link.matched_blocks === 'object') {
-    if (link.matched_blocks.sender) {
-      blockIds.push(...link.matched_blocks.sender)
-    }
-    if (link.matched_blocks.receiver) {
-      blockIds.push(...link.matched_blocks.receiver)
-    }
+    if (link.matched_blocks.sender) blockIds.push(...link.matched_blocks.sender)
+    if (link.matched_blocks.receiver) blockIds.push(...link.matched_blocks.receiver)
   }
 
-  // 去重
   const uniqueBlockIds = [...new Set(blockIds)]
 
   if (uniqueBlockIds.length > 0) {
@@ -200,12 +309,18 @@ function handleEdgeClick(edgeId: number) {
     emit('cfg-navigate', uniqueBlockIds)
   }
 }
-
 </script>
 
 <template>
   <div class="afg-panel">
     <span class="panel-label">(c) Asset Flow Graph</span>
+
+    <!-- 套利 badge -->
+    <div v-if="status === 'success' && isArbitrage" class="arb-badge">
+      <span class="arb-icon">⚠</span>
+      Arbitrage detected — {{ arbCycles.length }} cycle(s)
+      <button class="arb-btn" @click="highlightAllArb">Flash edges</button>
+    </div>
 
     <div v-if="isAnalyzing || status === 'loading'" class="status-overlay">
       Loading asset flow graph...
@@ -218,6 +333,27 @@ function handleEdgeClick(edgeId: number) {
     <div v-else-if="status === 'success'" class="afg-container">
       <div ref="graphContainer" class="graph-viewport"></div>
       <LegendPanel :tx-hash="props.txHash" />
+
+      <!-- 节点余额悬浮卡片 -->
+      <div
+        v-if="tooltipVisible"
+        class="node-tooltip"
+        :style="{ left: tooltipX + 'px', top: tooltipY + 'px' }"
+      >
+        <div class="tooltip-title">{{ tooltipName }}</div>
+        <div class="tooltip-divider"></div>
+        <div
+          v-for="(val, token) in tooltipBalances"
+          :key="token"
+          class="tooltip-row"
+        >
+          <span class="tooltip-token">{{ token }}</span>
+          <span
+            class="tooltip-amount"
+            :class="val > 0 ? 'positive' : val < 0 ? 'negative' : 'zero'"
+          >{{ formatAmount(Number(val)) }}</span>
+        </div>
+      </div>
     </div>
 
     <div v-else class="placeholder">
@@ -245,6 +381,44 @@ function handleEdgeClick(edgeId: number) {
   z-index: 10;
 }
 
+/* 套利 badge */
+.arb-badge {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(220, 80, 30, 0.12);
+  border: 1px solid rgba(220, 80, 30, 0.5);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: #dc501e;
+  white-space: nowrap;
+}
+
+.arb-icon {
+  font-size: 12px;
+}
+
+.arb-btn {
+  background: rgba(220, 80, 30, 0.15);
+  border: 1px solid rgba(220, 80, 30, 0.4);
+  border-radius: 4px;
+  color: #dc501e;
+  font-size: 10px;
+  padding: 1px 7px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.arb-btn:hover {
+  background: rgba(220, 80, 30, 0.28);
+}
+
 .afg-container {
   position: relative;
   flex: 1;
@@ -267,12 +441,10 @@ function handleEdgeClick(edgeId: number) {
   height: 100%;
 }
 
-/* 可交互边: 整个edge组统一pointer光标 */
 .graph-viewport :deep(.edge.interactive) {
   cursor: pointer;
 }
 
-/* 边的text不接收鼠标事件 */
 .graph-viewport :deep(.edge text) {
   pointer-events: none;
 }
@@ -292,7 +464,6 @@ function handleEdgeClick(edgeId: number) {
   transition: opacity 0.15s;
 }
 
-/* hitArea不受任何样式影响,保持稳定的18px透明stroke */
 .graph-viewport :deep(.hit-area) {
   stroke: transparent !important;
   stroke-width: 18px !important;
@@ -301,12 +472,78 @@ function handleEdgeClick(edgeId: number) {
   cursor: pointer;
 }
 
-/* hover只影响原始path和polygon,排除hitArea */
 .graph-viewport :deep(.edge.hovered path:not(.hit-area)),
 .graph-viewport :deep(.edge.hovered polygon) {
   stroke-width: 3;
   filter: brightness(1.2);
 }
+
+/* 套利边加粗，不改色 */
+.graph-viewport :deep(.edge.arb-highlight path:not(.hit-area)) {
+  stroke-width: 4px;
+}
+
+@keyframes arb-flash {
+  0%, 100% { opacity: 1; }
+  40%       { opacity: 0.15; }
+}
+
+.graph-viewport :deep(.edge.arb-flash path:not(.hit-area)),
+.graph-viewport :deep(.edge.arb-flash polygon) {
+  animation: arb-flash 0.9s ease;
+}
+
+/* 节点余额悬浮卡片 */
+.node-tooltip {
+  position: absolute;
+  z-index: 100;
+  pointer-events: none;
+  background: var(--panel-bg, #1a1a2e);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  padding: 8px 11px;
+  min-width: 160px;
+  max-width: 220px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+.tooltip-title {
+  font-size: 10px;
+  color: var(--muted, #888);
+  margin-bottom: 6px;
+  word-break: break-all;
+  line-height: 1.4;
+}
+
+.tooltip-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+  margin-bottom: 6px;
+}
+
+.tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.tooltip-token {
+  font-size: 11px;
+  color: var(--text, #ccc);
+  font-weight: 500;
+}
+
+.tooltip-amount {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tooltip-amount.positive { color: #4ade80; }
+.tooltip-amount.negative { color: #f87171; }
+.tooltip-amount.zero     { color: var(--muted, #888); }
 
 .status-overlay {
   position: absolute;

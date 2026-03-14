@@ -1,0 +1,101 @@
+[
+    {
+        "edge_id": 1,
+        "type": "ERC20_TOKEN_TRANSFER",
+        "matched_blocks": {
+            "sender": [
+                {
+                    "BlockID": 412
+                },
+                {
+                    "BlockID": 413
+                }
+            ],
+            "receiver": [
+                {
+                    "BlockID": 413
+                },
+                {
+                    "BlockID": 413
+                }
+            ]
+        }
+    },
+    {
+        "edge_id": 2,
+        "type": "ERC20_TOKEN_TRANSFER",
+        "matched_blocks": {
+            "sender": [
+                {
+                    "BlockID": 579
+                },
+                {
+                    "BlockID": 579
+                }
+            ],
+            "receiver": [
+                {
+                    "BlockID": 579
+                },
+                {
+                    "BlockID": 579
+                }
+            ]
+        }
+    },
+    {
+        "edge_id": 3,
+        "type": "ERC20_TOKEN_TRANSFER",
+        "matched_blocks": {
+            "sender": [
+                {
+                    "BlockID": 579
+                },
+                {
+                    "BlockID": 579
+                }
+            ],
+            "receiver": [
+                {
+                    "BlockID": 579
+                },
+                {
+                    "BlockID": 579
+                }
+            ]
+        }
+    },
+    {
+        "edge_id": 4,
+        "type": "ERC20_BALANCE_CHANGE",
+        "matched_blocks": [
+            {
+                "BlockID": 726
+            },
+            {
+                "BlockID": 726
+            }
+        ]
+    },
+    {
+        "edge_id": 5,
+        "type": "ETH_TRANSFER",
+        "matched_blocks": {
+            "BlockID": 726
+        }
+    },
+    {
+        "edge_id": 6,
+        "type": "ETH_TRANSFER",
+        "matched_blocks": {
+            "BlockID": 740
+        }
+    },
+    {
+        "edge_id": 7,
+        "type": "ETH_TRANSFER",
+        "matched_blocks": {
+            "BlockID": 856
+        }
+    }
+]

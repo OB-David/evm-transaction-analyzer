@@ -1,0 +1,191 @@
+[
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "token_name": "Wrapped Ether",
+        "user_address": "0x561599fff95a3104a43025dddf277332fe5ece2a",
+        "changed_balance": "-51845600181747713",
+        "pc": "0x91b"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "token_name": "Wrapped Ether",
+        "user_address": "0x828ae1566824a9835acb6f565e1e9ea22bfb883a",
+        "changed_balance": "51845600181747713",
+        "pc": "0x968"
+    },
+    {
+        "type": "ETH_TRANSFER",
+        "from_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "to_address": "0x828ae1566824a9835acb6f565e1e9ea22bfb883a",
+        "eth_value": "49675712021397504",
+        "pc": "0xaa4"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "token_name": "Wrapped Ether",
+        "user_address": "0x828ae1566824a9835acb6f565e1e9ea22bfb883a",
+        "changed_balance": "-49675712021397504",
+        "pc": "0xa73"
+    },
+    {
+        "type": "ETH_TRANSFER",
+        "from_address": "0x828ae1566824a9835acb6f565e1e9ea22bfb883a",
+        "to_address": "0x66a9893cc07d91d95644aedd05d03f95e1dba8af",
+        "eth_value": "49675712004620288",
+        "pc": "0x3464"
+    },
+    {
+        "type": "ETH_TRANSFER",
+        "from_address": "0x66a9893cc07d91d95644aedd05d03f95e1dba8af",
+        "to_address": "0x000000000004444c5dc75cb358380d2e3de08a90",
+        "eth_value": "49675712004620288",
+        "pc": "0x456d"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0x90685e300a4c4532efcefe91202dfe1dfd572f47",
+        "token_name": "Cross The Ages",
+        "user_address": "0x000000000004444c5dc75cb358380d2e3de08a90",
+        "changed_balance": "-6602488318671053948646",
+        "pc": "0x686"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0x90685e300a4c4532efcefe91202dfe1dfd572f47",
+        "token_name": "Cross The Ages",
+        "user_address": "0x561599fff95a3104a43025dddf277332fe5ece2a",
+        "changed_balance": "6602488318671053948646",
+        "pc": "0x6c1"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "token_name": "Wrapped Ether",
+        "user_address": "0x561599fff95a3104a43025dddf277332fe5ece2a",
+        "changed_balance": "-16401283317497857",
+        "pc": "0x91b"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "token_name": "Wrapped Ether",
+        "user_address": "0x828ae1566824a9835acb6f565e1e9ea22bfb883a",
+        "changed_balance": "16401283317497857",
+        "pc": "0x968"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0x90685e300a4c4532efcefe91202dfe1dfd572f47",
+        "token_name": "Cross The Ages",
+        "user_address": "0x0c5bcc403ad2471b16e9364741c6498abb9856d9",
+        "changed_balance": "-2161251780827477609235",
+        "pc": "0x686"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0x90685e300a4c4532efcefe91202dfe1dfd572f47",
+        "token_name": "Cross The Ages",
+        "user_address": "0x561599fff95a3104a43025dddf277332fe5ece2a",
+        "changed_balance": "2161251780827477609235",
+        "pc": "0x6c1"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "token_name": "Wrapped Ether",
+        "user_address": "0x828ae1566824a9835acb6f565e1e9ea22bfb883a",
+        "changed_balance": "-16179451058454528",
+        "pc": "0x91b"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "token_name": "Wrapped Ether",
+        "user_address": "0x4e9e73c0170f09e709573127c4ab02e57b868178",
+        "changed_balance": "16179451058454528",
+        "pc": "0x968"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0x1c9922314ed1415c95b9fd453c3818fd41867d0b",
+        "token_name": "TOWER",
+        "user_address": "0x4e9e73c0170f09e709573127c4ab02e57b868178",
+        "changed_balance": "-82823964580095011151645",
+        "pc": "0xa7a"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0x1c9922314ed1415c95b9fd453c3818fd41867d0b",
+        "token_name": "TOWER",
+        "user_address": "0x0c5bcc403ad2471b16e9364741c6498abb9856d9",
+        "changed_balance": "82823964580095011151645",
+        "pc": "0xab2"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "token_name": "Wrapped Ether",
+        "user_address": "0x561599fff95a3104a43025dddf277332fe5ece2a",
+        "changed_balance": "-4866989025656833",
+        "pc": "0x91b"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "token_name": "Wrapped Ether",
+        "user_address": "0x828ae1566824a9835acb6f565e1e9ea22bfb883a",
+        "changed_balance": "4866989025656833",
+        "pc": "0x968"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0x90685e300a4c4532efcefe91202dfe1dfd572f47",
+        "token_name": "Cross The Ages",
+        "user_address": "0x63caa808cbde017d88f8a5aa4efbe02710f356c3",
+        "changed_balance": "-648300232515879053175",
+        "pc": "0x686"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0x90685e300a4c4532efcefe91202dfe1dfd572f47",
+        "token_name": "Cross The Ages",
+        "user_address": "0x561599fff95a3104a43025dddf277332fe5ece2a",
+        "changed_balance": "648300232515879053175",
+        "pc": "0x6c1"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "token_name": "Wrapped Ether",
+        "user_address": "0x828ae1566824a9835acb6f565e1e9ea22bfb883a",
+        "changed_balance": "-4849559259840512",
+        "pc": "0x91b"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "token_name": "Wrapped Ether",
+        "user_address": "0x4c083084c9d50334b343c44ec97d16011303cc73",
+        "changed_balance": "4849559259840512",
+        "pc": "0x968"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0xd9016a907dc0ecfa3ca425ab20b6b785b42f2373",
+        "token_name": "GAMEE",
+        "user_address": "0x4c083084c9d50334b343c44ec97d16011303cc73",
+        "changed_balance": "-5817568643726693003622",
+        "pc": "0xabb"
+    },
+    {
+        "type": "ERC20_BALANCE_CHANGE",
+        "erc20_token_address": "0xd9016a907dc0ecfa3ca425ab20b6b785b42f2373",
+        "token_name": "GAMEE",
+        "user_address": "0x63caa808cbde017d88f8a5aa4efbe02710f356c3",
+        "changed_balance": "5817568643726693003622",
+        "pc": "0xaf3"
+    }
+]
