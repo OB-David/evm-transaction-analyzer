@@ -107,9 +107,9 @@ class TraceFormatter:
         return self.web3.to_hex(pc)
 
     # 栈数据标准化
-    def _normalize_stack(self, raw_stack: List[str]) -> List[str]:
+    def _normalize_stack(self, raw: List[str]) -> List[str]:
         normalized = []
-        for item in raw_stack or []:
+        for item in raw or []:
             if not item:
                 normalized.append("0x")
                 continue
@@ -345,7 +345,7 @@ class TraceFormatter:
                 "cast", "rpc",
                 "debug_traceTransaction",
                 tx_hash,
-                '{"enableMemory":true,"disableStack":false,"disableStorage":false,"enableReturnData":true}',
+                '{"enableStack":true,"enableMemory":true,"enableStorage":false,"enableReturnData":false}',
                 "-r", self.provider_url
             ]
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -355,17 +355,20 @@ class TraceFormatter:
             struct_logs = raw_trace.get("structLogs", [])
             steps: List[StandardizedStep] = []
 
+            # 获取矿工地址
             miner_address = self._normalize_address(self.get_miner_by_tx_hash(tx_hash))
 
+            # 记录执行的代码所属合约地址
             current_address = initial_address
             next_address = initial_address
             call_stack = [initial_address] if initial_address else []
 
-            RW_address = initial_address  # 记录当前上下文的读写地址
+            # 记录当前上下文的读写地址
+            RW_address = initial_address  
             next_RW_address = initial_address
             RW_stack = [initial_address] if initial_address else []
 
-            # 新增：在遍历时收集 contracts_addresses 和 users_addresses_from_CALL（后者为中间变量，不返回）
+            # 在遍历时收集 contracts_addresses 和 users_addresses_from_CALL
             contracts_addresses: Set[str] = set()
 
             contracts_addresses.add(initial_address)
@@ -376,6 +379,7 @@ class TraceFormatter:
                 pc = step.get("pc", 0)
                 opcode = step.get("op", "").upper()
                 raw_stack = step.get("stack", [])
+                raw_memory = step.get("memory",[])
                 # 单独处理CALL合约时的gascost计算
                 # 执行CALL时会向合约预支付一笔gas，在trace中记录为CALL的gasCost
                 # CALL本身的gascost是预支付的gasCost减去CALL下一步剩下的gasleft。
@@ -485,7 +489,8 @@ class TraceFormatter:
                     "pc": self._normalize_pc(pc),
                     "opcode": opcode,
                     "gascost": gascost,
-                    "stack": self._normalize_stack(raw_stack)
+                    "stack": self._normalize_stack(raw_stack),
+                    "memory": raw_memory
                 })
 
                 current_address = next_address

@@ -9,7 +9,7 @@ from utils.cfg_transaction import CFGConstructor
 from utils.render_cfg import render_transaction
 from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_cfg, edge_link_to_json, detect_arbitrage, compute_address_balances
 from utils.render_legend import render_legend_matplotlib
-from utils.cfg_abstract import  build_refined_hierarchical_trace, export_visual_trace
+from utils.sequence_diagram import  build_refined_hierarchical_trace
 
 
 # 加载环境变量
@@ -64,12 +64,14 @@ def main():
         print(f"正在获取交易 {TX_HASH} 的执行轨迹...")
         standardized_trace = formatter.get_standardized_trace(TX_HASH)
 
+
+        print("正在生成调用树")
         # 生成调用树
         tree_data = build_refined_hierarchical_trace(standardized_trace["steps"])
-        # tree_path = os.path.join(result_dir, "trace_tree.json") 
+        tree_path = os.path.join(result_dir, "trace_tree.json") 
         
-        # with open(tree_path, 'w', encoding='utf-8') as f:
-        #     json.dump(tree_data, f, indent=4, ensure_ascii=False)
+        with open(tree_path, 'w', encoding='utf-8') as f:
+            json.dump(tree_data, f, indent=4, ensure_ascii=False)
 
 
         # 2. 提取关键映射数据
@@ -221,10 +223,6 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
         rankdir="LR")
     print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
 
-
-    # --- 新增：使用相同的 addr_color_map 导出火焰图 ---
-    print("Generating Flame Graph Trace...")
-    export_visual_trace(result_dir, tree_data, full_address_name_map, erc20_token_map, addr_color_map)
 
     # 保存图例 
     print("正在生成CFG图例...")
