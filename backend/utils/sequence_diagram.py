@@ -57,7 +57,7 @@ def build_refined_hierarchical_trace(steps):
                         raw_calldata = ''
                         print("no calldata error")
             except (IndexError, ValueError, TypeError): 
-                # 容错：stack长度不足/转换失败时置空
+                # stack长度不足/转换失败时置空
                 raw_calldata = ""
 
         # 直接使用原生depth字段
@@ -76,11 +76,11 @@ def build_refined_hierarchical_trace(steps):
             "exit_gas": 0
         }
 
-        # --- 2. 遍历执行流并收集首断点 (适配原生depth) ---
+        # --- 2. 遍历执行流并收集首断点 ---
         i = start_index
         while i < len(steps):
             step = steps[i]
-            # 直接使用原生depth判断层级（核心逻辑）
+            # 直接使用原生depth判断层级
             step_depth = step.get("depth", 0)
             
             if step_depth > current_level_depth:
@@ -94,7 +94,7 @@ def build_refined_hierarchical_trace(steps):
                 # 层级回退：退出当前层级处理
                 break
 
-            op = step.get("opcode", "")  # 适配opcode字段
+            op = step.get("opcode", "")
             stk = step.get("stack", [])
             
             # 记录退出操作
@@ -117,7 +117,7 @@ def build_refined_hierarchical_trace(steps):
             global_gas_counter += int(gas_cost) if str(gas_cost).isdigit() else 0
             i += 1
 
-        # --- 按起点类型区分切片长度 ---
+        # --- 3. 按起点类型区分切片长度 ---
         if raw_calldata:
             # 强制将 0 加入首断点（确保选择器等起始位被识别）
             primary_breakpoints.add(0)
@@ -164,25 +164,22 @@ def build_refined_hierarchical_trace(steps):
 
         return node, i
 
-    # 从根节点开始构建（直接使用原始steps）
+    # 从根节点开始构建
     root_tree, _ = process_level(0)
     return root_tree
 
-
-
-
 def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map, addr_color_map):
-    # 初始化calldata映射字典（用于生成JSON）
+    
+    # 新增：初始化calldata映射字典（
     call_data_mapping = {
         "total_calls": 0,  # 总调用数
         "calls": []        # 每笔调用的详细映射
     }
     
-    # PUML基础模板
+    # PUML基础模板（核心修改：新增box的padding/margin控制间距）
     puml_lines = [
         "@startuml",
         "title CALL-Contract Sequence Diagram",
-        "autonumber 0 0",
         "skinparam backgroundcolor #FFFFFF",
         # 合约样式：矩形
         "skinparam participant {",
@@ -208,19 +205,13 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
         "    FontSize 8",
         "    BackgroundColor #FFFFFF",
         "    Padding 8",
+        "    Margin 20",
         "    Separator 5",
-        "}",
-        # note样式
-        "skinparam note {",
-        "    BackgroundColor #F0F8FF",
-        "    BorderColor black",
-        "    FontSize 8",
-        "    Shape roundedbox",
         "}",
         "hide footbox"
     ]
     
-    # 核心状态管理
+    # 核心状态管理（无修改）
     contract_call_seq = {}        # 地址→调用次数
     contract_instances = []       # 所有合约实例
     interaction_lines = []        # 所有交互行
@@ -236,7 +227,7 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
         "#01579B40"
     ]
 
-    # -------------------------- 工具函数--------------------------
+    # -------------------------- 工具函数 --------------------------
     def _get_contract_name(addr):
         """精准获取合约名称"""
         if not addr:
@@ -257,7 +248,7 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
     def _get_contract_color(addr):
         """获取统一颜色"""
         addr_lower = addr.lower().strip()
-        return addr_color_map.get(addr_lower, "#000000")
+        return addr_color_map[addr_lower]
 
     def _create_contract_instance(addr, depth):
         """创建合约实例"""
@@ -273,12 +264,12 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
         addr_short = addr.replace("0x", "").replace(":", "_").replace(".", "_")[:16]
         alias = f"inst_{addr_short}_{call_num}"
         
-        # 记录实例信息（新增：保留原始地址）
+        # 记录实例信息
         instance = {
             "id": instance_id,
             "alias": alias,
             "address": addr,
-            "address_short": addr[:12] + "..." if len(addr) > 12 else addr,
+            "address_short": addr[:12] + "..." if len(addr) > 12 else addr,  # 新增：短地址，便于JSON显示
             "name": _get_contract_name(addr),
             "call_num": call_num,
             "depth": depth,
@@ -292,55 +283,53 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
         
         return instance
 
-    # -------------------------- 递归遍历调用树（核心修改：添加call_id显示） --------------------------
+    # -------------------------- 递归遍历调用树--------------------------
     def _traverse_call_tree(node, parent_instance=None, indent_level=0):
-        """递归遍历所有深度的调用节点（新增call_id显示）"""
+        """递归遍历所有深度的调用节点"""
         current_addr = node.get("contract", "").strip()
         current_depth = node.get("depth", 0)
+        entry_step = node.get("entry_step",0)
+        exit_step = node.get("exit_step",0)
         entry_op = node.get("entry_op", "UNKNOWN").strip()
         exit_op = node.get("exit_op", "STOP").strip()
-        segments = node.get("calldata_active_segments", [])  # 完整calldata列表
+        segments = node.get("calldata_active_segments", [])
 
         # 创建当前合约实例
         current_instance = _create_contract_instance(current_addr, current_depth)
         indent = "    " * indent_level
 
         if parent_instance:
-            # 1. 提取完整calldata数组（calldata0,1,2...）
+            # 1. 提取完整calldata数组
             full_calldata = []
             for idx, seg in enumerate(segments):
                 if seg and "val" in seg:
                     full_calldata.append(seg["val"])
                 else:
                     full_calldata.append("无Calldata")
-            calldata0 = full_calldata[0] if full_calldata else "无Calldata"
-
-            # 2. 生成call_id（自增）
-            call_data_mapping["total_calls"] += 1
-            current_call_id = call_data_mapping["total_calls"]
-
-            # 3. 生成PUML调用线
+            calldata0 = segments[0]["val"] if (segments and len(segments) > 0) else "无Calldata"
+            
+            # 2. 原有PUML调用线生成逻辑
             op_type = entry_op.upper()
-            call_title = f"[{current_call_id}] {entry_op}"  # 添加call_id序号
             if op_type in ["DELEGATECALL", "CALLCODE"]:
-                call_line = f"{indent}{parent_instance['alias']} -[dashed]-> {current_instance['alias']}: {call_title}"
+                # 虚线
+                call_line = f"{indent}{parent_instance['alias']} -[dashed]-> {current_instance['alias']}: {entry_op}\\l{calldata0}"
             else:
-                call_line = f"{indent}{parent_instance['alias']} -> {current_instance['alias']}: {call_title}"
+                # 实线
+                call_line = f"{indent}{parent_instance['alias']} -> {current_instance['alias']}: {entry_op}\\l{calldata0}"
             interaction_lines.append(call_line)
-            # 箭头下方显示calldata0（note）
-            note_line = f"{indent}note on link: {calldata0}"
-            interaction_lines.append(note_line)
 
-            # 4. 记录到JSON映射（call_id和图中一致）
+            # 3. 记录到JSON映射（核心）
+            call_data_mapping["total_calls"] += 1
             call_data_mapping["calls"].append({
-                "call_id": current_call_id,  # 和图中序号一一对应
-                "from_address": parent_instance["address"],
+                "call_id": call_data_mapping["total_calls"],
+                "entry_step": entry_step,
+                "exit_step": exit_step,
+                "entry_op": entry_op,
+                "exit_op": exit_op,
                 "from_name": parent_instance["name"],
-                "to_address": current_instance["address"],
                 "to_name": current_instance["name"],
-                "op_type": entry_op,
-                "calldata": full_calldata,  # 完整calldata列表
-                "return_op": exit_op
+                "calldata": full_calldata,
+                
             })
 
         # 递归处理子节点
@@ -378,34 +367,37 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
         # 生成合约实例
         for instance in instances:
             display_name = f"{instance['name']}"
-            puml_lines.append(f'    participant "{display_name}" as {instance["alias"]}')
-            puml_lines.append(f'    skinparam participant::{instance["alias"]} {{ BackgroundColor {instance["color"]} }}')
+            if instance["is_token"]:
+                puml_lines.append(
+                    f'    participant "{display_name}" as {instance["alias"]} {instance["color"]}'
+                )
+            else:
+                puml_lines.append(
+                    f'    participant "{display_name}" as {instance["alias"]} {instance["color"]}'
+                )
         
         puml_lines.append("end box")
-        puml_lines.append("")
-
+        puml_lines.append("")  # 兜底：不同深度box后加空行，确保间距
+    
     # 添加交互行
     puml_lines.append("\n' === 全深度调用交互序列 === '")
-    interaction_lines.extend(interaction_lines)
     puml_lines.extend(interaction_lines)
 
     # 结束PUML
     puml_lines.append("\n@enduml")
 
-    # -------------------------- 写入文件（保留原有） --------------------------
-    # 1. 写入PUML文件
+    # -------------------------- 写入文件 --------------------------
+    # 1. 原有PUML文件写入
     with open(output_file, "w", encoding="utf-8") as f:
         f.write("\n".join(puml_lines))
     
-    # 2. 写入JSON映射文件（和PUML同目录，同名不同后缀）
+    # 2. 新增：写入JSON映射文件（和PUML同目录，同名不同后缀）
     json_file = output_file.replace(".puml", "_calldata_mapping.json")
     with open(json_file, "w", encoding="utf-8") as f:
-        # 格式化输出，便于阅读
         json.dump(call_data_mapping, f, ensure_ascii=False, indent=4)
-
-    # 输出统计信息
+    
+    # 输出统计信息（新增JSON文件提示）
     print(f"✅ 时序图PUML已生成：{output_file}")
     print(f"✅ Calldata映射JSON已生成：{json_file}")
-    print(f"📊 合约实例数：{len(contract_instances)} | 交互行数：{len(interaction_lines)} | 总调用数：{call_data_mapping['total_calls']}")
     
     return True
