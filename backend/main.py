@@ -8,8 +8,7 @@ from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
 from utils.render_cfg import render_transaction, render_semantic_transaction
 from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_cfg, edge_link_to_json, detect_arbitrage, compute_address_balances
-from utils.render_legend import render_legend_matplotlib
-from utils.cfg_abstract import  build_refined_hierarchical_trace, export_visual_trace
+from utils.sequence_diagram import build_refined_hierarchical_trace, tree_to_puml
 from utils.semantic_cfg import generate_and_export_semantic_cfg
 
 
@@ -65,15 +64,12 @@ def main():
         print(f"正在获取交易 {TX_HASH} 的执行轨迹...")
         standardized_trace = formatter.get_standardized_trace(TX_HASH)
 
-        # 生成调用树
+
+        print("正在生成调用树")
+        # 2. 生成调用树
         tree_data = build_refined_hierarchical_trace(standardized_trace["steps"])
-        # tree_path = os.path.join(result_dir, "trace_tree.json") 
-        
-        # with open(tree_path, 'w', encoding='utf-8') as f:
-        #     json.dump(tree_data, f, indent=4, ensure_ascii=False)
 
-
-        # 2. 提取关键映射数据
+        # 3. 提取关键映射数据
         contracts_addresses = standardized_trace.get("contracts_addresses", [])
         slot_map = standardized_trace.get("slot_map", {})
         users_addresses = standardized_trace.get("users_addresses", [])
@@ -83,16 +79,16 @@ def main():
         print(f"发现合约地址数量: {len(contracts_addresses)}，发现用户地址数量: {len(users_addresses)}")
         print(f"slot_map 项数: {len(slot_map)}\n")
 
-        # 3. 获取所有合约的字节码
+        # 4. 获取所有合约的字节码
         print("正在获取合约字节码...")
         contracts_bytecode = formatter.get_all_contracts_bytecode(all_contracts=contracts_addresses)
 
-        # 4. 转换字节码为基本块
+        # 5. 转换字节码为基本块
         print("正在将字节码转换为基本块...")
         all_blocks = processor.process_multiple_contracts(contracts_bytecode)
         print(f"成功生成 {len(all_blocks)} 个基本块\n")
 
-        # 5. 构建交易级控制流图(CFG)
+        # 6. 构建交易级控制流图(CFG)
         print("正在构建交易级控制流图...")
         cfg_constructor = CFGConstructor(all_blocks)
         tx_cfg, all_changes, folded_node_map, table = cfg_constructor.construct_cfg(standardized_trace, slot_map, erc20_token_map)
@@ -104,7 +100,7 @@ def main():
         # generate_table_excel(table, table_path)
         # print(f"表格数据已保存到: {table_path}\n")
 
-        # 6. 构建代币交易流，生成边与基本块的映射
+        # 7. 构建代币交易流，生成边与基本块的映射
         print("正在提取代币交易流...")
         # 先构建代币精度映射
         token_decimals_map = {}
@@ -120,13 +116,13 @@ def main():
         json_output = edge_link_to_json(edge_link)
         print(f"共提取到 {len(all_changes)} 条资产变更事件，配对成功 {len(pairs)} 对交易流,存在孤立变动{len(annotations)}条\n")
 
-        # 7. 保存轨迹数据
+        # 8. 保存轨迹数据
         trace_path = os.path.join(result_dir, "trace.json")
         with open(trace_path, "w", encoding="utf-8") as f:
             json.dump(standardized_trace, f, indent=2, ensure_ascii=False)
         print(f"轨迹数据（含 addresses 与 slot_map）已保存到: {trace_path}")
 
-        # 8. 保存折叠后Block ID与Instructions映射数据
+        # 9. 保存折叠后Block ID与Instructions映射数据
         print("正在导出可见Block ID与Instructions映射...")
         folded_blocks_path = os.path.join(result_dir, "folded_blocks_information.json")
         folded_blocks_map = cfg_constructor.build_folded_blocks_information(tx_cfg)
@@ -138,7 +134,6 @@ def main():
         edge_step_map = cfg_constructor.build_edge_step_information(tx_cfg)
         cfg_constructor.export_edge_step_information(tx_cfg, edge_info_path)
         print(f"边id-step映射数据已保存到: {folded_blocks_path}")
-
         semantic_cfg = None
         try:
             semantic_cfg = generate_and_export_semantic_cfg(
@@ -154,13 +149,13 @@ def main():
         except Exception as semantic_error:
             print(f"WARNING: Semantic CFG generation failed: {semantic_error}")
 
-        # 9. 保存资产变更数据
+        # 10. 保存资产变更数据
         changes_path = os.path.join(result_dir, "balance_and_eth_changes.json") 
         with open(changes_path, "w", encoding="utf-8") as f:
             json.dump(all_changes, f, indent=2, ensure_ascii=False)
         print(f"资产变更数据已保存到: {changes_path}")
 
-        # 10. 保存边映射JSON文件
+        # 11. 保存边映射JSON文件
         edge_link_path = os.path.join(result_dir, "edge_link.json")
         with open(edge_link_path, "w", encoding="utf-8") as f:
             f.write(json_output)
@@ -183,7 +178,7 @@ def main():
         print("\n===== 处理完成 =====")
         print(f"所有结果已保存到: {os.path.abspath(result_dir)}")
 
-        # 10. 渲染并保存三个核心图
+        # 12. 渲染并保存三个核心图
         save_graphs(result_dir=result_dir, tx_cfg=tx_cfg, full_address_name_map = full_address_name_map, erc20_token_map=erc20_token_map, 
                     users_addresses=users_addresses, pairs=pairs, annotations=annotations, pending_erc20=pending_erc20,
                     tree_data = tree_data, arb_result  = arb_result, semantic_cfg=semantic_cfg)
@@ -272,22 +267,6 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
             print(f"Semantic CFG SVG已生成: {semantic_svg_file}")
         except Exception as e:
             print(f"WARNING: Semantic CFG SVG生成失败: {e}")
-
-    # --- 新增：使用相同的 addr_color_map 导出火焰图 ---
-    print("Generating Flame Graph Trace...")
-    export_visual_trace(result_dir, tree_data, full_address_name_map, erc20_token_map, addr_color_map)
-
-    # 保存图例 
-    print("正在生成CFG图例...")
-    render_legend_matplotlib(
-        addr_color_map=addr_color_map,
-        edge_color_map = EDGE_COLOR_MAP,
-        full_address_name_map=full_address_name_map,
-        erc20_token_map=erc20_token_map,
-        users_addresses=users_addresses,
-        output_path=tx_dot_path)
-    print(f"CFG图例已保存到: {tx_dot_path}_legend.svg")
-
     # 保存legend.json供前端使用
     legend_data: Dict[str, Any] = {"user_addresses": [], "erc20_tokens": [], "normal_contracts": []}
 
@@ -324,6 +303,19 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
                   addr_color_map, token_flow_dot_path,
                   arb_edge_orders=arb_orders)
     print(f"代币交易流图DOT文件已保存到: {token_flow_dot_path}.dot")
+
+
+    # 生成时序图
+    print("正在生成时序图PUML文件...")
+    puml_path = os.path.join(result_dir, "trace_sequence.puml")
+    tree_to_puml(
+        trace_tree=tree_data,
+        output_file=puml_path,
+        erc20_token_map=erc20_token_map,
+        full_address_name_map=full_address_name_map,
+        addr_color_map=addr_color_map
+    )
+    print(f"时序图PUML已保存到: {puml_path}")
 
 
 if __name__ == "__main__":

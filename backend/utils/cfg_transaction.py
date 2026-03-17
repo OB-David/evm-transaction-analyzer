@@ -182,7 +182,7 @@ class CFGConstructor:
             other_nodes = chain[1:]
             first_node.merge_fold_info(other_nodes)
 
-            # 2. 继承最后一个节点的出边（保留原边编号）
+            # 2. 继承最后一个节点的出边
             last_node = chain[-1]
             last_out_edges = [e for e in cfg.edges if e.source == last_node]
             for edge in last_out_edges:
@@ -193,7 +193,7 @@ class CFGConstructor:
                     source=first_node,
                     target=edge.target,
                     edge_type=edge.edge_type,
-                    edge_step = edge.edge_step
+                    edge_step = edge.edge_step  # 继承原边step
                 )
                 # 标记边属性
                 setattr(new_edge, "folded_edge", False)  
@@ -597,36 +597,47 @@ class CFGConstructor:
 
     # 导出边id和边对应的step的映射
     def build_edge_step_information(self, cfg: CFG) -> Dict[str, Any]:
-        """构建可见边的 edge_id -> step / source / target 映射。"""
-        edge_step_map = {}
+        """构建可见边的 edge_id -> step / source / target 映射，并按 step 升序输出。"""
+        edge_list = []
 
-        # 遍历所有边
         for edge in cfg.edges:
-            # 过滤掉被折叠隐藏的内部边，只保留可见边
             if hasattr(edge, "visible") and not getattr(edge, "visible", True):
                 continue
 
-            # 提取边 ID（处理可能存在的 merged_ids 情况）
             edge_id = getattr(edge, "edge_id", "unknown")
+            original_step = getattr(edge, "edge_step", None)
 
-            # 提取 edge_step
-            edge_step = getattr(edge, "edge_step", None)
+            try:
+                sort_step = int(original_step) if original_step is not None else float("inf")
+            except (ValueError, TypeError):
+                sort_step = float("inf")
 
-            # 记录映射（含源/目标节点ID，供前端映射SVG边元素）
-            source_node = f"node_{edge.source.id}" if hasattr(edge, 'source') and hasattr(edge.source, 'id') else "unknown"
-            target_node = f"node_{edge.target.id}" if hasattr(edge, 'target') and hasattr(edge.target, 'id') else "unknown"
-            edge_step_map[edge_id] = {
+            source_node = f"node_{edge.source.id}" if hasattr(edge, "source") and hasattr(edge.source, "id") else "unknown"
+            target_node = f"node_{edge.target.id}" if hasattr(edge, "target") and hasattr(edge.target, "id") else "unknown"
+
+            edge_list.append({
                 "edge_id": edge_id,
-                "edge_step": edge_step,
+                "edge_step": original_step,
+                "sort_step": sort_step,
                 "source_node": source_node,
                 "target_node": target_node,
+            })
+
+        edge_list_sorted = sorted(edge_list, key=lambda item: (item["sort_step"], str(item["edge_id"])))
+
+        edge_step_map = {}
+        for item in edge_list_sorted:
+            edge_step_map[item["edge_id"]] = {
+                "edge_id": item["edge_id"],
+                "edge_step": item["edge_step"],
+                "source_node": item["source_node"],
+                "target_node": item["target_node"],
             }
         return edge_step_map
 
-    # 导出边id和边对应的step的映射
     def export_edge_step_information(self, cfg: CFG, output_path: str):
         """
-        导出可见边的edge_id与edge_step的映射JSON文件
+        导出可见边的edge_id与edge_step的映射JSON文件（按edge_step从小到大排序）
         :param cfg: CFG对象
         :param output_path: JSON输出路径
         """
@@ -636,7 +647,7 @@ class CFGConstructor:
         try:
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(edge_step_map, f, ensure_ascii=False, indent=2)
-            print(f"[OK] Edge Step 信息映射已导出: {output_path} (共{len(edge_step_map)}条边)")
+            print(f"[OK] Edge Step 信息映射已导出: {output_path} (共{len(edge_step_map)}条边，按edge_step升序排列)")
         except Exception as e:
             print(f"[ERROR] 边信息导出失败: {e}")
             raise
