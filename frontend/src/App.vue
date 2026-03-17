@@ -149,6 +149,7 @@ function handleFlameSelect(stepRange: { entryStep: number; exitStep: number } | 
         :highlighted-block-id="highlightedBlockId"
         :filtered-edge-ids="filteredEdgeIds"
         :is-analyzing="isAnalyzing"
+        :edge-step-map="edgeStepMap"
         @cfg-navigate="handleCfgNavigate"
       />
     </div>

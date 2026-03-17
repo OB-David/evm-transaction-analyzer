@@ -140,9 +140,10 @@ class CFGConstructor:
             if next_node in visited_nodes:
                 break
 
-            # 3. 唯一父节点检测（入度安全性检查）
+            # 3. 唯一父节点检测（入度安全性检查，仅考虑同合约内的父节点）
             unique_parents = self._get_unique_parents(cfg, next_node)
-            if len(unique_parents) != 1 or next(iter(unique_parents)) != current_node:
+            same_contract_parents = {n for n in unique_parents if n.address == contract_addr}
+            if len(same_contract_parents) != 1 or next(iter(same_contract_parents)) != current_node:
                 break
             
             # 4. 只有通过了所有检查，才加入链
@@ -529,7 +530,9 @@ class CFGConstructor:
                 edge_type = "NORMAL"
                 if current_opcode in self.jump_opcodes:
                     edge_type = "JUMP"
-                elif current_opcode in {"CALL", "CALLCODE", "DELEGATECALL", "STATICCALL"}:
+                elif current_opcode == "DELEGATECALL":
+                    edge_type = "DELEGATECALL"
+                elif current_opcode in {"CALL", "CALLCODE", "STATICCALL"}:
                     edge_type = "CALL"
                 elif current_opcode in {"RETURN", "STOP", "REVERT", "INVALID", "SELFDESTRUCT"}:
                     edge_type = "TERMINATE"
@@ -549,15 +552,10 @@ class CFGConstructor:
     
 
 
-    # 导出blockid和内部信息映射
-    def export_folded_blocks_information(self, cfg: CFG, output_path: str):
-        """
-        导出可见节点的block_id与information(instructions, contract_name, 映射
-        :param cfg: CFG对象
-        :param output_path: JSON输出路径
-        """
+    def build_folded_blocks_information(self, cfg: CFG) -> Dict[str, Any]:
+        """构建可见折叠节点的详情映射。"""
         block_inst_map = {}
-        
+
         for node in cfg.nodes:
             # 仅处理FoldableBlockNode且排除被折叠的中间节点
             if not isinstance(node, FoldableBlockNode):
@@ -577,7 +575,17 @@ class CFGConstructor:
                 "actions": node.fold_info.get("actions", node.actions),
                 "instructions": [str(instr) for instr in node.instructions]
             }
-        
+        return block_inst_map
+
+    # 导出blockid和内部信息映射
+    def export_folded_blocks_information(self, cfg: CFG, output_path: str):
+        """
+        导出可见节点的block_id与information(instructions, contract_name, 映射
+        :param cfg: CFG对象
+        :param output_path: JSON输出路径
+        """
+        block_inst_map = self.build_folded_blocks_information(cfg)
+
         # 写入JSON
         try:
             with open(output_path, 'w', encoding='utf-8') as f:
@@ -588,31 +596,41 @@ class CFGConstructor:
             raise
 
     # 导出边id和边对应的step的映射
+    def build_edge_step_information(self, cfg: CFG) -> Dict[str, Any]:
+        """构建可见边的 edge_id -> step / source / target 映射。"""
+        edge_step_map = {}
+
+        # 遍历所有边
+        for edge in cfg.edges:
+            # 过滤掉被折叠隐藏的内部边，只保留可见边
+            if hasattr(edge, "visible") and not getattr(edge, "visible", True):
+                continue
+
+            # 提取边 ID（处理可能存在的 merged_ids 情况）
+            edge_id = getattr(edge, "edge_id", "unknown")
+
+            # 提取 edge_step
+            edge_step = getattr(edge, "edge_step", None)
+
+            # 记录映射（含源/目标节点ID，供前端映射SVG边元素）
+            source_node = f"node_{edge.source.id}" if hasattr(edge, 'source') and hasattr(edge.source, 'id') else "unknown"
+            target_node = f"node_{edge.target.id}" if hasattr(edge, 'target') and hasattr(edge.target, 'id') else "unknown"
+            edge_step_map[edge_id] = {
+                "edge_id": edge_id,
+                "edge_step": edge_step,
+                "source_node": source_node,
+                "target_node": target_node,
+            }
+        return edge_step_map
+
+    # 导出边id和边对应的step的映射
     def export_edge_step_information(self, cfg: CFG, output_path: str):
         """
         导出可见边的edge_id与edge_step的映射JSON文件
         :param cfg: CFG对象
         :param output_path: JSON输出路径
         """
-        edge_step_map = {}
-        
-        # 遍历所有边
-        for edge in cfg.edges:
-            # 过滤掉被折叠隐藏的内部边，只保留可见边
-            if hasattr(edge, "visible") and not getattr(edge, "visible", True):
-                continue
-            
-            # 提取边 ID（处理可能存在的 merged_ids 情况）
-            edge_id = getattr(edge, "edge_id", "unknown")
-            
-            # 提取 edge_step
-            edge_step = getattr(edge, "edge_step", None)
-            
-            # 记录映射
-            edge_step_map[edge_id] = {
-                "edge_id": edge_id,
-                "edge_step": edge_step,
-            }
+        edge_step_map = self.build_edge_step_information(cfg)
 
         # 写入JSON
         try:

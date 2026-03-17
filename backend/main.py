@@ -6,10 +6,11 @@ from dotenv import load_dotenv
 from utils.evm_information import TraceFormatter
 from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
-from utils.render_cfg import render_transaction
+from utils.render_cfg import render_transaction, render_semantic_transaction
 from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_cfg, edge_link_to_json, detect_arbitrage, compute_address_balances
 from utils.render_legend import render_legend_matplotlib
 from utils.cfg_abstract import  build_refined_hierarchical_trace, export_visual_trace
+from utils.semantic_cfg import generate_and_export_semantic_cfg
 
 
 # 加载环境变量
@@ -128,14 +129,31 @@ def main():
         # 8. 保存折叠后Block ID与Instructions映射数据
         print("正在导出可见Block ID与Instructions映射...")
         folded_blocks_path = os.path.join(result_dir, "folded_blocks_information.json")
+        folded_blocks_map = cfg_constructor.build_folded_blocks_information(tx_cfg)
         cfg_constructor.export_folded_blocks_information(tx_cfg, folded_blocks_path)
         print(f"blcokid-information映射数据已保存到: {folded_blocks_path}")
 
         print("正在导出边id与step映射...")
         edge_info_path = os.path.join(result_dir, "edge_id-step.json")
+        edge_step_map = cfg_constructor.build_edge_step_information(tx_cfg)
         cfg_constructor.export_edge_step_information(tx_cfg, edge_info_path)
         print(f"边id-step映射数据已保存到: {folded_blocks_path}")
-        
+
+        semantic_cfg = None
+        try:
+            semantic_cfg = generate_and_export_semantic_cfg(
+                cfg=tx_cfg,
+                result_dir=result_dir,
+                full_address_name_map=full_address_name_map,
+                erc20_token_map=erc20_token_map,
+                folded_blocks_map=folded_blocks_map,
+                edge_step_map=edge_step_map,
+            )
+            if not semantic_cfg:
+                print("Semantic CFG skipped; fallback to folded CFG remains available.")
+        except Exception as semantic_error:
+            print(f"WARNING: Semantic CFG generation failed: {semantic_error}")
+
         # 9. 保存资产变更数据
         changes_path = os.path.join(result_dir, "balance_and_eth_changes.json") 
         with open(changes_path, "w", encoding="utf-8") as f:
@@ -167,7 +185,8 @@ def main():
 
         # 10. 渲染并保存三个核心图
         save_graphs(result_dir=result_dir, tx_cfg=tx_cfg, full_address_name_map = full_address_name_map, erc20_token_map=erc20_token_map, 
-                    users_addresses=users_addresses, pairs=pairs, annotations=annotations, pending_erc20=pending_erc20, tree_data = tree_data, arb_result  = arb_result)
+                    users_addresses=users_addresses, pairs=pairs, annotations=annotations, pending_erc20=pending_erc20,
+                    tree_data = tree_data, arb_result  = arb_result, semantic_cfg=semantic_cfg)
 
     except Exception as e:
         import traceback
@@ -185,7 +204,7 @@ def create_result_directory(tx_hash: str) -> str:
     os.makedirs(result_dir, exist_ok=True)
     return result_dir
 
-def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]], tree_data, arb_result):
+def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]], tree_data, arb_result, semantic_cfg: Dict[str, Any] | None = None):
     '''渲染并保存所有图：交易级CFG图、CFG图例、代币交易流图'''
 
     # 定义Tx_CFG,Asset_Flow和图例的共用颜色规则
@@ -233,6 +252,26 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
         print(f"CFG SVG已生成: {cfg_svg_file}")
     except Exception as e:
         print(f"WARNING: CFG SVG生成失败: {e}")
+
+    if semantic_cfg:
+        semantic_dot_path = os.path.join(result_dir, "semantic_cfg")
+        render_semantic_transaction(
+            addr_color_map=addr_color_map,
+            edge_color_map=EDGE_COLOR_MAP,
+            semantic_cfg=semantic_cfg,
+            output_path=semantic_dot_path,
+            rankdir="LR",
+        )
+        semantic_dot_file = f"{semantic_dot_path}.dot"
+        semantic_svg_file = os.path.join(result_dir, "semantic_cfg.svg")
+        try:
+            subprocess.run(
+                ["dot", "-Tsvg", semantic_dot_file, "-o", semantic_svg_file],
+                check=True, capture_output=True, text=True, timeout=120
+            )
+            print(f"Semantic CFG SVG已生成: {semantic_svg_file}")
+        except Exception as e:
+            print(f"WARNING: Semantic CFG SVG生成失败: {e}")
 
     # --- 新增：使用相同的 addr_color_map 导出火焰图 ---
     print("Generating Flame Graph Trace...")

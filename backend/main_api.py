@@ -12,6 +12,7 @@ from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
 from utils.extract_token_changes import pair_transactions, afg_to_cfg, edge_link_to_json, detect_arbitrage, compute_address_balances
 from utils.cfg_abstract import build_refined_hierarchical_trace
+from utils.semantic_cfg import generate_and_export_semantic_cfg
 from main import create_result_directory, save_graphs
 
 load_dotenv()
@@ -78,11 +79,28 @@ def run(tx_hash: str):
 
     # Save folded blocks information
     folded_blocks_path = os.path.join(result_dir, "folded_blocks_information.json")
+    folded_blocks_map = cfg_constructor.build_folded_blocks_information(tx_cfg)
     cfg_constructor.export_folded_blocks_information(tx_cfg, folded_blocks_path)
 
     # Save edge step mapping
     edge_info_path = os.path.join(result_dir, "edge_id-step.json")
+    edge_step_map = cfg_constructor.build_edge_step_information(tx_cfg)
     cfg_constructor.export_edge_step_information(tx_cfg, edge_info_path)
+
+    semantic_cfg = None
+    try:
+        semantic_cfg = generate_and_export_semantic_cfg(
+            cfg=tx_cfg,
+            result_dir=result_dir,
+            full_address_name_map=full_address_name_map,
+            erc20_token_map=erc20_token_map,
+            folded_blocks_map=folded_blocks_map,
+            edge_step_map=edge_step_map,
+        )
+        if not semantic_cfg:
+            print("Semantic CFG skipped; folded CFG remains the fallback output.")
+    except Exception as semantic_error:
+        print(f"WARNING: Semantic CFG generation failed: {semantic_error}")
 
     # Save arbitrage results
     arb_result = detect_arbitrage(pairs, pending_erc20)
@@ -113,7 +131,8 @@ def run(tx_hash: str):
         annotations=annotations,
         pending_erc20=pending_erc20,
         tree_data=tree_data,
-        arb_result=arb_result
+        arb_result=arb_result,
+        semantic_cfg=semantic_cfg,
     )
 
     print(f"RESULT_DIR={os.path.abspath(result_dir)}")
