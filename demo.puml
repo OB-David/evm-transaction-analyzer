@@ -1,0 +1,10 @@
+@startuml
+' 最简时序图：仅包含2个参与者+1条消息
+actor User
+participant Contract
+
+' 核心调用逻辑
+User -> Contract: Call balanceOf()
+Contract --> User: Return 1000
+
+@enduml

@@ -1,0 +1,20 @@
+@startuml
+title 合约调用时序图 (Calldata 智能切片版)
+skinparam participant {
+    BorderColor black
+    BackgroundColor lightblue
+}
+skinparam call {
+    BorderColor black
+    BackgroundColor lightgreen
+}
+skinparam return {
+    BorderColor black
+    BackgroundColor lightyellow
+}
+
+participant "0x12345678...5678" as addr_1234567890abcdef1234567890abcdef12345678
+participant "0x87654321...4321" as addr_876543210fedcba9876543210fedcba987654321
+    addr_1234567890abcdef1234567890abcdef12345678 -> addr_876543210fedcba9876543210fedcba987654321: CALL | Gas累计:120000 | Calldata切片: 段0:0x123456780000000000...
+    addr_876543210fedcba9876543210fedcba987654321 --> addr_1234567890abcdef1234567890abcdef12345678: RETURN | 退出Gas:120000
+@enduml

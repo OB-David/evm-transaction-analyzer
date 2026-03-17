@@ -181,7 +181,7 @@ class CFGConstructor:
             other_nodes = chain[1:]
             first_node.merge_fold_info(other_nodes)
 
-            # 2. 继承最后一个节点的出边（保留原边编号）
+            # 2. 继承最后一个节点的出边
             last_node = chain[-1]
             last_out_edges = [e for e in cfg.edges if e.source == last_node]
             for edge in last_out_edges:
@@ -192,7 +192,7 @@ class CFGConstructor:
                     source=first_node,
                     target=edge.target,
                     edge_type=edge.edge_type,
-                    edge_step = edge.edge_step
+                    edge_step = edge.edge_step  # 继承原边step
                 )
                 # 标记边属性
                 setattr(new_edge, "folded_edge", False)  
@@ -587,38 +587,57 @@ class CFGConstructor:
             print(f"[ERROR] 导出失败: {e}")
             raise
 
-    # 导出边id和边对应的step的映射
+
     def export_edge_step_information(self, cfg: CFG, output_path: str):
         """
-        导出可见边的edge_id与edge_step的映射JSON文件
+        导出可见边的edge_id与edge_step的映射JSON文件（按edge_step从小到大排序）
         :param cfg: CFG对象
         :param output_path: JSON输出路径
         """
-        edge_step_map = {}
+        # 先收集所有有效边的信息到列表（方便排序）
+        edge_list = []
         
         # 遍历所有边
         for edge in cfg.edges:
             # 过滤掉被折叠隐藏的内部边，只保留可见边
-            if hasattr(edge, "visible") and not getattr(edge, "visible", True):
+            if hasattr(edge, "folded_edge") and edge.folded_edge:
                 continue
             
             # 提取边 ID（处理可能存在的 merged_ids 情况）
             edge_id = getattr(edge, "edge_id", "unknown")
             
-            # 提取 edge_step
+            # 提取 edge_step 并做类型转换（兼容字符串/数字/None）
             edge_step = getattr(edge, "edge_step", None)
+            # 尝试转换为整数（处理字符串形式的数字，如 "123"）
+            try:
+                edge_step = int(edge_step) if edge_step is not None else float('inf')
+            except (ValueError, TypeError):
+                # 非数字值放最后
+                edge_step = float('inf')
             
-            # 记录映射
-            edge_step_map[edge_id] = {
+            # 添加到列表（用于后续排序）
+            edge_list.append({
                 "edge_id": edge_id,
                 "edge_step": edge_step,
+                "original_step": getattr(edge, "edge_step", None)  # 保留原始值
+            })
+
+        # 按 edge_step 从小到大排序（None/非数字值会排到最后）
+        edge_list_sorted = sorted(edge_list, key=lambda x: x["edge_step"])
+
+        # 构建有序的映射字典
+        edge_step_map = {}
+        for item in edge_list_sorted:
+            edge_step_map[item["edge_id"]] = {
+                "edge_id": item["edge_id"],
+                "edge_step": item["original_step"],  # 还原原始的 edge_step 值
             }
 
         # 写入JSON
         try:
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(edge_step_map, f, ensure_ascii=False, indent=2)
-            print(f"[OK] Edge Step 信息映射已导出: {output_path} (共{len(edge_step_map)}条边)")
+            print(f"[OK] Edge Step 信息映射已导出: {output_path} (共{len(edge_step_map)}条边，按edge_step升序排列)")
         except Exception as e:
             print(f"[ERROR] 边信息导出失败: {e}")
             raise

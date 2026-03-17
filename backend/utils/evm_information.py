@@ -380,6 +380,7 @@ class TraceFormatter:
                 opcode = step.get("op", "").upper()
                 raw_stack = step.get("stack", [])
                 raw_memory = step.get("memory",[])
+                depth = step.get("depth",[])
                 # 单独处理CALL合约时的gascost计算
                 # 执行CALL时会向合约预支付一笔gas，在trace中记录为CALL的gasCost
                 # CALL本身的gascost是预支付的gasCost减去CALL下一步剩下的gasleft。
@@ -486,6 +487,7 @@ class TraceFormatter:
                 steps.append({
                     "address": current_address,
                     "RW_address": RW_address,
+                    "depth": depth,
                     "pc": self._normalize_pc(pc),
                     "opcode": opcode,
                     "gascost": gascost,
