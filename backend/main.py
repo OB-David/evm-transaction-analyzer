@@ -21,7 +21,7 @@ except Exception:
 def main():
     # 配置参数
     PROVIDER_URL = os.environ.get("GETH_API")
-    TX_HASH = "0x8626efddf8a047693519708eeb7620a7d7bca00615967d0d796605e4175015b6"
+    TX_HASH = "0x19b4fe09b86a0e68147e4a5e8b9ca7883ca1aa413a294cdc2d08ed70e73a8cb8"
 
     try:
         # ========== 前置检查 ==========
@@ -90,7 +90,10 @@ def main():
         # 6. 构建交易级控制流图(CFG)
         print("正在构建交易级控制流图...")
         cfg_constructor = CFGConstructor(all_blocks)
-        tx_cfg, all_changes, folded_node_map, table = cfg_constructor.construct_cfg(standardized_trace, slot_map, erc20_token_map)
+        # 返回基本块连接的原始original_cfg，折叠后的tx_cfg
+        # 查询关联都基于original_cfg
+        # original_cfg基于pc，tx_cfg基于original_cfg的blockid
+        tx_cfg, original_cfg, all_changes, folded_node_map, table = cfg_constructor.construct_cfg(standardized_trace, slot_map, erc20_token_map)
         print(f"成功构建交易级CFG，包含 {len(tx_cfg.nodes)} 个节点和 {len(tx_cfg.edges)} 条边\n")
 
         # # 生成表格数据
@@ -111,7 +114,7 @@ def main():
         original_transfer = [from_address.lower(),to_address.lower(), int(amount)]
         print(int(amount))
         pairs, annotations, pending_erc20 = pair_transactions(original_transfer,all_changes, token_decimals_map)
-        edge_link = afg_to_cfg(pairs, pending_erc20, cfg_constructor, tx_cfg, folded_node_map)
+        edge_link = afg_to_cfg(pairs, pending_erc20, original_cfg, folded_node_map)
         json_output = edge_link_to_json(edge_link)
         print(f"共提取到 {len(all_changes)} 条资产变更事件，配对成功 {len(pairs)} 对交易流,存在孤立变动{len(annotations)}条\n")
 

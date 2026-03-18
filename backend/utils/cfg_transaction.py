@@ -5,6 +5,7 @@ from utils.basic_block import Block
 from utils.cfg_structure import CFG, BlockNode, Edge
 from collections import defaultdict
 import json
+import copy  # 新增：用于克隆原始CFG
 
 # 全局辅助函数：标准化地址（确保地址格式唯一）
 def normalize_address(address: str) -> str:
@@ -21,58 +22,41 @@ class FoldableBlockNode(BlockNode):
     """支持线性折叠的BlockNode，按「合约地址+PC」双重去重计算Gas"""
     def __init__(self, base_block: Block):
         super().__init__(base_block)
-        # 折叠层信息（语义层）
+        # 初始状态即代表“未折叠”状态，无需 is_folded 标签
+        # 新增：记录该节点包含的所有原始块对象（物理双轨制核心）
+        self.folded_blocks: List[BlockNode] = [self]
         self.fold_info = {
-            "end_pc": self.end_pc,          # 折叠后最终end_pc
-            "blocks_number": 1,             # 折叠的块数量
-            "total_gas": 0.0,               # 初始化为0，避免继承错误值
-            "actions": self.actions.copy(), # 折叠后合并的actions
-            "is_folded": False              # 是否被折叠
+            "end_pc": self.end_pc,
+            "blocks_number": 1,
+            "total_gas": 0.0,
+            "actions": self.actions.copy()
         }
-        # 核心：存储「合约地址+PC」组合键，双重去重（避免重复计算+跨合约撞PC）
-        self.processed_addr_pc = set()  # 格式：(标准化地址, 标准化PC)
+        self.processed_addr_pc = set()
 
     def add_addr_pc_gas(self, contract_addr: str, pc: str, gas_value: float):
-        """
-        按「合约地址+PC」双重去重添加Gas：
-        1. 标准化地址和PC，确保格式唯一
-        2. 同一个组合键只累加一次Gas，解决平铺trace重复执行问题
-        """
-        # 标准化地址和PC（统一格式）
         addr_str = normalize_address(contract_addr)
         pc_str = str(pc).strip().lower()
-        
-        # 生成双重唯一标识
         unique_key = (addr_str, pc_str)
         
         if unique_key not in self.processed_addr_pc:
             self.total_gas += gas_value
             self.processed_addr_pc.add(unique_key)
-            # 同步更新折叠信息中的Gas
+            # 实时同步，保证无论是否折叠，fold_info 始终有效
             self.fold_info["total_gas"] = self.total_gas
 
     def merge_fold_info(self, other_nodes: List["FoldableBlockNode"]):
-        """合并线性链路中其他节点的信息（折叠逻辑）"""
-        if not other_nodes:
-            return
+        if not other_nodes: return
         
-        # 合并基础信息
         last_node = other_nodes[-1]
         self.fold_info["end_pc"] = last_node.end_pc
         self.fold_info["blocks_number"] = 1 + len(other_nodes)
-        # 合并双重去重后的真实Gas总和
         self.fold_info["total_gas"] = self.total_gas + sum([n.total_gas for n in other_nodes])
-        self.fold_info["is_folded"] = True
         
-        # 合并语义actions
+        # 直接合并 actions 和 instructions，不再需要 visible 判断
         for node in other_nodes:
+            self.folded_blocks.append(node) # 记录被合并的原始块
             self.fold_info["actions"].extend(node.actions)
-        
-        # 合并指令（基础层保留完整指令）
-        all_instructions = self.instructions.copy()
-        for node in other_nodes:
-            all_instructions.extend(node.instructions)
-        self.instructions = all_instructions
+            self.instructions.extend(node.instructions)
 
 class CFGConstructor:
     def __init__(self, all_base_blocks: List[Block]):
@@ -136,7 +120,6 @@ class CFGConstructor:
             next_node = next(iter(unique_children))
 
             # 2. 回环检测：如果下一个节点已经在链里了，说明这一段到此为止
-            # 比如 A-B-A，处理 B 时发现 next 是 A，直接 break，返回 [A, B]
             if next_node in visited_nodes:
                 break
 
@@ -153,79 +136,54 @@ class CFGConstructor:
         return chain
 
     def _fold_linear_chains(self, cfg: CFG):
-        """折叠所有线性链路（标记隐藏版本），同时维护根节点到被折叠节点的映射"""
         processed_nodes = set()
-        nodes = [n for n in cfg.nodes if isinstance(n, FoldableBlockNode)]
+        nodes_to_remove = set()
         
-        # ========== 核心新增：初始化折叠节点映射 ==========
-        # 键：折叠根节点（first_node）；值：被折叠的节点列表（含根节点自身）
-        self.folded_node_map = {}  # 绑定到实例，供外部调用；若仅内部用可改为局部变量
+        self.folded_node_map = {}
+        all_nodes = list(cfg.nodes)
 
-        for node in nodes:
-            if node in processed_nodes:
+        for node in all_nodes:
+            if node in processed_nodes or node in nodes_to_remove:
                 continue
             
-            # 识别线性链路
             chain = self._identify_linear_chain(cfg, node)
-            if len(chain) <= 1:  # 非线性链路，跳过
-                processed_nodes.add(node)
-                # 非折叠节点也记录映射（值为自身列表），确保映射全覆盖
-                self.folded_node_map[node.id] = [node.id]
-                continue
+            first_node = chain[0]
             
-            # ========== 新增：根节点关联整个被折叠链路 ==========
-            first_node = chain[0]  # 折叠根节点
-            self.folded_node_map[first_node.id] = [node.id for node in chain]
-
-            # 1. 合并链路信息到第一个节点
-            other_nodes = chain[1:]
-            first_node.merge_fold_info(other_nodes)
-
-            # 2. 继承最后一个节点的出边
-            last_node = chain[-1]
-            last_out_edges = [e for e in cfg.edges if e.source == last_node]
-            for edge in last_out_edges:
-                original_edge_id = edge.edge_id  # 继承原边编号
-                # 手动新建Edge
-                new_edge = Edge(
-                    edge_id=original_edge_id,  
-                    source=first_node,
-                    target=edge.target,
-                    edge_type=edge.edge_type,
-                    edge_step = edge.edge_step  # 继承原边step
-                )
-                # 标记边属性
-                setattr(new_edge, "folded_edge", False)  
-                setattr(new_edge, "visible", True)  
-                cfg.edges.append(new_edge)
-
-            # 3. 标记中间节点和内部边为隐藏（原有逻辑不变）
-            for n in other_nodes:
-                setattr(n, "folded", True)
-                setattr(n, "visible", False)
-                processed_nodes.add(n)
+            if len(chain) > 1:
+                other_nodes = chain[1:]
+                last_node = chain[-1]
                 
-                # 标记内部边为隐藏
-                internal_edges = [e for e in cfg.edges if e.source == n or e.target == n]
-                for e in internal_edges:
-                    setattr(e, "folded_edge", True)
-                    setattr(e, "visible", False)
-            
-            processed_nodes.add(first_node)
-            # 标记折叠根节点
-            setattr(first_node, "folded", True)
-            setattr(first_node, "is_fold_root", True)
-        
-    
-        return self.folded_node_map
+                # 1. 物理合并
+                first_node.merge_fold_info(other_nodes)
+                self.folded_node_map[first_node.id] = [n.id for n in chain]
+                
+                # 2. 收集需要删除的节点
+                nodes_to_remove.update(other_nodes)
+                processed_nodes.update(chain)
+                
+                # 3. 处理出边继承：找到最后节点的出边，修改源头为 first_node
+                for edge in cfg.edges:
+                    if edge.source == last_node:
+                        edge.source = first_node # 直接原地修改 Source
+            else:
+                self.folded_node_map[first_node.id] = [first_node.id]
+                processed_nodes.add(first_node)
 
+        # 4. 最终物理清理
+        cfg.nodes = [n for n in cfg.nodes if n not in nodes_to_remove]
+        cfg.edges = [
+            e for e in cfg.edges 
+            if e.source not in nodes_to_remove and e.target not in nodes_to_remove
+        ]
+        
+        return self.folded_node_map
 
     # ========== 基础工具方法 ==========
     def _find_base_block(self, address: str, pc: str) -> Block:
         key = (address, pc)
         if key in self.base_block_map:
             return self.base_block_map[key]
-        raise ValueError(f"未找到 address={address} 且 start_pc={pc} 的基础块")
+        return None
     
     def _find_block_by_end_pc(self, address: str, end_pc: str) -> Optional[Block]:
         for block in self.base_block_map.values():
@@ -240,7 +198,7 @@ class CFGConstructor:
             if isinstance(v, int):
                 return v
             s = str(v)
-            if s.startswith("0x") or s.startswith("0X"):
+            if s.startswith("0x"):
                 return int(s, 16)
             return int(s)
         except Exception:
@@ -265,13 +223,16 @@ class CFGConstructor:
         return erc20_token_map.get(address.lower(), "")
     
     def find_node_by_pc_address(self, cfg: CFG, address: str, pc: str) -> Optional[FoldableBlockNode]:
-        """按地址和PC查找节点"""
         pc_int = self._pc_to_int(pc)
+        if pc_int is None: return None
+
         for node in cfg.nodes:
-            start_pc_int = self._pc_to_int(node.start_pc)
-            end_pc_int = self._pc_to_int(node.end_pc)
-            if isinstance(node, FoldableBlockNode) and node.address == address and (start_pc_int <= pc_int <= end_pc_int):
-                return node
+            if isinstance(node, FoldableBlockNode) and node.address == address:
+                start_pc_int = self._pc_to_int(node.start_pc)
+                end_pc_int = self._pc_to_int(node.end_pc)
+                
+                if start_pc_int <= pc_int <= end_pc_int:
+                    return node
         return None
 
     # ========== 语义信息填充 ==========
@@ -291,35 +252,24 @@ class CFGConstructor:
                 node_table_map[node].append(item)
 
         for node, table_items in node_table_map.items():
-            # 分离ETH事件和ERC20事件
             eth_table_items = [item for item in table_items if item.get("token_name") == "ETH" and item.get("op") == "CALL"]
             erc20_table_items = [item for item in table_items if item.get("op") in {"SLOAD", "SSTORE"}]
 
-            # 处理ERC20事件
             if erc20_table_items:
                 for item in erc20_table_items:
                     op = item.get("op")
                     action_type = "read" if op == "SLOAD" else "write"
-
                     erc20_event = {
                         "tokenname": item.get("token_name", ""),
                         "type": action_type,
                         "user": item.get("from") if action_type == "read" else item.get("to"),
                         "balance": self._normalize_hex_value(item.get("balance/amount", ""))
                     }
-
                     try:
-                        node.add_action(
-                            action_type=action_type,  
-                            erc20_events=[erc20_event], 
-                            send_eth="NO",
-                            eth_event=None
-                        )
+                        node.add_action(action_type=action_type, erc20_events=[erc20_event], send_eth="NO", eth_event=None)
                     except Exception as e:
-                        print(f"ERC20({action_type}) add_action调用失败: {type(e).__name__} = {e}")
                         raise
 
-            # 处理ETH事件
             if eth_table_items:
                 for eth_item in eth_table_items:
                     eth_event = {
@@ -329,25 +279,19 @@ class CFGConstructor:
                         "amount": eth_item.get("balance/amount", "")
                     }
                     try:
-                        node.add_action(
-                            action_type="eth_transfer",
-                            erc20_events=[],
-                            send_eth="YES",
-                            eth_event=eth_event
-                        )
+                        node.add_action(action_type="eth_transfer", erc20_events=[], send_eth="YES", eth_event=eth_event)
                     except Exception as e:
-                        print(f"ETH add_action调用失败: {type(e).__name__} = {e}")
                         raise
             
             node.fold_info["actions"] = node.actions.copy()
 
     # ========== CFG构建主逻辑 ==========
-    def construct_cfg(self, trace: Dict[str, Any], slot_map: Dict[str, str], erc20_token_map: Dict[str, str]) -> Tuple[CFG, List[Dict[str, Any]]]:
+    def construct_cfg(self, trace: Dict[str, Any], slot_map: Dict[str, str], erc20_token_map: Dict[str, str]) -> Tuple[CFG, List[Dict[str, Any]], Dict[str, List[str]], List[Dict[str, Any]], CFG]:
         """构建CFG（核心入口）"""
         cfg = CFG(tx_hash=trace["tx_hash"])
         steps = trace["steps"]
         if not steps:
-            return cfg, []
+            return cfg, [], {}, [], cfg
 
         processed_nodes: Dict[Tuple[str, str], FoldableBlockNode] = {}
         current_step_idx = 0
@@ -365,7 +309,6 @@ class CFGConstructor:
         cfg.add_node(current_node)
 
         all_changes = []  # 存储所有余额变化事件
-        # 余额变化追踪
         balance_traces = defaultdict(lambda: {"SLOAD": None, "SLOAD_pc": None, "SSTORE": None, "SSTORE_pc": None})
 
         # 遍历trace构建结构 + 维护table
@@ -393,7 +336,6 @@ class CFGConstructor:
                 else:
                     jumpdest_node = processed_nodes[jumpdest_node_key]
 
-                # 构建NOTJUMP边
                 if current_step_idx > 0:
                     prev_step = steps[current_step_idx - 1]
                     if prev_step["opcode"] not in self.jump_opcodes:
@@ -404,8 +346,7 @@ class CFGConstructor:
                             if prev_node_key not in processed_nodes:
                                 processed_nodes[prev_node_key] = prev_node
                                 cfg.add_node(prev_node)
-                            # 调用add_edge生成递增编号
-                            cfg.add_edge(prev_node, jumpdest_node, "NOTJUMP",current_step_idx)
+                            cfg.add_edge(prev_node, jumpdest_node, "NOTJUMP", current_step_idx)
 
                 current_node = jumpdest_node
                 current_node_key = jumpdest_node_key
@@ -418,26 +359,17 @@ class CFGConstructor:
                 to_addr = normalize_address(to_addr_raw)
                 if value_hex != "0x0":
                     self.table.append({
-                        "pc": current_pc,
-                        "codecontract_address": current_address,
-                        "op": "CALL",
-                        "from": RW_address,
-                        "to": to_addr,
-                        "token_name": "ETH",
-                        "token_address": "ETH",
-                        "balance/amount": value_hex
+                        "pc": current_pc, "codecontract_address": current_address,
+                        "op": "CALL", "from": RW_address, "to": to_addr,
+                        "token_name": "ETH", "token_address": "ETH", "balance/amount": value_hex
                     })
-
                     all_changes.append({
-                        "type": "ETH_TRANSFER",
-                        "codecontract_address": current_address,
-                        "from_address": RW_address,
-                        "to_address": to_addr,
-                        "eth_value": str(eth_value),
-                        "pc": current_pc
+                        "type": "ETH_TRANSFER", "codecontract_address": current_address,
+                        "from_address": RW_address, "to_address": to_addr,
+                        "eth_value": str(eth_value), "pc": current_pc
                     })
 
-            # 处理SLOAD（ERC20读余额）
+            # 处理SLOAD
             if current_opcode == "SLOAD" and len(current_stack) >= 1:
                 slot_hex = current_stack[-1].lower()
                 if slot_hex in slot_map:
@@ -450,20 +382,15 @@ class CFGConstructor:
                             balance_hex = next_stack[-1] if next_stack else "0x0"
                         
                         self.table.append({
-                            "pc": current_pc,
-                            "codecontract_address": current_address,
-                            "op": "SLOAD",
-                            "from": from_addr,
-                            "to": None,
-                            "token_name": token_name,
-                            "token_address": RW_address,
+                            "pc": current_pc, "codecontract_address": current_address,
+                            "op": "SLOAD", "from": from_addr, "to": None,
+                            "token_name": token_name, "token_address": RW_address,
                             "balance/amount": self._normalize_hex_value(balance_hex)
                         })
-
                         balance_traces[(current_address, from_addr)]["SLOAD"] = self._normalize_hex_value(balance_hex)
                         balance_traces[(current_address, from_addr)]["SLOAD_pc"] = current_pc
 
-            # 处理SSTORE（ERC20写余额）
+            # 处理SSTORE
             if current_opcode == "SSTORE" and len(current_stack) >= 2:
                 slot_hex = current_stack[-1].lower()
                 balance_hex = current_stack[-2]
@@ -472,45 +399,34 @@ class CFGConstructor:
                     token_name = self._get_token_name_by_address(RW_address, erc20_token_map)
                     if token_name != "":
                         self.table.append({
-                            "pc": current_pc,
-                            "codecontract_address": current_address,
-                            "op": "SSTORE",
-                            "from": None,
-                            "to": to_addr,
-                            "token_name": token_name,
-                            "token_address": RW_address,
+                            "pc": current_pc, "codecontract_address": current_address,
+                            "op": "SSTORE", "from": None, "to": to_addr,
+                            "token_name": token_name, "token_address": RW_address,
                             "balance/amount": self._normalize_hex_value(balance_hex)
                         })
                         balance_traces[(current_address, to_addr)]["SSTORE"] = self._normalize_hex_value(balance_hex)
                         balance_traces[(current_address, to_addr)]["SSTORE_pc"] = current_pc
-
-                        # 计算差值并记录
                         sload_raw = balance_traces[(current_address, to_addr)]["SLOAD"]
                         if sload_raw is not None:
                             sload_val = self._hex_to_int_safe(sload_raw) or 0
                             sstore_val = self._hex_to_int_safe(self._normalize_hex_value(balance_hex)) or 0
                             diff = sstore_val - sload_val
-                                
                             if diff != 0:
                                 all_changes.append({
-                                    "type": "ERC20_BALANCE_CHANGE",
-                                    "codecontract_address": current_address,
-                                    "erc20_token_address": RW_address,
-                                    "token_name": token_name,
-                                    "user_address": to_addr,
-                                    "changed_balance": str(diff),
+                                    "type": "ERC20_BALANCE_CHANGE", "codecontract_address": current_address,
+                                    "erc20_token_address": RW_address, "token_name": token_name,
+                                    "user_address": to_addr, "changed_balance": str(diff),
                                     "SLOAD_pc": balance_traces[(current_address, to_addr)]["SLOAD_pc"],
                                     "SSTORE_pc": balance_traces[(current_address, to_addr)]["SSTORE_pc"]
                                 })
-                            # 计算完重置
                             balance_traces[(current_address, to_addr)]["SLOAD"] = None
                             balance_traces[(current_address, to_addr)]["SSTORE"] = None
 
-            # ========== 按「合约地址+PC」双重去重累加Gas ==========
+            # Gas累加
             gas_value = self._get_step_gas_decimal(current_step)
             current_node.add_addr_pc_gas(current_address, current_pc, gas_value)
 
-            # 处理分块指令，构建边
+            # 处理分块
             if current_opcode in self.split_opcodes and current_step_idx + 1 < len(steps):
                 next_step = steps[current_step_idx + 1]
                 try:
@@ -518,126 +434,61 @@ class CFGConstructor:
                 except ValueError:
                     current_step_idx += 1
                     continue
-
                 next_node_key = (next_block.address, next_block.start_pc)
                 next_node = processed_nodes.get(next_node_key) or FoldableBlockNode(next_block)
                 if next_node_key not in processed_nodes:
                     processed_nodes[next_node_key] = next_node
                     cfg.add_node(next_node)
-
-                # 确定边类型
                 edge_type = "NORMAL"
-                if current_opcode in self.jump_opcodes:
-                    edge_type = "JUMP"
-                elif current_opcode in {"CALL", "CALLCODE", "DELEGATECALL", "STATICCALL"}:
-                    edge_type = "CALL"
-                elif current_opcode in {"RETURN", "STOP", "REVERT", "INVALID", "SELFDESTRUCT"}:
-                    edge_type = "TERMINATE"
-
-                # 调用add_edge生成递增编号
+                if current_opcode in self.jump_opcodes: edge_type = "JUMP"
+                elif current_opcode in {"CALL", "CALLCODE", "DELEGATECALL", "STATICCALL"}: edge_type = "CALL"
+                elif current_opcode in {"RETURN", "STOP", "REVERT", "INVALID", "SELFDESTRUCT"}: edge_type = "TERMINATE"
                 cfg.add_edge(current_node, next_node, edge_type, current_step_idx)
                 current_node = next_node
                 current_node_key = next_node_key
 
             current_step_idx += 1
 
-        # 填充语义信息+折叠线性链路
+        # 填充语义
         self._fill_actions_from_table(cfg)
+        
+        # --- 核心改动：物理双轨制 ---
+        # 1. 在折叠前，先克隆出一份完整的、原始的 CFG 结构用于查询（tx_cfg）
+        original_cfg = copy.deepcopy(cfg)
+        
+        # 2. 对原有的 cfg 对象进行折叠（这会修改 cfg 内部的 nodes 和 edges，使其变成折叠版）
         folded_node_map = self._fold_linear_chains(cfg)
 
-        return cfg, all_changes, folded_node_map, self.table
-    
-
+        return cfg, original_cfg, all_changes, folded_node_map, self.table
 
     # 导出blockid和内部信息映射
     def export_folded_blocks_information(self, cfg: CFG, output_path: str):
-        """
-        导出可见节点的block_id与information(instructions, contract_name, 映射
-        :param cfg: CFG对象
-        :param output_path: JSON输出路径
-        """
         block_inst_map = {}
-        
         for node in cfg.nodes:
-            # 仅处理FoldableBlockNode且排除被折叠的中间节点
-            if not isinstance(node, FoldableBlockNode):
-                continue
-            # 跳过被折叠的中间节点（只保留根节点和未折叠节点）
-            if hasattr(node, "folded") and node.folded and not getattr(node, "is_fold_root", False):
-                continue
-            
-            # 极简序列化：所有指令转字符串
+            if not isinstance(node, FoldableBlockNode): continue
             block_inst_map[node.id] = {
                 "block_id": node.id,
                 "address": node.address,
                 "blocks_number": node.fold_info["blocks_number"],
+                "folded_blocks": [n.id for n in node.folded_blocks], # 记录具体包含的原始ID
                 "start_pc": node.start_pc,
                 "end_pc": node.fold_info["end_pc"],
                 "gas": node.fold_info["total_gas"],
                 "actions": node.fold_info.get("actions", node.actions),
                 "instructions": [str(instr) for instr in node.instructions]
             }
-        
-        # 写入JSON
-        try:
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(block_inst_map, f, ensure_ascii=False, indent=2)
-            print(f"[OK] Baisc Block Information映射已导出: {output_path} (共{len(block_inst_map)}个节点)")
-        except Exception as e:
-            print(f"[ERROR] 导出失败: {e}")
-            raise
-
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(block_inst_map, f, ensure_ascii=False, indent=2)
 
     def export_edge_step_information(self, cfg: CFG, output_path: str):
-        """
-        导出可见边的edge_id与edge_step的映射JSON文件（按edge_step从小到大排序）
-        :param cfg: CFG对象
-        :param output_path: JSON输出路径
-        """
-        # 先收集所有有效边的信息到列表（方便排序）
         edge_list = []
-        
-        # 遍历所有边
         for edge in cfg.edges:
-            # 过滤掉被折叠隐藏的内部边，只保留可见边
-            if hasattr(edge, "folded_edge") and edge.folded_edge:
-                continue
-            
-            # 提取边 ID（处理可能存在的 merged_ids 情况）
             edge_id = getattr(edge, "edge_id", "unknown")
-            
-            # 提取 edge_step 并做类型转换（兼容字符串/数字/None）
             edge_step = getattr(edge, "edge_step", None)
-            # 尝试转换为整数（处理字符串形式的数字，如 "123"）
-            try:
-                edge_step = int(edge_step) if edge_step is not None else float('inf')
-            except (ValueError, TypeError):
-                # 非数字值放最后
-                edge_step = float('inf')
-            
-            # 添加到列表（用于后续排序）
-            edge_list.append({
-                "edge_id": edge_id,
-                "edge_step": edge_step,
-                "original_step": getattr(edge, "edge_step", None)  # 保留原始值
-            })
-
-        # 按 edge_step 从小到大排序（None/非数字值会排到最后）
+            try: sort_key = int(edge_step) if edge_step is not None else float('inf')
+            except (ValueError, TypeError): sort_key = float('inf')
+            edge_list.append({"edge_id": edge_id, "edge_step": sort_key, "original_step": edge_step})
         edge_list_sorted = sorted(edge_list, key=lambda x: x["edge_step"])
-
-        # 构建有序的映射字典
-        edge_step_map = {}
-        for item in edge_list_sorted:
-            edge_step_map[item["edge_id"]] = {
-                "edge_id": item["edge_id"],
-                "edge_step": item["original_step"],  # 还原原始的 edge_step 值
-            }
-
-        # 写入JSON
-        try:
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(edge_step_map, f, ensure_ascii=False, indent=2)
-            print(f"[OK] Edge Step 信息映射已导出: {output_path} (共{len(edge_step_map)}条边，按edge_step升序排列)")
-        except Exception as e:
-            print(f"[ERROR] 边信息导出失败: {e}")
-            raise
+        edge_step_map = {item["edge_id"]: {"edge_id": item["edge_id"], "edge_step": item["original_step"]} for item in edge_list_sorted}
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(edge_step_map, f, ensure_ascii=False, indent=2)
