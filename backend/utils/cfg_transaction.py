@@ -493,136 +493,115 @@ class CFGConstructor:
 
     def _identify_feedback_pattern(self, cfg: CFG, start_node: FoldableBlockNode) -> Optional[Dict[str, Any]]:
         """
-        识别自环反馈结构：A -> B -> A, 且 A 随后去往 Others
+        识别自环反馈结构：
+        1. 外部自环：A -> B -> A
+        2. 自身自环：A -> A
+        且满足 A -> Feedback 的边数 == A -> Others 的边数
         """
         layer1 = start_node
         contract_addr = layer1.address
         
-        # 1. 获取 Layer 1 的所有子节点
-        children = list(self._get_unique_children(cfg, layer1))
+        # 1. 统计 A 的所有出边分类
+        edges_to_self = [e for e in cfg.edges if e.source == layer1 and e.target == layer1]
         
-        # 寻找潜在的自环节点 B
-        # B 必须满足：在当前合约内、不是 A 自己、且能回到 A
-        feedback_candidates = []
-        other_destinations = []
+        # 获取除了 A 以外的所有直接子节点
+        other_children = {n for n in self._get_unique_children(cfg, layer1) if n != layer1}
         
-        for child in children:
-            if child == layer1: continue
+        # 2. 判定反馈模式
+        feedback_node = None
+        
+        # 情况 A: 自身自环 (A -> A)
+        if len(edges_to_self) > 0:
+            # 这里的反馈“节点”实际上就是 A 内部的逻辑，我们记为 "SELF"
+            feedback_node = "SELF" 
+            edges_to_feedback = edges_to_self
+            # 此时的 others 就是除了 A 以外的所有出边
+            edges_to_others = [e for e in cfg.edges if e.source == layer1 and e.target != layer1]
             
-            # 检查 child 是否能回到 A
-            child_children = self._get_unique_children(cfg, child)
-            if layer1 in child_children:
-                feedback_candidates.append(child)
-            else:
-                other_destinations.append(child)
-        
-        # 规则：必须有且仅有一个自环节点 B
-        if len(feedback_candidates) != 1:
-            return None
-        
-        b_node = feedback_candidates[0]
-        
-        # 2. 验证 B 的纯净度
-        if b_node.address != contract_addr:
-            return None
-        
-        # B 的唯一父节点必须是 A
-        b_parents = self._get_unique_parents(cfg, b_node)
-        if len(b_parents) != 1 or list(b_parents)[0] != layer1:
-            return None
+        # 情况 B: 外部自环 (A -> B -> A)
+        else:
+            feedback_candidates = []
+            for child in other_children:
+                # 检查 child 是否是纯净的 B 节点 (唯一父 A, 唯一子 A)
+                child_children = self._get_unique_children(cfg, child)
+                child_parents = self._get_unique_parents(cfg, child)
+                
+                if (layer1 in child_children and len(child_children) == 1 and 
+                    layer1 in child_parents and len(child_parents) == 1 and
+                    child.address == contract_addr):
+                    feedback_candidates.append(child)
             
-        # B 的唯一子节点必须是 A
-        b_children = self._get_unique_children(cfg, b_node)
-        if len(b_children) != 1 or list(b_children)[0] != layer1:
+            if len(feedback_candidates) == 1:
+                feedback_node = feedback_candidates[0]
+                edges_to_feedback = [e for e in cfg.edges if e.source == layer1 and e.target == feedback_node]
+                edges_to_others = [e for e in cfg.edges if e.source == layer1 and e.target != feedback_node]
+
+        # 3. 共同的规则校验
+        if not feedback_node:
             return None
 
-        # 3. 数量平衡校验：A -> B 的边数 == A -> Others 的边数
-        # 统计 A 的出边中，指向 B 的数量和指向其他的数量
-        edges_to_b = [e for e in cfg.edges if e.source == layer1 and e.target == b_node]
-        edges_to_others = [e for e in cfg.edges if e.source == layer1 and e.target != b_node]
-        
-        if len(edges_to_b) != len(edges_to_others):
-            return None
-            
-        if not other_destinations:
+        # 数量平衡校验：去反馈的边 == 去其他的边
+        if len(edges_to_feedback) != len(edges_to_others) or len(edges_to_others) == 0:
             return None
 
         return {
             "root": layer1,
-            "feedback_node": b_node
+            "feedback_node": feedback_node  # 可能是 FoldableBlockNode，也可能是 "SELF"
         }
     
 
     def _fold_feedback_patterns(self, cfg: CFG) -> Dict[str, List[str]]:
-        """
-        执行自环反馈折叠：将 B 合并进 A，并清理 A-B 之间的循环边
-        """
         overall_changed = True
-        
         while overall_changed:
             overall_changed = False
             nodes_to_remove = set()
             current_scan_nodes = [n for n in cfg.nodes]
 
             for node in current_scan_nodes:
-                if node in nodes_to_remove:
-                    continue
-
+                if node in nodes_to_remove: continue
+                
                 pattern = self._identify_feedback_pattern(cfg, node)
-
                 if pattern:
                     root = pattern["root"]
-                    b_node = pattern["feedback_node"]
+                    fb = pattern["feedback_node"]
                     
-                    if b_node in nodes_to_remove:
-                        continue
+                    if fb == "SELF":
+                        # 处理 A -> A 的情况：只加语义标记
+                        root.instructions.append({
+                            "pc": "---", "opcode": "SELF_LOOP_DETECTED", "is_boundary": True
+                        })
+                        # 清理掉指向自己的边，防止死循环
+                        cfg.edges = [e for e in cfg.edges if not (e.source == root and e.target == root)]
+                        overall_changed = True
+                    else:
+                        # 处理 A -> B -> A 的情况
+                        if fb in nodes_to_remove: continue
+                        
+                        # 合并指令
+                        root.instructions.append({
+                            "pc": "---", "opcode": "FEEDBACK_LOOP_START", "is_boundary": True, "from_id": fb.id
+                        })
+                        root.instructions.extend(fb.instructions)
+                        root.instructions.append({
+                            "pc": "---", "opcode": "FEEDBACK_LOOP_END", "is_boundary": True
+                        })
 
-                    # --- 1. 指令合并 (带反馈标记) ---
-                    root.instructions.append({
-                        "pc": "---", 
-                        "opcode": "FEEDBACK_LOOP_START", 
-                        "is_boundary": True,
-                        "from_id": b_node.id
-                    })
-                    root.instructions.extend(b_node.instructions)
-                    root.instructions.append({
-                        "pc": "---", 
-                        "opcode": "FEEDBACK_LOOP_END", 
-                        "is_boundary": True
-                    })
+                        # 映射表与对象合并
+                        if hasattr(fb, 'folded_blocks'):
+                            root.folded_blocks.extend([b for b in fb.folded_blocks if b != fb])
+                        
+                        m_original_ids = self.folded_node_map.pop(fb.id, [fb.id])
+                        self.folded_node_map[root.id].extend(m_original_ids)
+                        
+                        root.merge_fold_info([fb])
+                        nodes_to_remove.add(fb)
+                        overall_changed = True
 
-                    # --- 2. 深度对象继承 (folded_blocks) ---
-                    if hasattr(b_node, 'folded_blocks'):
-                        ext_blocks = [b for b in b_node.folded_blocks if b != b_node]
-                        root.folded_blocks.extend(ext_blocks)
-                    
-                    # --- 3. 映射表更新 ---
-                    original_ids = self.folded_node_map.pop(b_node.id, [b_node.id])
-                    self.folded_node_map[root.id].extend(original_ids)
-
-                    # --- 4. 物理合并 ---
-                    root.merge_fold_info([b_node])
-
-                    # --- 5. 边清理 ---
-                    # 这种结构中，root 不需要继承 b_node 的出边（因为 b_node 回到了 root）
-                    # 我们只需要删除所有涉及 b_node 的边即可
-                    # root 原本去往 Others 的边保持不变
-                    nodes_to_remove.add(b_node)
-                    overall_changed = True
-
-            # --- 6. 物理清理 ---
+            # 物理清理
             if nodes_to_remove:
                 cfg.nodes = [n for n in cfg.nodes if n not in nodes_to_remove]
-                # 移除所有指向或来自 b_node 的边
-                cfg.edges = [
-                    e for e in cfg.edges 
-                    if e.source not in nodes_to_remove and e.target not in nodes_to_remove
-                ]
+                cfg.edges = [e for e in cfg.edges if e.source not in nodes_to_remove and e.target not in nodes_to_remove]
         
-        # ID 去重
-        for rid in self.folded_node_map:
-            self.folded_node_map[rid] = list(dict.fromkeys(self.folded_node_map[rid]))
-
         return self.folded_node_map
     
 
