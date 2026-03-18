@@ -54,7 +54,11 @@ def run(tx_hash: str):
     all_blocks = processor.process_multiple_contracts(contracts_bytecode)
 
     cfg_constructor = CFGConstructor(all_blocks)
-    tx_cfg, all_changes, folded_node_map, table = cfg_constructor.construct_cfg(standardized_trace, slot_map, erc20_token_map)
+    tx_cfg, original_cfg, all_changes, folded_node_map, table = cfg_constructor.construct_cfg(
+        standardized_trace,
+        slot_map,
+        erc20_token_map,
+    )
 
     token_decimals_map = {}
     for token_addr in erc20_token_map.keys():
@@ -62,7 +66,7 @@ def run(tx_hash: str):
 
     original_transfer = [from_address.lower(),to_address.lower(), int(amount)]
     pairs, annotations, pending_erc20 = pair_transactions(original_transfer, all_changes, token_decimals_map)
-    edge_link = afg_to_cfg(pairs, pending_erc20, cfg_constructor, tx_cfg, folded_node_map)
+    edge_link = afg_to_cfg(pairs, pending_erc20, original_cfg, folded_node_map)
     json_output = edge_link_to_json(edge_link)
 
     # Save trace

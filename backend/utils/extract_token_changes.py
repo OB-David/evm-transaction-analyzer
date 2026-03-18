@@ -3,9 +3,8 @@
 
 from collections import defaultdict
 from graphviz import Digraph
-from utils.cfg_transaction import CFGConstructor
 from utils.cfg_structure import CFG
-from utils.basic_block import Block
+from typing import List, Dict
 import json
 
 def hex_to_int_safe(x: str) -> int:
@@ -338,28 +337,63 @@ def render_asset_flow(paired, node_annotations, users_addresses,
     dot.save(output_file)
     return dot
 
+def find_node_by_pc_address(original_cfg: CFG, folded_node_map: Dict[str, List[str]], address: str, pc: str):
+    def pc_to_int(v):
+        if v is None:
+            return None
+        try:
+            if isinstance(v, int):
+                return v
+            s = str(v)
+            if s.startswith("0x"):
+                return int(s, 16)
+            return int(s)
+        except Exception:
+            return None
+        
+    pc_int = pc_to_int(pc)
+    if pc_int is None:
+        return None
+    # 第一步：在原始图中精确定位该 PC 属于哪一个原始块
+    target_original_id = None
+    for node in original_cfg.nodes:
+        if node.address == address:
+            s_int = pc_to_int(node.start_pc)
+            e_int = pc_to_int(node.end_pc)
+            
+            if s_int is not None and e_int is not None:
+                if s_int <= pc_int <= e_int:
+                    target_original_id = node.id
+                    break
+    
+    if not target_original_id:
+        return None
+
+    # 第二步：在映射表中查找该原始 ID 属于哪一个折叠后的根节点
+    # folded_node_map 的 key 是根节点 ID，value 是被它吞并的所有原始节点 ID 列表
+    for root_id, original_ids in folded_node_map.items():
+        if target_original_id in original_ids:
+            return root_id
+    
+    return None
+
 # --- 后续的 afg_to_cfg 和序列化函数保持不变 ---
-def afg_to_cfg(paired, pending_erc20, cfg_constructor: CFGConstructor, tx_cfg: CFG, folded_node_map):
+def afg_to_cfg(paired, pending_erc20, tx_cfg: CFG, folded_node_map):
     edge_link = []
     for p in paired:
         if p["order"] == 0:
             continue
         if p["token"] == "ETH":
-            matched_node = cfg_constructor.find_node_by_pc_address(tx_cfg, p["codecontract_address"], p["source_pcs"][0])
-            if matched_node is None:
-                continue
-            matched_block = matched_node.id
-            edge_link.append({"edge_id": p["order"], "type": "ETH_TRANSFER", "matched_blocks": matched_block})
+            matched_block = find_node_by_pc_address(tx_cfg, folded_node_map, p["codecontract_address"], p["source_pcs"][0])
+            if matched_block:
+               edge_link.append({"edge_id": p["order"], "type": "ETH_TRANSFER", "matched_blocks": matched_block})
         else:
             # ERC20 Transfer 配对
             # from_codecontract_address 对应的 sload/sstore
-            s_l_node = cfg_constructor.find_node_by_pc_address(tx_cfg, p["from_codecontract"], p["source_pcs"]["sender_sload_pc"])
-            s_s_node = cfg_constructor.find_node_by_pc_address(tx_cfg, p["from_codecontract"], p["source_pcs"]["sender_sstore_pc"])
-            r_l_node = cfg_constructor.find_node_by_pc_address(tx_cfg, p["to_codecontract"], p["source_pcs"]["receiver_sload_pc"])
-            r_s_node = cfg_constructor.find_node_by_pc_address(tx_cfg, p["to_codecontract"], p["source_pcs"]["receiver_sstore_pc"])
-            if any(n is None for n in (s_l_node, s_s_node, r_l_node, r_s_node)):
-                continue
-            s_l, s_s, r_l, r_s = s_l_node.id, s_s_node.id, r_l_node.id, r_s_node.id
+            s_l = find_node_by_pc_address(tx_cfg, folded_node_map, p["from_codecontract"], p["source_pcs"]["sender_sload_pc"])
+            s_s = find_node_by_pc_address(tx_cfg, folded_node_map, p["from_codecontract"], p["source_pcs"]["sender_sstore_pc"])
+            r_l = find_node_by_pc_address(tx_cfg, folded_node_map, p["to_codecontract"], p["source_pcs"]["receiver_sload_pc"])
+            r_s = find_node_by_pc_address(tx_cfg, folded_node_map, p["to_codecontract"], p["source_pcs"]["receiver_sstore_pc"])
             blocks = {
                 "s_l": next((rid for rid, nids in folded_node_map.items() if s_l in nids), s_l),
                 "s_s": next((rid for rid, nids in folded_node_map.items() if s_s in nids), s_s),
@@ -373,12 +407,12 @@ def afg_to_cfg(paired, pending_erc20, cfg_constructor: CFGConstructor, tx_cfg: C
                 })  
 
     for v in pending_erc20.values():
-        sload_node = cfg_constructor.find_node_by_pc_address(tx_cfg, v["token_addr"], v["source_pcs"][0])
-        sstore_node = cfg_constructor.find_node_by_pc_address(tx_cfg, v["token_addr"], v["source_pcs"][1])
-        if sload_node is None or sstore_node is None:
+        sload_block = find_node_by_pc_address(tx_cfg, folded_node_map, v["token_addr"], v["source_pcs"][0])
+        sload_block = next((rid for rid, nids in folded_node_map.items() if sload_block in nids), sload_block)
+        sstore_block = find_node_by_pc_address(tx_cfg, folded_node_map, v["token_addr"], v["source_pcs"][1])
+        sstore_block = next((rid for rid, nids in folded_node_map.items() if sstore_block in nids), sstore_block)
+        if sload_block is None or sstore_block is None:
             continue
-        sload_block = next((rid for rid, nids in folded_node_map.items() if sload_node.id in nids), sload_node.id)
-        sstore_block = next((rid for rid, nids in folded_node_map.items() if sstore_node.id in nids), sstore_node.id)
         edge_link.append({
             "edge_id": v["order"], "type": "ERC20_BALANCE_CHANGE",
             "matched_blocks": [sload_block, sstore_block]
@@ -388,14 +422,7 @@ def afg_to_cfg(paired, pending_erc20, cfg_constructor: CFGConstructor, tx_cfg: C
     return edge_link
 
 
-
 def edge_link_to_json(edge_link):
-    """
-    将全ID格式的edge_link序列化为JSON字符串
-    :param edge_link: afg_to_cfg函数返回的列表（全ID格式）
-    :return: 格式化的JSON字符串
-    """
-    # 直接序列化，因为edge_link全是基础类型（ID为str/int，无对象）
     return json.dumps(
         edge_link,
         indent=4,        # 缩进4格，美观易读
