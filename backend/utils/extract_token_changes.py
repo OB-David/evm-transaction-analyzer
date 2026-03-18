@@ -5,6 +5,7 @@ from collections import defaultdict
 from graphviz import Digraph
 from utils.cfg_structure import CFG
 from typing import List, Dict
+import json
 
 def hex_to_int_safe(x: str) -> int:
     try:
@@ -420,12 +421,6 @@ def afg_to_cfg(paired, pending_erc20, tx_cfg: CFG, folded_node_map):
 
 
 def edge_link_to_json(edge_link):
-    """
-    将全ID格式的edge_link序列化为JSON字符串
-    :param edge_link: afg_to_cfg函数返回的列表（全ID格式）
-    :return: 格式化的JSON字符串
-    """
-    # 直接序列化，因为edge_link全是基础类型（ID为str/int，无对象）
     return json.dumps(
         edge_link,
         indent=4,        # 缩进4格，美观易读

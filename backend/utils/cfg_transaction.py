@@ -26,7 +26,6 @@ class FoldableBlockNode(BlockNode):
         # 新增：记录该节点包含的所有原始块对象（物理双轨制核心）
         self.folded_blocks: List[BlockNode] = [self]
         self.fold_info = {
-            "end_pc": self.end_pc,
             "blocks_number": 1,
             "total_gas": 0.0,
             "actions": self.actions.copy()
@@ -48,7 +47,6 @@ class FoldableBlockNode(BlockNode):
         if not other_nodes: return
         
         last_node = other_nodes[-1]
-        self.fold_info["end_pc"] = last_node.end_pc
         self.fold_info["blocks_number"] = 1 + len(other_nodes)
         self.fold_info["total_gas"] = self.total_gas + sum([n.total_gas for n in other_nodes])
         
@@ -101,84 +99,9 @@ class CFGConstructor:
     def _get_unique_children(self, cfg: CFG, node: FoldableBlockNode) -> Set[FoldableBlockNode]:
         """获取节点的唯一子节点集合"""
         return {e.target for e in cfg.edges if e.source == node and isinstance(e.target, FoldableBlockNode)}
+    
 
-    def _identify_linear_chain(self, cfg: CFG, start_node: FoldableBlockNode) -> List[FoldableBlockNode]:
-        """识别线性链路：遇到回环或入度/出度变化时立即截断并返回已识别部分"""
-        chain = [start_node]
-        current_node = start_node
-        contract_addr = start_node.address
-        visited_nodes = {start_node} 
-
-        while True:
-            # 1. 获取唯一子节点
-            unique_children = self._get_unique_children(cfg, current_node)
-            unique_children = {n for n in unique_children if n.address == contract_addr}
-            
-            if len(unique_children) != 1:
-                break
-            
-            next_node = next(iter(unique_children))
-
-            # 2. 回环检测：如果下一个节点已经在链里了，说明这一段到此为止
-            if next_node in visited_nodes:
-                break
-
-            # 3. 唯一父节点检测（入度安全性检查）
-            unique_parents = self._get_unique_parents(cfg, next_node)
-            if len(unique_parents) != 1 or next(iter(unique_parents)) != current_node:
-                break
-            
-            # 4. 只有通过了所有检查，才加入链
-            chain.append(next_node)
-            visited_nodes.add(next_node)
-            current_node = next_node
-
-        return chain
-
-    def _fold_linear_chains(self, cfg: CFG):
-        processed_nodes = set()
-        nodes_to_remove = set()
-        
-        self.folded_node_map = {}
-        all_nodes = list(cfg.nodes)
-
-        for node in all_nodes:
-            if node in processed_nodes or node in nodes_to_remove:
-                continue
-            
-            chain = self._identify_linear_chain(cfg, node)
-            first_node = chain[0]
-            
-            if len(chain) > 1:
-                other_nodes = chain[1:]
-                last_node = chain[-1]
-                
-                # 1. 物理合并
-                first_node.merge_fold_info(other_nodes)
-                self.folded_node_map[first_node.id] = [n.id for n in chain]
-                
-                # 2. 收集需要删除的节点
-                nodes_to_remove.update(other_nodes)
-                processed_nodes.update(chain)
-                
-                # 3. 处理出边继承：找到最后节点的出边，修改源头为 first_node
-                for edge in cfg.edges:
-                    if edge.source == last_node:
-                        edge.source = first_node # 直接原地修改 Source
-            else:
-                self.folded_node_map[first_node.id] = [first_node.id]
-                processed_nodes.add(first_node)
-
-        # 4. 最终物理清理
-        cfg.nodes = [n for n in cfg.nodes if n not in nodes_to_remove]
-        cfg.edges = [
-            e for e in cfg.edges 
-            if e.source not in nodes_to_remove and e.target not in nodes_to_remove
-        ]
-        
-        return self.folded_node_map
-
-    # ========== 基础工具方法 ==========
+        # ========== 基础工具方法 ==========
     def _find_base_block(self, address: str, pc: str) -> Block:
         key = (address, pc)
         if key in self.base_block_map:
@@ -284,6 +207,424 @@ class CFGConstructor:
                         raise
             
             node.fold_info["actions"] = node.actions.copy()
+
+
+    def _identify_linear_chain(self, cfg: CFG, start_node: FoldableBlockNode) -> List[FoldableBlockNode]:
+        """识别线性链路：遇到回环或入度/出度变化时立即截断并返回已识别部分"""
+        chain = [start_node]
+        current_node = start_node
+        contract_addr = start_node.address
+        visited_nodes = {start_node} 
+
+        while True:
+            # 1. 获取唯一子节点
+            unique_children = self._get_unique_children(cfg, current_node)
+            unique_children = {n for n in unique_children if n.address == contract_addr}
+            
+            if len(unique_children) != 1:
+                break
+            
+            next_node = next(iter(unique_children))
+
+            # 2. 回环检测：如果下一个节点已经在链里了，说明这一段到此为止
+            if next_node in visited_nodes:
+                break
+
+            # 3. 唯一父节点检测（入度安全性检查）
+            unique_parents = self._get_unique_parents(cfg, next_node)
+            if len(unique_parents) != 1 or next(iter(unique_parents)) != current_node:
+                break
+            
+            # 4. 只有通过了所有检查，才加入链
+            chain.append(next_node)
+            visited_nodes.add(next_node)
+            current_node = next_node
+
+        return chain
+
+    def _fold_linear_chains(self, cfg: CFG) -> Dict[str, List[str]]:
+        """
+        改进后的线性折叠：支持增量更新，不会覆盖已有的折叠记录。
+        """
+        # 注意：不再在这里执行 self.folded_node_map = {} 
+        # 初始化的工作应该在 construct_cfg 的最开始或者构造函数中完成
+        if not hasattr(self, 'folded_node_map') or self.folded_node_map is None:
+            self.folded_node_map = {n.id: [n.id] for n in cfg.nodes}
+
+        processed_nodes = set()
+        nodes_to_remove = set()
+        all_nodes = list(cfg.nodes)
+
+        for node in all_nodes:
+            if node in processed_nodes or node in nodes_to_remove:
+                continue
+            
+            # 识别线性链路
+            chain = self._identify_linear_chain(cfg, node)
+            first_node = chain[0]
+            
+            if len(chain) > 1:
+                other_nodes = chain[1:]
+                last_node = chain[-1]
+                
+                # --- A. 指令与对象继承 (保持线性顺序) ---
+                for m_node in other_nodes:
+                    # 1. 指令合并
+                    first_node.instructions.extend(m_node.instructions)
+                    
+                    # 2. 深度对象继承 (folded_blocks)
+                    if hasattr(m_node, 'folded_blocks'):
+                        ext_blocks = [b for b in m_node.folded_blocks if b != m_node]
+                        first_node.folded_blocks.extend(ext_blocks)
+
+                    # 3. 映射表更新：核心改动！
+                    # 如果 m_node 之前被钻石折叠吞过，pop 出它代表的所有原始 IDs
+                    # 如果它是原始块，pop 出来的就是 [m_node.id]
+                    m_original_ids = self.folded_node_map.pop(m_node.id, [m_node.id])
+                    self.folded_node_map[first_node.id].extend(m_original_ids)
+
+                # --- B. 物理信息合并 (Gas, Actions) ---
+                first_node.merge_fold_info(other_nodes)
+                
+                # --- C. 出边继承 ---
+                for edge in cfg.edges:
+                    if edge.source == last_node:
+                        edge.source = first_node
+                
+                nodes_to_remove.update(other_nodes)
+                processed_nodes.update(chain)
+            else:
+                # 单个节点如果没有记录，初始化它
+                if first_node.id not in self.folded_node_map:
+                    self.folded_node_map[first_node.id] = [first_node.id]
+                processed_nodes.add(first_node)
+
+        # 4. 物理清理
+        cfg.nodes = [n for n in cfg.nodes if n not in nodes_to_remove]
+        cfg.edges = [
+            e for e in cfg.edges 
+            if e.source not in nodes_to_remove and e.target not in nodes_to_remove
+        ]
+        
+        # 5. ID 去重
+        for rid in self.folded_node_map:
+            self.folded_node_map[rid] = list(dict.fromkeys(self.folded_node_map[rid]))
+            
+        return self.folded_node_map
+    
+
+    def _identify_diamond_pattern(self, cfg: CFG, start_node: FoldableBlockNode) -> Optional[Dict[str, Any]]:
+        """
+        识别分叉收束结构（三角形/钻石形）：
+        Layer 1 -> Layer 2 (mids) -> Layer 3 (end)
+        """
+        layer1 = start_node
+        contract_addr = layer1.address
+        
+        # 1. 获取 Layer 2：Layer 1 的直接子节点
+        layer2_nodes = list(self._get_unique_children(cfg, layer1))
+        
+        # 规则：Layer 1 必须有分叉 (>= 2)
+        if len(layer2_nodes) < 2:
+            return None
+            
+        # 规则：Layer 2 必须全部在当前合约内
+        if any(n.address != contract_addr for n in layer2_nodes):
+            return None
+
+        # 2. 收集所有可能的 Layer 3（孙子节点）
+        # grandchildren_map 记录：哪个 Layer 2 节点指向了哪些孙子
+        all_grandchildren = set()
+        for l2 in layer2_nodes:
+            children = self._get_unique_children(cfg, l2)
+            for child in children:
+                all_grandchildren.add(child)
+        
+        # 规则：Layer 3 必须全部在当前合约内
+        if any(n.address != contract_addr for n in all_grandchildren):
+            return None
+
+        # 3. 判定唯一的收束点 (Layer 3)
+        # 找出既是子节点又是孙子节点的重叠点 (如三角形中的 C)
+        overlap_nodes = set(layer2_nodes) & all_grandchildren
+        
+        target_end_node = None
+        
+        if len(overlap_nodes) > 0:
+            # 情况 A：存在重叠点（如 A-B-C, A-C）
+            if len(overlap_nodes) == 1:
+                print(overlap_nodes)
+                candidate = next(iter(overlap_nodes))
+                candidate_children = {n for n in self._get_unique_children(cfg, candidate) if n.address == contract_addr}
+                # 检查除了这个 candidate 以外，是否还有其他的孙子节点
+                remaining_grandchildren = all_grandchildren - {candidate} - candidate_children
+                # 如果没有其他孙子，则 candidate 是唯一收束点
+                if not remaining_grandchildren:
+                    target_end_node = candidate
+            else:
+                # 存在多个重叠点，逻辑太复杂，不处理
+                return None
+        else:
+            # 情况 B：不存在重叠点（标准的钻石形 A->B, A->C, B->D, C->D）
+            if len(all_grandchildren) == 1:
+                target_end_node = next(iter(all_grandchildren))
+            else:
+                return None
+
+        if not target_end_node:
+            return None
+
+        # 4. 确定中间层 mid_nodes (被吞掉的层)
+        # mid_nodes 是 Layer 2 中除了最终收束点以外的所有节点
+        mid_nodes = [n for n in layer2_nodes if n != target_end_node]
+
+        # 5. 验证中间节点的纯净度 (入度/出度)
+        for m in mid_nodes:
+            # 中间节点只能从 Layer 1 来，且只能去 target_end_node
+            m_parents = self._get_unique_parents(cfg, m)
+            if len(m_parents) != 1 or next(iter(m_parents)) != layer1:
+                return None
+            m_children = self._get_unique_children(cfg, m)
+            if len(m_children) != 1 or next(iter(m_children)) != target_end_node:
+                return None
+
+        # 6. 验证收束点的入度安全性
+        # target_end_node 的所有父节点必须都在 {layer1} + mid_nodes 集合中
+        l3_parents = self._get_unique_parents(cfg, target_end_node)
+        allowed_parents = {layer1} | set(mid_nodes)
+        if not l3_parents.issubset(allowed_parents):
+            return None
+
+        return {
+            "root": layer1,
+            "mids": mid_nodes,
+            "end": target_end_node
+        }
+
+    def _fold_dianmond_patterns(self, cfg: CFG) -> Dict[str, List[str]]:
+        """
+        执行连续/嵌套的分歧收束折叠。
+        通过 while 循环实现固定点迭代（Fixed-point Iteration），直到没有更多可折叠的钻石。
+        """
+        overall_changed = True
+        
+        while overall_changed:
+            overall_changed = False
+            nodes_to_remove = set()
+            # 每一轮开始时，基于当前的 cfg.nodes 进行扫描
+            # 注意：不能在遍历过程中直接删除 cfg.nodes，否则会引起迭代器错误
+            current_scan_nodes = [n for n in cfg.nodes]
+
+            for node in current_scan_nodes:
+                # 如果该节点已经在这一轮被标记为删除了，跳过
+                if node in nodes_to_remove:
+                    continue
+
+                # 识别模式 (A-B, A-C-B 或 A-B-D, A-C-D)
+                pattern = self._identify_diamond_pattern(cfg, node)
+
+                if pattern:
+                    root, mids, end = pattern["root"], pattern["mids"], pattern["end"]
+                    
+                    # 安全检查：确保 mids 和 end 还没被本轮其他折叠吞掉
+                    if end in nodes_to_remove or any(m in nodes_to_remove for m in mids):
+                        continue
+
+                    # --- 1. 指令线性化打平与边界标记 ---
+                    for i, m_node in enumerate(mids):
+                        root.instructions.append({
+                            "pc": "---", 
+                            "opcode": f"BRANCH_SEGMENT_{i+1}", 
+                            "is_boundary": True,
+                            "from_id": m_node.id
+                        })
+                        root.instructions.extend(m_node.instructions)
+                    
+                    root.instructions.append({
+                        "pc": "---", 
+                        "opcode": "MERGE_POINT_SEGMENT", 
+                        "is_boundary": True,
+                        "from_id": end.id
+                    })
+                    root.instructions.extend(end.instructions)
+
+                    # --- 2. 深度对象继承 (folded_blocks) ---
+                    to_absorb = mids + [end]
+                    for node_to_fold in to_absorb:
+                        if hasattr(node_to_fold, 'folded_blocks'):
+                            # 继承该节点之前所有折叠过的原始块对象
+                            ext_blocks = [b for b in node_to_fold.folded_blocks if b != node_to_fold]
+                            root.folded_blocks.extend(ext_blocks)
+                        
+                        # --- 3. 映射表(folded_node_map) 扁平化更新 ---
+                        # pop 掉被吞掉节点的 key，将其所有 original_ids 转移到 root.id 下
+                        original_ids = self.folded_node_map.pop(node_to_fold.id, [node_to_fold.id])
+                        self.folded_node_map[root.id].extend(original_ids)
+
+                    # --- 4. 物理合并 (Gas, Actions) ---
+                    root.merge_fold_info(to_absorb)
+
+                    # --- 5. 出边继承 (这是连续折叠的关键) ---
+                    # 让 root 继承收束点(end)的所有出边
+                    # 这样在下一轮 while 中，root 可能会触发新的 identify_diamond
+                    for edge in cfg.edges:
+                        if edge.source == end:
+                            edge.source = root
+
+                    # 标记删除并触发下一轮迭代
+                    nodes_to_remove.update(to_absorb)
+                    overall_changed = True
+
+            # --- 6. 物理清理 (每轮迭代结束后执行) ---
+            if nodes_to_remove:
+                cfg.nodes = [n for n in cfg.nodes if n not in nodes_to_remove]
+                # 移除源或目标在删除列表中的边（内部边）
+                cfg.edges = [
+                    e for e in cfg.edges 
+                    if e.source not in nodes_to_remove and e.target not in nodes_to_remove
+                ]
+        
+        # 最终去重 root 中的原始 ID 列表（以防万一）
+        for rid in self.folded_node_map:
+            self.folded_node_map[rid] = list(dict.fromkeys(self.folded_node_map[rid]))
+
+        return self.folded_node_map
+    
+
+    def _identify_feedback_pattern(self, cfg: CFG, start_node: FoldableBlockNode) -> Optional[Dict[str, Any]]:
+        """
+        识别自环反馈结构：A -> B -> A, 且 A 随后去往 Others
+        """
+        layer1 = start_node
+        contract_addr = layer1.address
+        
+        # 1. 获取 Layer 1 的所有子节点
+        children = list(self._get_unique_children(cfg, layer1))
+        
+        # 寻找潜在的自环节点 B
+        # B 必须满足：在当前合约内、不是 A 自己、且能回到 A
+        feedback_candidates = []
+        other_destinations = []
+        
+        for child in children:
+            if child == layer1: continue
+            
+            # 检查 child 是否能回到 A
+            child_children = self._get_unique_children(cfg, child)
+            if layer1 in child_children:
+                feedback_candidates.append(child)
+            else:
+                other_destinations.append(child)
+        
+        # 规则：必须有且仅有一个自环节点 B
+        if len(feedback_candidates) != 1:
+            return None
+        
+        b_node = feedback_candidates[0]
+        
+        # 2. 验证 B 的纯净度
+        if b_node.address != contract_addr:
+            return None
+        
+        # B 的唯一父节点必须是 A
+        b_parents = self._get_unique_parents(cfg, b_node)
+        if len(b_parents) != 1 or list(b_parents)[0] != layer1:
+            return None
+            
+        # B 的唯一子节点必须是 A
+        b_children = self._get_unique_children(cfg, b_node)
+        if len(b_children) != 1 or list(b_children)[0] != layer1:
+            return None
+
+        # 3. 数量平衡校验：A -> B 的边数 == A -> Others 的边数
+        # 统计 A 的出边中，指向 B 的数量和指向其他的数量
+        edges_to_b = [e for e in cfg.edges if e.source == layer1 and e.target == b_node]
+        edges_to_others = [e for e in cfg.edges if e.source == layer1 and e.target != b_node]
+        
+        if len(edges_to_b) != len(edges_to_others):
+            return None
+            
+        if not other_destinations:
+            return None
+
+        return {
+            "root": layer1,
+            "feedback_node": b_node
+        }
+    
+
+    def _fold_feedback_patterns(self, cfg: CFG) -> Dict[str, List[str]]:
+        """
+        执行自环反馈折叠：将 B 合并进 A，并清理 A-B 之间的循环边
+        """
+        overall_changed = True
+        
+        while overall_changed:
+            overall_changed = False
+            nodes_to_remove = set()
+            current_scan_nodes = [n for n in cfg.nodes]
+
+            for node in current_scan_nodes:
+                if node in nodes_to_remove:
+                    continue
+
+                pattern = self._identify_feedback_pattern(cfg, node)
+
+                if pattern:
+                    root = pattern["root"]
+                    b_node = pattern["feedback_node"]
+                    
+                    if b_node in nodes_to_remove:
+                        continue
+
+                    # --- 1. 指令合并 (带反馈标记) ---
+                    root.instructions.append({
+                        "pc": "---", 
+                        "opcode": "FEEDBACK_LOOP_START", 
+                        "is_boundary": True,
+                        "from_id": b_node.id
+                    })
+                    root.instructions.extend(b_node.instructions)
+                    root.instructions.append({
+                        "pc": "---", 
+                        "opcode": "FEEDBACK_LOOP_END", 
+                        "is_boundary": True
+                    })
+
+                    # --- 2. 深度对象继承 (folded_blocks) ---
+                    if hasattr(b_node, 'folded_blocks'):
+                        ext_blocks = [b for b in b_node.folded_blocks if b != b_node]
+                        root.folded_blocks.extend(ext_blocks)
+                    
+                    # --- 3. 映射表更新 ---
+                    original_ids = self.folded_node_map.pop(b_node.id, [b_node.id])
+                    self.folded_node_map[root.id].extend(original_ids)
+
+                    # --- 4. 物理合并 ---
+                    root.merge_fold_info([b_node])
+
+                    # --- 5. 边清理 ---
+                    # 这种结构中，root 不需要继承 b_node 的出边（因为 b_node 回到了 root）
+                    # 我们只需要删除所有涉及 b_node 的边即可
+                    # root 原本去往 Others 的边保持不变
+                    nodes_to_remove.add(b_node)
+                    overall_changed = True
+
+            # --- 6. 物理清理 ---
+            if nodes_to_remove:
+                cfg.nodes = [n for n in cfg.nodes if n not in nodes_to_remove]
+                # 移除所有指向或来自 b_node 的边
+                cfg.edges = [
+                    e for e in cfg.edges 
+                    if e.source not in nodes_to_remove and e.target not in nodes_to_remove
+                ]
+        
+        # ID 去重
+        for rid in self.folded_node_map:
+            self.folded_node_map[rid] = list(dict.fromkeys(self.folded_node_map[rid]))
+
+        return self.folded_node_map
+    
 
     # ========== CFG构建主逻辑 ==========
     def construct_cfg(self, trace: Dict[str, Any], slot_map: Dict[str, str], erc20_token_map: Dict[str, str]) -> Tuple[CFG, List[Dict[str, Any]], Dict[str, List[str]], List[Dict[str, Any]], CFG]:
@@ -457,8 +798,11 @@ class CFGConstructor:
         original_cfg = copy.deepcopy(cfg)
         
         # 2. 对原有的 cfg 对象进行折叠（这会修改 cfg 内部的 nodes 和 edges，使其变成折叠版）
+        
         folded_node_map = self._fold_linear_chains(cfg)
-
+        folded_node_map = self._fold_dianmond_patterns(cfg)
+        folded_node_map = self._fold_feedback_patterns(cfg)
+        folded_node_map = self._fold_linear_chains(cfg)
         return cfg, original_cfg, all_changes, folded_node_map, self.table
 
     # 导出blockid和内部信息映射
@@ -471,8 +815,6 @@ class CFGConstructor:
                 "address": node.address,
                 "blocks_number": node.fold_info["blocks_number"],
                 "folded_blocks": [n.id for n in node.folded_blocks], # 记录具体包含的原始ID
-                "start_pc": node.start_pc,
-                "end_pc": node.fold_info["end_pc"],
                 "gas": node.fold_info["total_gas"],
                 "actions": node.fold_info.get("actions", node.actions),
                 "instructions": [str(instr) for instr in node.instructions]
