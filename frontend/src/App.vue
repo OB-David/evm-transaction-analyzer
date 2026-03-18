@@ -6,24 +6,25 @@ import CfgPanel from './components/CfgPanel.vue'
 import AfgPanel from './components/AfgPanel.vue'
 import SequencePanel from './components/SequencePanel.vue'
 import BlockPanel from './components/BlockPanel.vue'
-import { analyzeTransaction, fetchEdgeStepMap, type EdgeStepMap } from './api/analyze'
+import { analyzeTransaction, fetchEdgeStepMap, type CfgMode, type EdgeStepMap } from './api/analyze'
 
 const currentTxHash = ref<string | null>(null)
 const currentBlockNumber = ref<number | null>(null)
 const highlightedBlockId = ref<number[] | null>(null)
 const inputPanelRef = ref<InstanceType<typeof InputPanel> | null>(null)
 const isAnalyzing = ref(false)
+const currentCfgMode = ref<CfgMode>('semantic')
 
 // Sequence diagram state
 const sequenceStepRange = ref<{ entryStep: number; exitStep: number } | null>(null)
 const edgeStepMap = ref<EdgeStepMap | null>(null)
 
 // Load edge step map when txHash changes
-watch(currentTxHash, async (newHash) => {
+watch([currentTxHash, currentCfgMode], async ([newHash, cfgMode]) => {
   edgeStepMap.value = null
   if (newHash) {
     try {
-      edgeStepMap.value = await fetchEdgeStepMap(newHash)
+      edgeStepMap.value = await fetchEdgeStepMap(newHash, cfgMode)
     } catch (e) {
       console.warn('Failed to load edge step map:', e)
     }
@@ -107,6 +108,10 @@ function handleSequenceSelect(stepRange: { entryStep: number; exitStep: number }
   sequenceStepRange.value = stepRange
   console.log('Sequence diagram selection:', stepRange)
 }
+
+function handleCfgModeChange(mode: CfgMode) {
+  currentCfgMode.value = mode
+}
 </script>
 
 <template>
@@ -151,7 +156,9 @@ function handleSequenceSelect(stepRange: { entryStep: number; exitStep: number }
         :filtered-edge-ids="filteredEdgeIds"
         :is-analyzing="isAnalyzing"
         :edge-step-map="edgeStepMap"
+        :preferred-mode="currentCfgMode"
         @cfg-navigate="handleCfgNavigate"
+        @mode-change="handleCfgModeChange"
       />
     </div>
   </div>

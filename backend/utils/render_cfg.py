@@ -112,9 +112,9 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
             "digraph CFG {",
             f"  rankdir={rankdir};",
             # 全局设置：spline曲线边、compound支持跨cluster边、newrank改善排列
-            '  graph [nodesep=0.8, ranksep=1.5, charset="utf-8", splines=spline, compound=true, newrank=true, overlap=false];',
+            '  graph [nodesep=0.62, ranksep=1.05, pad=0.18, charset="utf-8", splines=spline, compound=true, newrank=true, overlap=false];',
             # 节点设置：fixedsize确保空label节点有固定可见尺寸
-            '  node [fontname="Arial", fontsize=128, shape=rect, style=filled, fixedsize=true, width=1.2, height=0.8];',
+            '  node [fontname="Arial", fontsize=128, shape=rect, style=filled, fixedsize=true, width=2.55, height=1.62];',
             # 边设置：简化箭头
             '  edge [fontname="Arial", fontsize=100, arrowsize=1, penwidth=15];',
         ]
@@ -153,7 +153,7 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
         dot_lines.append(f'    style=filled;')
         dot_lines.append(f'    color="{cluster_color[:7]}80";')
         dot_lines.append(f'    fillcolor="{bg_color}";')
-        dot_lines.append(f'    margin=30;')
+        dot_lines.append(f'    margin=26;')
 
         for idx, node in nodes_in_contract:
             node_id = f"node_{node.id}"
@@ -200,7 +200,7 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
             edge_dedup[pair_key] = edge_color
 
     for (src_id, tgt_id), edge_color in edge_dedup.items():
-        dot_lines.append(f'  {src_id} -> {tgt_id} [color="{edge_color}", style="solid", minlen=2]')
+        dot_lines.append(f'  {src_id} -> {tgt_id} [color="{edge_color}", style="solid", minlen=1]')
     dot_lines.append("}")
 
     # 写入DOT文件

@@ -235,11 +235,19 @@ export interface SemanticCfgData {
   raw_to_semantic: Record<string, string>
 }
 
+export type CfgMode = 'semantic' | 'folded'
+
 export interface CfgViewData {
-  mode: 'semantic' | 'folded'
+  mode: CfgMode
   svgContent: string
   semanticData: SemanticCfgData | null
   blockInformation: BlockInformationMap
+}
+
+export interface CfgViewBundle {
+  initialMode: CfgMode
+  semantic: CfgViewData | null
+  folded: CfgViewData
 }
 
 export interface LegendEntry {
@@ -262,7 +270,21 @@ export async function fetchBlockInformation(txHash: string): Promise<BlockInform
   return fetchJsonFile<BlockInformationMap>('folded_blocks_information.json', txHash)
 }
 
-export async function fetchCfgViewData(txHash: string): Promise<CfgViewData> {
+export async function fetchCfgViewData(txHash: string, preferredMode: CfgMode = 'semantic'): Promise<CfgViewBundle> {
+  const [foldedSvgContent, foldedBlockInformation] = await Promise.all([
+    fetchCfgSvg(txHash),
+    fetchBlockInformation(txHash).catch(() => ({} as BlockInformationMap)),
+  ])
+
+  const folded: CfgViewData = {
+    mode: 'folded',
+    svgContent: foldedSvgContent,
+    semanticData: null,
+    blockInformation: foldedBlockInformation,
+  }
+
+  let semantic: CfgViewData | null = null
+
   try {
     const [semanticSvg, semanticData] = await Promise.all([
       fetchOptionalTextFile('semantic_cfg.svg', txHash),
@@ -277,7 +299,7 @@ export async function fetchCfgViewData(txHash: string): Promise<CfgViewData> {
         })
       })
 
-      return {
+      semantic = {
         mode: 'semantic',
         svgContent: semanticSvg,
         semanticData,
@@ -288,16 +310,10 @@ export async function fetchCfgViewData(txHash: string): Promise<CfgViewData> {
     console.warn('Semantic CFG unavailable, falling back to folded CFG.', e)
   }
 
-  const [svgContent, blockInformation] = await Promise.all([
-    fetchCfgSvg(txHash),
-    fetchBlockInformation(txHash).catch(() => ({} as BlockInformationMap)),
-  ])
-
   return {
-    mode: 'folded',
-    svgContent,
-    semanticData: null,
-    blockInformation,
+    initialMode: preferredMode === 'semantic' && semantic ? 'semantic' : 'folded',
+    semantic,
+    folded,
   }
 }
 
@@ -334,15 +350,18 @@ export async function fetchSequenceCalldataMapping(txHash: string): Promise<Sequ
   return fetchJsonFile<SequenceCalldataMapping>('trace_sequence_calldata_mapping.json', txHash)
 }
 
-export async function fetchEdgeStepMap(txHash: string): Promise<EdgeStepMap> {
-  try {
-    const semanticMap = await fetchOptionalJsonFile<EdgeStepMap>('semantic_edge_id-step.json', txHash)
-    if (semanticMap) {
-      return semanticMap
+export async function fetchEdgeStepMap(txHash: string, preferredMode: CfgMode = 'semantic'): Promise<EdgeStepMap> {
+  if (preferredMode === 'semantic') {
+    try {
+      const semanticMap = await fetchOptionalJsonFile<EdgeStepMap>('semantic_edge_id-step.json', txHash)
+      if (semanticMap) {
+        return semanticMap
+      }
+    } catch (e) {
+      console.warn('Semantic edge-step map unavailable, falling back to folded edge map.', e)
     }
-  } catch (e) {
-    console.warn('Semantic edge-step map unavailable, falling back to folded edge map.', e)
   }
+
   return fetchJsonFile<EdgeStepMap>('edge_id-step.json', txHash)
 }
 

@@ -8,6 +8,8 @@ import {
   type BlockAction,
   type BlockInformation,
   type BlockInformationMap,
+  type CfgMode,
+  type CfgViewBundle,
   type EdgeStepMap,
   type SemanticCfgData,
   type SemanticNodeInformation,
@@ -19,17 +21,20 @@ const props = defineProps<{
   filteredEdgeIds: string[] | null
   isAnalyzing: boolean
   edgeStepMap: EdgeStepMap | null
+  preferredMode: CfgMode
 }>()
 
 const emit = defineEmits<{
   'cfg-navigate': [blockIds: number[] | null]
+  'mode-change': [mode: CfgMode]
 }>()
 
 type CfgEdgeType = 'NORMAL' | 'JUMP' | 'CALL' | 'DELEGATECALL' | 'TERMINATE'
 
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
-const cfgMode = ref<'semantic' | 'folded'>('folded')
+const cfgMode = ref<CfgMode>('folded')
+const cfgViews = ref<CfgViewBundle | null>(null)
 const semanticData = ref<SemanticCfgData | null>(null)
 const blockInformation = ref<BlockInformationMap>({})
 const selectedNodeName = ref<string | null>(null)
@@ -52,7 +57,9 @@ let resizeObserver: ResizeObserver | null = null
 let edgeTooltipHideTimer: number | null = null
 
 const selectedSemanticBlocks = computed(() => selectedSemanticInfo.value?.member_blocks ?? [])
-const cfgModeBadge = computed(() => cfgMode.value === 'semantic' ? 'AI Semantic' : 'Folded Fallback')
+const hasSemanticView = computed(() => Boolean(cfgViews.value?.semantic))
+const cfgModeBadge = computed(() => cfgMode.value === 'semantic' ? 'Semantic CFG' : 'Transaction CFG')
+const toggleButtonLabel = computed(() => cfgMode.value === 'semantic' ? 'Transaction CFG' : 'Semantic CFG')
 const hasSelection = computed(() => Boolean(selectedSemanticInfo.value || selectedBlockInfo.value))
 const selectedSemanticTitle = computed(() => {
   if (!selectedSemanticInfo.value) return ''
@@ -65,6 +72,13 @@ watch(() => props.txHash, (newHash) => {
     loadCfgData(newHash)
   } else {
     status.value = 'idle'
+    cfgViews.value = null
+    semanticData.value = null
+    blockInformation.value = {}
+    clearFilterState()
+    if (graphContainer.value) {
+      graphContainer.value.innerHTML = ''
+    }
   }
 }, { immediate: true })
 
@@ -83,6 +97,9 @@ watch(() => props.highlightedBlockId, (newBlockIds) => {
 
 watch(() => props.edgeStepMap, () => {
   buildEdgeIdToTitleMap()
+  if (status.value === 'success') {
+    syncFilterStateWithProps()
+  }
 })
 
 watch(graphContainer, (container, oldContainer) => {
@@ -113,22 +130,29 @@ watch(() => props.filteredEdgeIds, (edgeIds) => {
   }
 })
 
+watch(() => props.preferredMode, (mode) => {
+  if (status.value !== 'success' || mode === cfgMode.value) return
+  if (!getCfgView(mode)) return
+  void switchCfgMode(mode)
+})
+
 async function loadCfgData(txHash: string) {
   status.value = 'loading'
   errorMsg.value = ''
   activeEdgeType.value = null
+  cfgViews.value = null
   semanticData.value = null
   blockInformation.value = {}
+  clearFilterState()
+  resetSelection()
 
   try {
-    const [cfgView, legend] = await Promise.all([
-      fetchCfgViewData(txHash),
+    const [cfgViewBundle, legend] = await Promise.all([
+      fetchCfgViewData(txHash, props.preferredMode),
       fetchLegendData(txHash).catch(() => null),
     ])
 
-    cfgMode.value = cfgView.mode
-    semanticData.value = cfgView.semanticData
-    blockInformation.value = cfgView.blockInformation
+    cfgViews.value = cfgViewBundle
 
     addressNameMap.value.clear()
     if (legend) {
@@ -138,12 +162,36 @@ async function loadCfgData(txHash: string) {
     }
 
     status.value = 'success'
-    await nextTick()
-    renderSvg(cfgView.svgContent)
+    await switchCfgMode(cfgViewBundle.initialMode)
   } catch (e: any) {
     status.value = 'error'
     errorMsg.value = e.message || 'Failed to load CFG data'
   }
+}
+
+function getCfgView(mode: CfgMode) {
+  if (!cfgViews.value) return null
+  return mode === 'semantic' ? cfgViews.value.semantic : cfgViews.value.folded
+}
+
+async function switchCfgMode(mode: CfgMode) {
+  const nextView = getCfgView(mode)
+  if (!nextView) return
+
+  cfgMode.value = mode
+  semanticData.value = nextView.semanticData
+  blockInformation.value = nextView.blockInformation
+  resetSelection()
+  emit('mode-change', mode)
+
+  await nextTick()
+  renderSvg(nextView.svgContent)
+}
+
+function toggleCfgMode() {
+  const nextMode: CfgMode = cfgMode.value === 'semantic' ? 'folded' : 'semantic'
+  if (!getCfgView(nextMode)) return
+  void switchCfgMode(nextMode)
 }
 
 function renderSvg(svgContent: string) {
@@ -155,9 +203,13 @@ function renderSvg(svgContent: string) {
   const svg = container.querySelector('svg')
   if (!svg) return
 
+  if (cfgMode.value !== 'folded') {
+    svg.removeAttribute('viewBox')
+    svg.removeAttribute('preserveAspectRatio')
+  }
+
   svg.removeAttribute('width')
   svg.removeAttribute('height')
-  svg.removeAttribute('viewBox')
   svg.style.width = '100%'
   svg.style.height = '100%'
 
@@ -170,6 +222,11 @@ function renderSvg(svgContent: string) {
   svg.insertBefore(zoomG, origG)
   zoomG.appendChild(origG)
 
+  if (cfgMode.value === 'folded') {
+    setFoldedViewBox(svg as SVGSVGElement, origG as SVGGElement)
+    normalizeFoldedTextScale(svg as SVGSVGElement)
+  }
+
   zoomBehavior = zoom<SVGSVGElement, unknown>()
     .scaleExtent([0.005, 10])
     .on('zoom', (event: any) => {
@@ -180,8 +237,57 @@ function renderSvg(svgContent: string) {
 
   attachInteractivity()
   buildEdgeIdToTitleMap()
-  applyFilter()
-  nextTick(() => fitGraphToViewport())
+  syncFilterStateWithProps()
+  if (cfgMode.value === 'folded') {
+    nextTick(() => resetZoom())
+  } else {
+    nextTick(() => fitGraphToViewport())
+  }
+}
+
+function setFoldedViewBox(svg: SVGSVGElement, graphContent: SVGGElement) {
+  const bounds = getGraphContentBounds(graphContent)
+  if (bounds.width <= 0 || bounds.height <= 0) return
+
+  const padding = 20
+  svg.setAttribute(
+    'viewBox',
+    `${bounds.x - padding} ${bounds.y - padding} ${bounds.width + padding * 2} ${bounds.height + padding * 2}`,
+  )
+  svg.setAttribute('preserveAspectRatio', 'none')
+}
+
+function normalizeFoldedTextScale(svg: SVGSVGElement) {
+  const viewBox = svg.viewBox.baseVal
+  const viewportWidth = svg.clientWidth
+  const viewportHeight = svg.clientHeight
+  if (viewBox.width <= 0 || viewBox.height <= 0 || viewportWidth <= 0 || viewportHeight <= 0) return
+
+  const scaleX = viewportWidth / viewBox.width
+  const scaleY = viewportHeight / viewBox.height
+  if (scaleX <= 0 || scaleY <= 0) return
+
+  const correctionX = scaleY / scaleX
+  svg.querySelectorAll<SVGTextElement>('text').forEach((textEl) => {
+    const originalTransform = textEl.dataset.originalTransform ?? textEl.getAttribute('transform') ?? ''
+    textEl.dataset.originalTransform = originalTransform
+
+    if (Math.abs(correctionX - 1) < 0.001) {
+      if (originalTransform) {
+        textEl.setAttribute('transform', originalTransform)
+      } else {
+        textEl.removeAttribute('transform')
+      }
+      return
+    }
+
+    const x = Number.parseFloat(textEl.getAttribute('x') || '')
+    const y = Number.parseFloat(textEl.getAttribute('y') || '')
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return
+
+    const compensation = `translate(${x} ${y}) scale(${correctionX} 1) translate(${-x} ${-y})`
+    textEl.setAttribute('transform', originalTransform ? `${originalTransform} ${compensation}` : compensation)
+  })
 }
 
 function attachInteractivity() {
@@ -328,6 +434,22 @@ function buildEdgeIdToTitleMap() {
   }
 }
 
+function syncFilterStateWithProps() {
+  if (props.filteredEdgeIds && props.filteredEdgeIds.length > 0) {
+    applyEdgeFilter(props.filteredEdgeIds)
+    return
+  }
+
+  if (props.highlightedBlockId && props.highlightedBlockId.length > 0) {
+    calculateVisibleElements(props.highlightedBlockId)
+    applyFilter()
+    return
+  }
+
+  clearFilterState()
+  applyFilter()
+}
+
 function handleNodeClick(nodeName: string) {
   if (!nodeName) return
 
@@ -392,6 +514,23 @@ function fitGraphToViewport(options: { animate?: boolean } = {}) {
   const zoomLayer = svg?.querySelector('#zoom-layer') as SVGGElement | null
   const graphContent = zoomLayer?.firstElementChild as SVGGElement | null
   if (!svg || !zoomLayer || !graphContent) return
+
+  if (cfgMode.value === 'folded') {
+    setFoldedViewBox(svg, graphContent)
+    normalizeFoldedTextScale(svg)
+    const svgSelection = select(svg)
+
+    if (options.animate) {
+      svgSelection
+        .transition()
+        .duration(240)
+        .call(zoomBehavior.transform, zoomIdentity)
+      return
+    }
+
+    svgSelection.call(zoomBehavior.transform, zoomIdentity)
+    return
+  }
 
   const bounds = getGraphContentBounds(graphContent)
   const containerWidth = graphContainer.value.clientWidth
@@ -486,6 +625,12 @@ function applyEdgeFilter(edgeIds: string[]) {
         matchedEdgeTitles.add(edgeTitle)
       }
     })
+
+    if (matchedEdgeTitles.size === 0) {
+      clearFilterState()
+      applyFilter()
+      return
+    }
   }
 
   visibleNodes.value = matchedNodes
@@ -700,6 +845,13 @@ onBeforeUnmount(() => {
     <span class="panel-label">
       (e) Control Flow Graph
       <span class="mode-badge" :class="cfgMode">{{ cfgModeBadge }}</span>
+      <button
+        v-if="hasSemanticView"
+        class="cfg-mode-toggle"
+        @click="toggleCfgMode"
+      >
+        {{ toggleButtonLabel }}
+      </button>
       <span
         class="edge-info-icon"
         :class="{ active: showEdgeTypes || !!activeEdgeType }"
@@ -754,7 +906,11 @@ onBeforeUnmount(() => {
 
     <div v-else-if="status === 'success'" class="cfg-container">
       <div class="graph-stage">
-        <div ref="graphContainer" class="graph-viewport"></div>
+        <div
+          ref="graphContainer"
+          class="graph-viewport"
+          :class="{ 'folded-viewport': cfgMode === 'folded' }"
+        ></div>
         <button
           v-if="visibleNodes.size > 0 || activeEdgeType"
           class="reset-button"
@@ -938,6 +1094,23 @@ onBeforeUnmount(() => {
   color: #065f46;
 }
 
+.cfg-mode-toggle {
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  background: rgba(255, 255, 255, 0.94);
+  color: #334155;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 9px;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.cfg-mode-toggle:hover {
+  background: #f8fafc;
+  border-color: rgba(100, 116, 139, 0.55);
+}
+
 .cfg-container {
   position: relative;
   width: 100%;
@@ -961,6 +1134,11 @@ onBeforeUnmount(() => {
   overflow: hidden;
   min-width: 0;
   min-height: 0;
+}
+
+.graph-viewport.folded-viewport {
+  box-sizing: border-box;
+  padding-top: 34px;
 }
 
 .graph-viewport :deep(svg) {
