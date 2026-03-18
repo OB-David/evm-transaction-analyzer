@@ -4,7 +4,7 @@ import TitleBar from './components/TitleBar.vue'
 import InputPanel from './components/InputPanel.vue'
 import CfgPanel from './components/CfgPanel.vue'
 import AfgPanel from './components/AfgPanel.vue'
-import FlameGraphPanel from './components/FlameGraphPanel.vue'
+import SequencePanel from './components/SequencePanel.vue'
 import BlockPanel from './components/BlockPanel.vue'
 import { analyzeTransaction, fetchEdgeStepMap, type EdgeStepMap } from './api/analyze'
 
@@ -14,8 +14,8 @@ const highlightedBlockId = ref<number[] | null>(null)
 const inputPanelRef = ref<InstanceType<typeof InputPanel> | null>(null)
 const isAnalyzing = ref(false)
 
-// Flame graph state
-const flameStepRange = ref<{ entryStep: number; exitStep: number } | null>(null)
+// Sequence diagram state
+const sequenceStepRange = ref<{ entryStep: number; exitStep: number } | null>(null)
 const edgeStepMap = ref<EdgeStepMap | null>(null)
 
 // Load edge step map when txHash changes
@@ -30,10 +30,10 @@ watch(currentTxHash, async (newHash) => {
   }
 })
 
-// Compute filtered edge IDs from flame graph step range
+// Compute filtered edge IDs from sequence step range
 const filteredEdgeIds = computed<string[] | null>(() => {
-  if (!flameStepRange.value || !edgeStepMap.value) return null
-  const { entryStep, exitStep } = flameStepRange.value
+  if (!sequenceStepRange.value || !edgeStepMap.value) return null
+  const { entryStep, exitStep } = sequenceStepRange.value
   const matched = Object.values(edgeStepMap.value)
     .filter(e => e.edge_step >= entryStep && e.edge_step <= exitStep)
     .map(e => e.edge_id)
@@ -95,17 +95,17 @@ async function handleTransactionSelected(txHash: string) {
 }
 
 function handleCfgNavigate(blockIds: number[] | null) {
-  // Clear flame graph selection when AFG navigates
-  flameStepRange.value = null
+  // Clear sequence selection when AFG navigates
+  sequenceStepRange.value = null
   highlightedBlockId.value = blockIds
   console.log('Navigate to CFG blocks:', blockIds)
 }
 
-function handleFlameSelect(stepRange: { entryStep: number; exitStep: number } | null) {
-  // Clear AFG highlight when flame graph selects
+function handleSequenceSelect(stepRange: { entryStep: number; exitStep: number } | null) {
+  // Clear AFG highlight when sequence diagram selects
   highlightedBlockId.value = null
-  flameStepRange.value = stepRange
-  console.log('Flame graph selection:', stepRange)
+  sequenceStepRange.value = stepRange
+  console.log('Sequence diagram selection:', stepRange)
 }
 </script>
 
@@ -136,11 +136,12 @@ function handleFlameSelect(stepRange: { entryStep: number; exitStep: number } | 
           :is-analyzing="isAnalyzing"
           @cfg-navigate="handleCfgNavigate"
         />
-        <FlameGraphPanel
-          class="flame-panel"
+        <SequencePanel
+          class="sequence-panel"
           :tx-hash="currentTxHash"
           :is-analyzing="isAnalyzing"
-          @flame-select="handleFlameSelect"
+          :selected-step-range="sequenceStepRange"
+          @sequence-select="handleSequenceSelect"
         />
       </div>
       <CfgPanel
@@ -215,7 +216,7 @@ function handleFlameSelect(stepRange: { entryStep: number; exitStep: number } | 
   overflow: hidden;
 }
 
-.flame-panel {
+.sequence-panel {
   flex: 1;
   min-width: 0;
   min-height: 0;

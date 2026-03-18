@@ -8,7 +8,7 @@ from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
 from utils.render_cfg import render_transaction, render_semantic_transaction
 from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_cfg, edge_link_to_json, detect_arbitrage, compute_address_balances
-from utils.sequence_diagram import build_refined_hierarchical_trace, tree_to_puml
+from utils.sequence_diagram import build_refined_hierarchical_trace, render_puml_to_svg, tree_to_puml
 from utils.semantic_cfg import generate_and_export_semantic_cfg
 
 
@@ -316,6 +316,7 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
         addr_color_map=addr_color_map
     )
     print(f"时序图PUML已保存到: {puml_path}")
+    render_puml_to_svg(puml_path)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ from utils.evm_information import TraceFormatter
 from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
 from utils.extract_token_changes import pair_transactions, afg_to_cfg, edge_link_to_json, detect_arbitrage, compute_address_balances
-from utils.cfg_abstract import build_refined_hierarchical_trace
+from utils.sequence_diagram import build_refined_hierarchical_trace
 from utils.semantic_cfg import generate_and_export_semantic_cfg
 from main import create_result_directory, save_graphs
 
@@ -117,7 +117,7 @@ def run(tx_hash: str):
     with open(addr_balances_path, "w", encoding="utf-8") as f:
         json.dump(addr_balances, f, indent=2, ensure_ascii=False)
 
-    # Build hierarchical trace for flame graph
+    # Build hierarchical trace for sequence diagram generation
     tree_data = build_refined_hierarchical_trace(standardized_trace["steps"])
 
     # Render graphs

@@ -310,8 +310,28 @@ export interface EdgeStepEntry {
 
 export type EdgeStepMap = Record<string, EdgeStepEntry>
 
-export async function fetchFlameGraphSvg(txHash: string): Promise<string> {
-  return fetchTextFile('trace_flame_graph.svg', txHash)
+export interface SequenceCallEntry {
+  call_id: number
+  entry_step: number
+  exit_step: number
+  entry_op: string
+  exit_op: string
+  from_name: string
+  to_name: string
+  calldata: string[]
+}
+
+export interface SequenceCalldataMapping {
+  total_calls: number
+  calls: SequenceCallEntry[]
+}
+
+export async function fetchSequenceSvg(txHash: string): Promise<string> {
+  return fetchTextFile('trace_sequence.svg', txHash)
+}
+
+export async function fetchSequenceCalldataMapping(txHash: string): Promise<SequenceCalldataMapping> {
+  return fetchJsonFile<SequenceCalldataMapping>('trace_sequence_calldata_mapping.json', txHash)
 }
 
 export async function fetchEdgeStepMap(txHash: string): Promise<EdgeStepMap> {
