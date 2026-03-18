@@ -37,6 +37,40 @@ export interface BlockGasData {
 
 const API_BASE = 'http://localhost:8000'
 
+async function fetchTextFile(filename: string, txHash: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`)
+  if (!res.ok) {
+    throw new Error(`Failed to fetch ${filename}: ${res.status}`)
+  }
+  return res.text()
+}
+
+async function fetchJsonFile<T>(filename: string, txHash: string): Promise<T> {
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`)
+  if (!res.ok) {
+    throw new Error(`Failed to fetch ${filename}: ${res.status}`)
+  }
+  return res.json()
+}
+
+async function fetchOptionalTextFile(filename: string, txHash: string): Promise<string | null> {
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`)
+  if (res.status === 404) return null
+  if (!res.ok) {
+    throw new Error(`Failed to fetch ${filename}: ${res.status}`)
+  }
+  return res.text()
+}
+
+async function fetchOptionalJsonFile<T>(filename: string, txHash: string): Promise<T | null> {
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`)
+  if (res.status === 404) return null
+  if (!res.ok) {
+    throw new Error(`Failed to fetch ${filename}: ${res.status}`)
+  }
+  return res.json()
+}
+
 export async function analyzeTransaction(txHash: string): Promise<AnalyzeResult> {
   const res = await fetch(`${API_BASE}/api/analyze`, {
     method: 'POST',
@@ -52,33 +86,19 @@ export async function analyzeTransaction(txHash: string): Promise<AnalyzeResult>
 }
 
 export async function fetchDotFile(txHash: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/files/${txHash}/asset_flow.dot`)
-
-  if (!res.ok) {
-    throw new Error(`Failed to fetch DOT file: ${res.status}`)
-  }
-
-  return res.text()
+  return fetchTextFile('asset_flow.dot', txHash)
 }
 
 export async function fetchCfgDotFile(txHash: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/files/${txHash}/transaction_cfg.dot`)
+  return fetchTextFile('transaction_cfg.dot', txHash)
+}
 
-  if (!res.ok) {
-    throw new Error(`Failed to fetch CFG DOT file: ${res.status}`)
-  }
-
-  return res.text()
+export async function fetchCfgSvg(txHash: string): Promise<string> {
+  return fetchTextFile('transaction_cfg.svg', txHash)
 }
 
 export async function fetchEdgeLink(txHash: string): Promise<EdgeLink[]> {
-  const res = await fetch(`${API_BASE}/api/files/${txHash}/edge_link.json`)
-
-  if (!res.ok) {
-    throw new Error(`Failed to fetch edge link: ${res.status}`)
-  }
-
-  return res.json()
+  return fetchJsonFile<EdgeLink[]>('edge_link.json', txHash)
 }
 
 export async function fetchBlockGasData(blockNumber: number): Promise<BlockGasData> {
@@ -134,6 +154,27 @@ export async function fetchBlocksHeatmap(offset: number = 0, count: number = 160
   return res.json()
 }
 
+export interface Erc20Event {
+  tokenname: string
+  type: string
+  user: string
+  balance: string
+}
+
+export interface EthEvent {
+  type: string
+  from: string
+  to: string
+  amount: string
+}
+
+export interface BlockAction {
+  action_type: string
+  erc20_events: Erc20Event[]
+  send_eth: string
+  eth_event: EthEvent | null
+}
+
 export interface BlockInformation {
   block_id: number
   address: string
@@ -141,12 +182,72 @@ export interface BlockInformation {
   start_pc: string
   end_pc: string
   gas: number
-  actions: string[]
+  actions: BlockAction[]
   instructions: string[]
 }
 
 export interface BlockInformationMap {
   [blockId: string]: BlockInformation
+}
+
+export interface SemanticNodeInformation {
+  semantic_node_id: string
+  label: string
+  purpose: string
+  confidence: number
+  contract_address: string
+  contract_name: string
+  member_block_ids: number[]
+  blocks_number: number
+  start_pc: string
+  end_pc: string
+  gas: number
+  entry_conditions: string[]
+  exit_effects: string[]
+  entry_edge_types: string[]
+  exit_edge_types: string[]
+  trace_step_range: {
+    entry_step: number | null
+    exit_step: number | null
+  }
+  actions: BlockAction[]
+  instruction_summary: string[]
+  action_summary: string[]
+  member_blocks: BlockInformation[]
+}
+
+export type SemanticNodeMap = Record<string, SemanticNodeInformation>
+
+export interface SemanticEdge {
+  edge_id: string
+  source_node: string
+  target_node: string
+  edge_types: string[]
+  raw_edge_ids: string[]
+  edge_steps: number[]
+}
+
+export interface SemanticCfgData {
+  mode: 'semantic'
+  model: string
+  nodes: SemanticNodeMap
+  edges: SemanticEdge[]
+  raw_to_semantic: Record<string, string>
+}
+
+export type CfgMode = 'semantic' | 'folded'
+
+export interface CfgViewData {
+  mode: CfgMode
+  svgContent: string
+  semanticData: SemanticCfgData | null
+  blockInformation: BlockInformationMap
+}
+
+export interface CfgViewBundle {
+  initialMode: CfgMode
+  semantic: CfgViewData | null
+  folded: CfgViewData
 }
 
 export interface LegendEntry {
@@ -162,50 +263,106 @@ export interface LegendData {
 }
 
 export async function fetchLegendData(txHash: string): Promise<LegendData> {
-  const res = await fetch(`${API_BASE}/api/files/${txHash}/legend.json`)
-
-  if (!res.ok) {
-    throw new Error(`Failed to fetch legend data: ${res.status}`)
-  }
-
-  return res.json()
+  return fetchJsonFile<LegendData>('legend.json', txHash)
 }
 
 export async function fetchBlockInformation(txHash: string): Promise<BlockInformationMap> {
-  const res = await fetch(`${API_BASE}/api/files/${txHash}/folded_blocks_information.json`)
+  return fetchJsonFile<BlockInformationMap>('folded_blocks_information.json', txHash)
+}
 
-  if (!res.ok) {
-    throw new Error(`Failed to fetch block information: ${res.status}`)
+export async function fetchCfgViewData(txHash: string, preferredMode: CfgMode = 'semantic'): Promise<CfgViewBundle> {
+  const [foldedSvgContent, foldedBlockInformation] = await Promise.all([
+    fetchCfgSvg(txHash),
+    fetchBlockInformation(txHash).catch(() => ({} as BlockInformationMap)),
+  ])
+
+  const folded: CfgViewData = {
+    mode: 'folded',
+    svgContent: foldedSvgContent,
+    semanticData: null,
+    blockInformation: foldedBlockInformation,
   }
 
-  return res.json()
+  let semantic: CfgViewData | null = null
+
+  try {
+    const [semanticSvg, semanticData] = await Promise.all([
+      fetchOptionalTextFile('semantic_cfg.svg', txHash),
+      fetchOptionalJsonFile<SemanticCfgData>('semantic_cfg.json', txHash),
+    ])
+
+    if (semanticSvg && semanticData && semanticData.mode === 'semantic') {
+      const blockInformation: BlockInformationMap = {}
+      Object.values(semanticData.nodes).forEach((node) => {
+        node.member_blocks.forEach((block) => {
+          blockInformation[String(block.block_id)] = block
+        })
+      })
+
+      semantic = {
+        mode: 'semantic',
+        svgContent: semanticSvg,
+        semanticData,
+        blockInformation,
+      }
+    }
+  } catch (e) {
+    console.warn('Semantic CFG unavailable, falling back to folded CFG.', e)
+  }
+
+  return {
+    initialMode: preferredMode === 'semantic' && semantic ? 'semantic' : 'folded',
+    semantic,
+    folded,
+  }
 }
 
 export interface EdgeStepEntry {
   edge_id: string
   edge_step: number
+  source_node: string
+  target_node: string
 }
 
 export type EdgeStepMap = Record<string, EdgeStepEntry>
 
-export async function fetchFlameGraphSvg(txHash: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/files/${txHash}/trace_flame_graph.svg`)
-
-  if (!res.ok) {
-    throw new Error(`Failed to fetch flame graph: ${res.status}`)
-  }
-
-  return res.text()
+export interface SequenceCallEntry {
+  call_id: number
+  entry_step: number
+  exit_step: number
+  entry_op: string
+  exit_op: string
+  from_name: string
+  to_name: string
+  calldata: string[]
 }
 
-export async function fetchEdgeStepMap(txHash: string): Promise<EdgeStepMap> {
-  const res = await fetch(`${API_BASE}/api/files/${txHash}/edge_id-step.json`)
+export interface SequenceCalldataMapping {
+  total_calls: number
+  calls: SequenceCallEntry[]
+}
 
-  if (!res.ok) {
-    throw new Error(`Failed to fetch edge step map: ${res.status}`)
+export async function fetchSequenceSvg(txHash: string): Promise<string> {
+  return fetchTextFile('trace_sequence.svg', txHash)
+}
+
+export async function fetchSequenceCalldataMapping(txHash: string): Promise<SequenceCalldataMapping> {
+  return fetchJsonFile<SequenceCalldataMapping>('trace_sequence_calldata_mapping.json', txHash)
+}
+
+export async function fetchEdgeStepMap(txHash: string, preferredMode: CfgMode = 'semantic'): Promise<EdgeStepMap> {
+  if (preferredMode === 'semantic') {
+    try {
+      const semanticMap = await fetchOptionalJsonFile<EdgeStepMap>('semantic_edge_id-step.json', txHash)
+      if (semanticMap) {
+        return semanticMap
+      }
+    } catch (e) {
+      console.warn('Semantic edge-step map unavailable, falling back to folded edge map.', e)
+    }
   }
 
-  return res.json()
+  return fetchJsonFile<EdgeStepMap>('edge_id-step.json', txHash)
 }
 
 export interface ArbitrageResult {
@@ -217,7 +374,6 @@ export interface ArbitrageResult {
 export async function fetchArbitrageResult(txHash: string): Promise<ArbitrageResult> {
   const res = await fetch(`${API_BASE}/api/files/${txHash}/arbitrage.json`)
   if (!res.ok) {
-    // 404 = 文件不存在（旧结果或后端未生成），静默降级，不影响其他面板
     if (res.status === 404) {
       return { is_arbitrage: false, cycles: [], arb_edge_orders: [] }
     }

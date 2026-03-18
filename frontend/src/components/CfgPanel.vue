@@ -1,192 +1,761 @@
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue'
-import { graphviz } from 'd3-graphviz'
-import { zoomIdentity, zoomTransform } from 'd3-zoom'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { zoom, zoomIdentity, type ZoomBehavior } from 'd3-zoom'
 import { select } from 'd3-selection'
-import { fetchCfgDotFile, fetchBlockInformation, fetchLegendData, type BlockInformationMap, type BlockInformation } from '../api/analyze'
+import {
+  fetchCfgViewData,
+  fetchLegendData,
+  type BlockAction,
+  type BlockInformation,
+  type BlockInformationMap,
+  type CfgMode,
+  type CfgViewBundle,
+  type EdgeStepMap,
+  type SemanticCfgData,
+  type SemanticNodeInformation,
+} from '../api/analyze'
 
 const props = defineProps<{
   txHash: string | null
   highlightedBlockId: number[] | null
   filteredEdgeIds: string[] | null
   isAnalyzing: boolean
+  edgeStepMap: EdgeStepMap | null
+  preferredMode: CfgMode
 }>()
 
 const emit = defineEmits<{
   'cfg-navigate': [blockIds: number[] | null]
+  'mode-change': [mode: CfgMode]
 }>()
 
-const dotContent = ref<string>('')
+type CfgEdgeType = 'NORMAL' | 'JUMP' | 'CALL' | 'DELEGATECALL' | 'TERMINATE'
+
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
-
-// Block information state (from folded_blocks_information.json)
+const cfgMode = ref<CfgMode>('folded')
+const cfgViews = ref<CfgViewBundle | null>(null)
+const semanticData = ref<SemanticCfgData | null>(null)
 const blockInformation = ref<BlockInformationMap>({})
-const selectedBlockId = ref<number | null>(null)
+const selectedNodeName = ref<string | null>(null)
 const selectedBlockInfo = ref<BlockInformation | null>(null)
-const instructionsPanel = ref<HTMLElement | null>(null)
-
-// Address-to-name mapping (from legend.json)
-const addressNameMap = ref<Map<string, string>>(new Map())
-
+const selectedSemanticInfo = ref<SemanticNodeInformation | null>(null)
 const graphContainer = ref<HTMLElement | null>(null)
-let graphvizInstance: any = null
-let initialTransform: any = null
-
-// 过滤和高亮状态
+const addressNameMap = ref<Map<string, string>>(new Map())
 const highlightedNodes = ref<Set<string>>(new Set())
 const visibleNodes = ref<Set<string>>(new Set())
 const visibleEdges = ref<Set<string>>(new Set())
-const edgeConnections = ref<Map<string, {source: string, target: string}>>(new Map())
+const edgeConnections = ref<Map<string, { source: string, target: string }>>(new Map())
 const nodeNameToEl = ref<Map<string, Element>>(new Map())
-// Map edge label number (e.g., "28") to edge title (e.g., "node_5->node_12")
-const edgeLabelToTitle = ref<Map<string, string>>(new Map())
+const nodeDisplayLabelMap = ref<Map<string, string>>(new Map())
+const edgeIdToSvgTitle = ref<Map<string, string>>(new Map())
+const activeEdgeType = ref<CfgEdgeType | null>(null)
+const showEdgeTypes = ref(false)
+
+let zoomBehavior: ZoomBehavior<SVGSVGElement, unknown> | null = null
+let resizeObserver: ResizeObserver | null = null
+let edgeTooltipHideTimer: number | null = null
+
+const selectedSemanticBlocks = computed(() => selectedSemanticInfo.value?.member_blocks ?? [])
+const hasSemanticView = computed(() => Boolean(cfgViews.value?.semantic))
+const cfgModeBadge = computed(() => cfgMode.value === 'semantic' ? 'Semantic CFG' : 'Transaction CFG')
+const toggleButtonLabel = computed(() => cfgMode.value === 'semantic' ? 'Transaction CFG' : 'Semantic CFG')
+const hasSelection = computed(() => Boolean(selectedSemanticInfo.value || selectedBlockInfo.value))
+const selectedSemanticTitle = computed(() => {
+  if (!selectedSemanticInfo.value) return ''
+  return nodeDisplayLabelMap.value.get(selectedSemanticInfo.value.semantic_node_id) || selectedSemanticInfo.value.label
+})
 
 watch(() => props.txHash, (newHash) => {
-  selectedBlockId.value = null
-  selectedBlockInfo.value = null
+  resetSelection()
   if (newHash) {
     loadCfgData(newHash)
+  } else {
+    status.value = 'idle'
+    cfgViews.value = null
+    semanticData.value = null
+    blockInformation.value = {}
+    clearFilterState()
+    if (graphContainer.value) {
+      graphContainer.value.innerHTML = ''
+    }
   }
 }, { immediate: true })
+
+watch(() => props.highlightedBlockId, (newBlockIds) => {
+  if (props.filteredEdgeIds && props.filteredEdgeIds.length > 0) return
+
+  if (newBlockIds && newBlockIds.length > 0) {
+    calculateVisibleElements(newBlockIds)
+    applyFilter()
+  } else {
+    clearFilterState()
+    applyFilter()
+    nextTick(() => resetZoom())
+  }
+})
+
+watch(() => props.edgeStepMap, () => {
+  buildEdgeIdToTitleMap()
+  if (status.value === 'success') {
+    syncFilterStateWithProps()
+  }
+})
+
+watch(graphContainer, (container, oldContainer) => {
+  if (oldContainer && resizeObserver) {
+    resizeObserver.disconnect()
+    resizeObserver = null
+  }
+
+  if (!container || typeof ResizeObserver === 'undefined') return
+
+  resizeObserver = new ResizeObserver(() => {
+    window.requestAnimationFrame(() => fitGraphToViewport())
+  })
+  resizeObserver.observe(container)
+})
+
+watch(hasSelection, () => {
+  nextTick(() => fitGraphToViewport({ animate: true }))
+})
+
+watch(() => props.filteredEdgeIds, (edgeIds) => {
+  if (edgeIds && edgeIds.length > 0) {
+    applyEdgeFilter(edgeIds)
+  } else if (!props.highlightedBlockId || props.highlightedBlockId.length === 0) {
+    clearFilterState()
+    applyFilter()
+    nextTick(() => resetZoom())
+  }
+})
+
+watch(() => props.preferredMode, (mode) => {
+  if (status.value !== 'success' || mode === cfgMode.value) return
+  if (!getCfgView(mode)) return
+  void switchCfgMode(mode)
+})
 
 async function loadCfgData(txHash: string) {
   status.value = 'loading'
   errorMsg.value = ''
+  activeEdgeType.value = null
+  cfgViews.value = null
+  semanticData.value = null
+  blockInformation.value = {}
+  clearFilterState()
+  resetSelection()
 
   try {
-    // DOT now only contains IDs, use directly without processing
-    const dot = await fetchCfgDotFile(txHash)
-    dotContent.value = dot
-    status.value = 'success'
+    const [cfgViewBundle, legend] = await Promise.all([
+      fetchCfgViewData(txHash, props.preferredMode),
+      fetchLegendData(txHash).catch(() => null),
+    ])
 
-    // Fetch block information and legend data in parallel
-    try {
-      const [info, legend] = await Promise.all([
-        fetchBlockInformation(txHash),
-        fetchLegendData(txHash).catch(() => null)
-      ])
-      blockInformation.value = info
+    cfgViews.value = cfgViewBundle
 
-      // Build address-to-name map from legend
-      addressNameMap.value.clear()
-      if (legend) {
-        for (const entry of [...legend.user_addresses, ...legend.erc20_tokens, ...legend.normal_contracts]) {
-          addressNameMap.value.set(entry.address.toLowerCase(), entry.name)
-        }
+    addressNameMap.value.clear()
+    if (legend) {
+      for (const entry of [...legend.user_addresses, ...legend.erc20_tokens, ...legend.normal_contracts]) {
+        addressNameMap.value.set(entry.address.toLowerCase(), entry.name)
       }
-    } catch (e) {
-      console.warn('Failed to load block information:', e)
     }
 
-    await nextTick()
-    await renderGraph()
+    status.value = 'success'
+    await switchCfgMode(cfgViewBundle.initialMode)
   } catch (e: any) {
     status.value = 'error'
     errorMsg.value = e.message || 'Failed to load CFG data'
   }
 }
 
-async function renderGraph() {
-  if (!graphContainer.value || !dotContent.value) return
+function getCfgView(mode: CfgMode) {
+  if (!cfgViews.value) return null
+  return mode === 'semantic' ? cfgViews.value.semantic : cfgViews.value.folded
+}
 
-  try {
-    const container = graphContainer.value
+async function switchCfgMode(mode: CfgMode) {
+  const nextView = getCfgView(mode)
+  if (!nextView) return
 
-    graphvizInstance = graphviz(container, {
-      useWorker: false,
-      zoom: true,
-      fit: true,
-      width: container.clientWidth,
-      height: container.clientHeight,
+  cfgMode.value = mode
+  semanticData.value = nextView.semanticData
+  blockInformation.value = nextView.blockInformation
+  resetSelection()
+  emit('mode-change', mode)
+
+  await nextTick()
+  renderSvg(nextView.svgContent)
+}
+
+function toggleCfgMode() {
+  const nextMode: CfgMode = cfgMode.value === 'semantic' ? 'folded' : 'semantic'
+  if (!getCfgView(nextMode)) return
+  void switchCfgMode(nextMode)
+}
+
+function renderSvg(svgContent: string) {
+  if (!graphContainer.value) return
+
+  const container = graphContainer.value
+  container.innerHTML = svgContent
+
+  const svg = container.querySelector('svg')
+  if (!svg) return
+
+  if (cfgMode.value !== 'folded') {
+    svg.removeAttribute('viewBox')
+    svg.removeAttribute('preserveAspectRatio')
+  }
+
+  svg.removeAttribute('width')
+  svg.removeAttribute('height')
+  svg.style.width = '100%'
+  svg.style.height = '100%'
+
+  const svgSel = select(svg as SVGSVGElement)
+  const origG = svg.querySelector('g')
+  if (!origG) return
+
+  const zoomG = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+  zoomG.setAttribute('id', 'zoom-layer')
+  svg.insertBefore(zoomG, origG)
+  zoomG.appendChild(origG)
+
+  if (cfgMode.value === 'folded') {
+    setFoldedViewBox(svg as SVGSVGElement, origG as SVGGElement)
+    normalizeFoldedTextScale(svg as SVGSVGElement)
+  }
+
+  zoomBehavior = zoom<SVGSVGElement, unknown>()
+    .scaleExtent([0.005, 10])
+    .on('zoom', (event: any) => {
+      zoomG.setAttribute('transform', event.transform.toString())
     })
 
-    await graphvizInstance
-      .renderDot(dotContent.value)
-      .on('end', attachInteractivity)
-  } catch (e) {
-    console.error('Graphviz render error:', e)
-    errorMsg.value = 'Failed to render graph'
-    status.value = 'error'
+  svgSel.call(zoomBehavior)
+
+  attachInteractivity()
+  buildEdgeIdToTitleMap()
+  syncFilterStateWithProps()
+  if (cfgMode.value === 'folded') {
+    nextTick(() => resetZoom())
+  } else {
+    nextTick(() => fitGraphToViewport())
   }
+}
+
+function setFoldedViewBox(svg: SVGSVGElement, graphContent: SVGGElement) {
+  const bounds = getGraphContentBounds(graphContent)
+  if (bounds.width <= 0 || bounds.height <= 0) return
+
+  const padding = 20
+  svg.setAttribute(
+    'viewBox',
+    `${bounds.x - padding} ${bounds.y - padding} ${bounds.width + padding * 2} ${bounds.height + padding * 2}`,
+  )
+  svg.setAttribute('preserveAspectRatio', 'none')
+}
+
+function normalizeFoldedTextScale(svg: SVGSVGElement) {
+  const viewBox = svg.viewBox.baseVal
+  const viewportWidth = svg.clientWidth
+  const viewportHeight = svg.clientHeight
+  if (viewBox.width <= 0 || viewBox.height <= 0 || viewportWidth <= 0 || viewportHeight <= 0) return
+
+  const scaleX = viewportWidth / viewBox.width
+  const scaleY = viewportHeight / viewBox.height
+  if (scaleX <= 0 || scaleY <= 0) return
+
+  const correctionX = scaleY / scaleX
+  svg.querySelectorAll<SVGTextElement>('text').forEach((textEl) => {
+    const originalTransform = textEl.dataset.originalTransform ?? textEl.getAttribute('transform') ?? ''
+    textEl.dataset.originalTransform = originalTransform
+
+    if (Math.abs(correctionX - 1) < 0.001) {
+      if (originalTransform) {
+        textEl.setAttribute('transform', originalTransform)
+      } else {
+        textEl.removeAttribute('transform')
+      }
+      return
+    }
+
+    const x = Number.parseFloat(textEl.getAttribute('x') || '')
+    const y = Number.parseFloat(textEl.getAttribute('y') || '')
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return
+
+    const compensation = `translate(${x} ${y}) scale(${correctionX} 1) translate(${-x} ${-y})`
+    textEl.setAttribute('transform', originalTransform ? `${originalTransform} ${compensation}` : compensation)
+  })
 }
 
 function attachInteractivity() {
   if (!graphContainer.value) return
-
   const svg = graphContainer.value.querySelector('svg')
   if (!svg) return
 
-  try {
-    initialTransform = zoomTransform(svg as Element)
-  } catch {
-    initialTransform = zoomIdentity
-  }
-
+  prepareSvgMetadata(svg)
   nodeNameToEl.value.clear()
-  const nodes = svg.querySelectorAll('.node')
-  nodes.forEach((node) => {
+
+  svg.addEventListener('click', (event) => {
+    const target = event.target as Element | null
+    if (!target?.closest('.node') && !target?.closest('.edge')) {
+      resetSelection()
+    }
+  })
+
+  svg.querySelectorAll('.node').forEach((node) => {
     const nodeEl = node as SVGElement
-    const title = node.querySelector('title')?.textContent
-    if (title) {
-      nodeNameToEl.value.set(title, node)
+    const nodeName = getNodeName(node)
+    if (nodeName) {
+      nodeNameToEl.value.set(nodeName, node)
     }
 
-    nodeEl.addEventListener('mouseenter', () => {
-      nodeEl.classList.add('hovered')
-    })
-
-    nodeEl.addEventListener('mouseleave', () => {
-      nodeEl.classList.remove('hovered')
-    })
-
+    nodeEl.addEventListener('mouseenter', () => nodeEl.classList.add('hovered'))
+    nodeEl.addEventListener('mouseleave', () => nodeEl.classList.remove('hovered'))
     nodeEl.addEventListener('click', (e) => {
       e.stopPropagation()
-      handleNodeClick(title || '')
+      handleNodeClick(nodeName)
     })
   })
 
   parseEdgeConnections()
-  buildEdgeLabelMap()
 }
 
-function handleNodeClick(nodeName: string) {
-  const match = nodeName.match(/^node_(\d+)$/)
-  if (!match) return
+function prepareSvgMetadata(svg: SVGSVGElement) {
+  const edgeColorMap = new Map<string, CfgEdgeType>(
+    edgeTypes.map(edge => [edge.color.toLowerCase(), edge.type]),
+  )
 
-  const blockId = parseInt(match[1], 10)
-
-  // Remove previous selection highlight
-  if (selectedBlockId.value !== null) {
-    const prevNodeName = `node_${selectedBlockId.value}`
-    const prevNode = nodeNameToEl.value.get(prevNodeName)
-    if (prevNode) {
-      prevNode.classList.remove('selected')
+  nodeDisplayLabelMap.value.clear()
+  svg.querySelectorAll('.node').forEach((node) => {
+    const titleEl = node.querySelector('title')
+    const nodeName = titleEl?.textContent?.trim() || ''
+    if (nodeName) {
+      ;(node as HTMLElement).dataset.nodeName = nodeName
+      const displayLabel = getNodeDisplayLabel(node)
+      if (displayLabel) {
+        ;(node as HTMLElement).dataset.nodeLabel = displayLabel
+        nodeDisplayLabelMap.value.set(nodeName, displayLabel)
+      }
     }
+    titleEl?.remove()
+  })
+
+  svg.querySelectorAll('.cluster').forEach((cluster) => {
+    cluster.querySelector('title')?.remove()
+  })
+
+  svg.querySelectorAll('.edge').forEach((edge) => {
+    const titleEl = edge.querySelector('title')
+    const edgeTitle = titleEl?.textContent?.trim() || ''
+    if (edgeTitle) {
+      ;(edge as HTMLElement).dataset.edgeTitle = edgeTitle
+    }
+    titleEl?.remove()
+
+    const colorCandidates = Array.from(edge.querySelectorAll<SVGElement>('[stroke], [fill]'))
+      .flatMap((el) => [el.getAttribute('stroke'), el.getAttribute('fill')])
+      .map((value) => normalizeColor(value))
+      .filter(Boolean)
+
+    const matchedType = colorCandidates
+      .map((color) => edgeColorMap.get(color))
+      .find((type): type is CfgEdgeType => Boolean(type))
+
+    if (matchedType) {
+      ;(edge as HTMLElement).dataset.edgeType = matchedType
+    }
+  })
+
+  svg.querySelectorAll('title').forEach((titleEl) => titleEl.remove())
+}
+
+function getNodeName(node: Element): string {
+  return (node as HTMLElement).dataset.nodeName || ''
+}
+
+function getNodeDisplayLabel(node: Element): string {
+  const titleText = Array.from(node.querySelectorAll('text'))
+    .filter((textEl) => {
+      const fontWeight = textEl.getAttribute('font-weight')?.toLowerCase()
+      const fontSize = Number.parseFloat(textEl.getAttribute('font-size') || '0')
+      return fontWeight === 'bold' || fontSize >= 20
+    })
+    .map((textEl) => textEl.textContent?.trim() || '')
+    .filter(Boolean)
+
+  if (titleText.length > 0) {
+    return titleText.join(' ')
   }
 
-  // Toggle: if clicking the same node, deselect
-  if (selectedBlockId.value === blockId) {
-    selectedBlockId.value = null
-    selectedBlockInfo.value = null
+  return ''
+}
+
+function getEdgeTitle(edge: Element): string {
+  return (edge as HTMLElement).dataset.edgeTitle || edge.querySelector('title')?.textContent || ''
+}
+
+function getEdgeType(edge: Element): CfgEdgeType | null {
+  return ((edge as HTMLElement).dataset.edgeType as CfgEdgeType | undefined) || null
+}
+
+function normalizeColor(color: string | null): string {
+  return (color || '').trim().toLowerCase()
+}
+
+function parseEdgeConnections() {
+  if (!graphContainer.value) return
+  const svg = graphContainer.value.querySelector('svg')
+  if (!svg) return
+
+  edgeConnections.value.clear()
+  svg.querySelectorAll('.edge').forEach((edge) => {
+    const title = getEdgeTitle(edge)
+    if (!title) return
+
+    const match = title.match(/^([A-Za-z0-9_]+)->([A-Za-z0-9_]+)$/)
+    if (match) {
+      edgeConnections.value.set(title, {
+        source: match[1]!,
+        target: match[2]!,
+      })
+    }
+  })
+}
+
+function buildEdgeIdToTitleMap() {
+  edgeIdToSvgTitle.value.clear()
+  if (!props.edgeStepMap) return
+
+  for (const [edgeId, entry] of Object.entries(props.edgeStepMap)) {
+    edgeIdToSvgTitle.value.set(edgeId, `${entry.source_node}->${entry.target_node}`)
+  }
+}
+
+function syncFilterStateWithProps() {
+  if (props.filteredEdgeIds && props.filteredEdgeIds.length > 0) {
+    applyEdgeFilter(props.filteredEdgeIds)
     return
   }
 
-  // Set selected block and add highlight
-  selectedBlockId.value = blockId
-  selectedBlockInfo.value = blockInformation.value[String(blockId)] || null
-  const currentNode = nodeNameToEl.value.get(nodeName)
-  if (currentNode) {
-    currentNode.classList.add('selected')
+  if (props.highlightedBlockId && props.highlightedBlockId.length > 0) {
+    calculateVisibleElements(props.highlightedBlockId)
+    applyFilter()
+    return
   }
 
-  // Scroll to the block in the instructions panel
+  clearFilterState()
+  applyFilter()
+}
+
+function handleNodeClick(nodeName: string) {
+  if (!nodeName) return
+
+  if (selectedNodeName.value) {
+    nodeNameToEl.value.get(selectedNodeName.value)?.classList.remove('selected')
+  }
+
+  if (selectedNodeName.value === nodeName) {
+    resetSelection()
+    return
+  }
+
+  selectedNodeName.value = nodeName
+  nodeNameToEl.value.get(nodeName)?.classList.add('selected')
+
+  if (nodeName.startsWith('semantic_') && semanticData.value) {
+    selectedSemanticInfo.value = semanticData.value.nodes[nodeName] || null
+    selectedBlockInfo.value = null
+    const renderedLabel = nodeDisplayLabelMap.value.get(nodeName)
+    if (
+      selectedSemanticInfo.value &&
+      renderedLabel &&
+      normalizeWhitespace(renderedLabel) !== normalizeWhitespace(selectedSemanticInfo.value.label)
+    ) {
+      console.warn('Semantic CFG label mismatch between SVG and JSON.', {
+        nodeName,
+        svgLabel: renderedLabel,
+        jsonLabel: selectedSemanticInfo.value.label,
+      })
+    }
+  } else {
+    const match = nodeName.match(/^node_(\d+)$/)
+    const blockId = match ? parseInt(match[1]!, 10) : null
+    selectedBlockInfo.value = blockId !== null ? blockInformation.value[String(blockId)] || null : null
+    selectedSemanticInfo.value = null
+  }
+
   nextTick(() => {
-    const blockElement = document.getElementById(`block-${blockId}`)
-    if (blockElement && instructionsPanel.value) {
-      blockElement.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    const targetId = selectedSemanticInfo.value
+      ? `semantic-${selectedSemanticInfo.value.semantic_node_id}`
+      : selectedBlockInfo.value
+        ? `block-${selectedBlockInfo.value.block_id}`
+        : null
+    if (!targetId) return
+    document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  })
+}
+
+function resetSelection() {
+  if (selectedNodeName.value) {
+    nodeNameToEl.value.get(selectedNodeName.value)?.classList.remove('selected')
+  }
+  selectedNodeName.value = null
+  selectedBlockInfo.value = null
+  selectedSemanticInfo.value = null
+}
+
+function fitGraphToViewport(options: { animate?: boolean } = {}) {
+  if (!graphContainer.value || !zoomBehavior) return
+
+  const svg = graphContainer.value.querySelector('svg') as SVGSVGElement | null
+  const zoomLayer = svg?.querySelector('#zoom-layer') as SVGGElement | null
+  const graphContent = zoomLayer?.firstElementChild as SVGGElement | null
+  if (!svg || !zoomLayer || !graphContent) return
+
+  if (cfgMode.value === 'folded') {
+    setFoldedViewBox(svg, graphContent)
+    normalizeFoldedTextScale(svg)
+    const svgSelection = select(svg)
+
+    if (options.animate) {
+      svgSelection
+        .transition()
+        .duration(240)
+        .call(zoomBehavior.transform, zoomIdentity)
+      return
+    }
+
+    svgSelection.call(zoomBehavior.transform, zoomIdentity)
+    return
+  }
+
+  const bounds = getGraphContentBounds(graphContent)
+  const containerWidth = graphContainer.value.clientWidth
+  const containerHeight = graphContainer.value.clientHeight
+  if (bounds.width <= 0 || bounds.height <= 0 || containerWidth <= 0 || containerHeight <= 0) return
+
+  const padding = 20
+  const scale = Math.min(
+    Math.max((containerWidth - padding * 2) / bounds.width, 0.005),
+    Math.max((containerHeight - padding * 2) / bounds.height, 0.005),
+  )
+  const tx = (containerWidth - bounds.width * scale) / 2 - bounds.x * scale
+  const ty = (containerHeight - bounds.height * scale) / 2 - bounds.y * scale
+  const transform = zoomIdentity.translate(tx, ty).scale(scale)
+  const svgSelection = select(svg)
+
+  if (options.animate) {
+    svgSelection
+      .transition()
+      .duration(240)
+      .call(zoomBehavior.transform, transform)
+    return
+  }
+
+  svgSelection.call(zoomBehavior.transform, transform)
+}
+
+function getGraphContentBounds(graphContent: SVGGElement) {
+  const bbox = graphContent.getBBox()
+  const baseMatrix = graphContent.transform.baseVal.consolidate()?.matrix
+
+  if (!baseMatrix) {
+    return bbox
+  }
+
+  const corners = [
+    { x: bbox.x, y: bbox.y },
+    { x: bbox.x + bbox.width, y: bbox.y },
+    { x: bbox.x, y: bbox.y + bbox.height },
+    { x: bbox.x + bbox.width, y: bbox.y + bbox.height },
+  ].map(({ x, y }) => ({
+    x: baseMatrix.a * x + baseMatrix.c * y + baseMatrix.e,
+    y: baseMatrix.b * x + baseMatrix.d * y + baseMatrix.f,
+  }))
+
+  const xs = corners.map((point) => point.x)
+  const ys = corners.map((point) => point.y)
+  const minX = Math.min(...xs)
+  const maxX = Math.max(...xs)
+  const minY = Math.min(...ys)
+  const maxY = Math.max(...ys)
+
+  return {
+    x: minX,
+    y: minY,
+    width: maxX - minX,
+    height: maxY - minY,
+  }
+}
+
+function applyEdgeFilter(edgeIds: string[]) {
+  const matchedEdgeTitles = new Set<string>()
+  const matchedNodes = new Set<string>()
+
+  for (const edgeId of edgeIds) {
+    const svgTitle = edgeIdToSvgTitle.value.get(edgeId)
+    const entry = props.edgeStepMap?.[edgeId]
+    if (entry) {
+      matchedNodes.add(entry.source_node)
+      matchedNodes.add(entry.target_node)
+    }
+    if (svgTitle) {
+      matchedEdgeTitles.add(svgTitle)
+      const conn = edgeConnections.value.get(svgTitle)
+      if (conn) {
+        matchedNodes.add(conn.source)
+        matchedNodes.add(conn.target)
+      }
+    }
+  }
+
+  if (matchedNodes.size === 0) {
+    clearFilterState()
+    applyFilter()
+    nextTick(() => resetZoom())
+    return
+  }
+
+  if (matchedEdgeTitles.size === 0) {
+    edgeConnections.value.forEach(({ source, target }, edgeTitle) => {
+      if (matchedNodes.has(source) && matchedNodes.has(target)) {
+        matchedEdgeTitles.add(edgeTitle)
+      }
+    })
+
+    if (matchedEdgeTitles.size === 0) {
+      clearFilterState()
+      applyFilter()
+      return
+    }
+  }
+
+  visibleNodes.value = matchedNodes
+  visibleEdges.value = matchedEdgeTitles
+  highlightedNodes.value = new Set(matchedNodes)
+  applyFilter()
+}
+
+function calculateVisibleElements(targetBlockIds: number[]) {
+  const targetNodeSet = new Set<string>()
+
+  if (cfgMode.value === 'semantic' && semanticData.value) {
+    targetBlockIds.forEach((id) => {
+      const semanticNodeId = semanticData.value?.raw_to_semantic[String(id)]
+      if (semanticNodeId) {
+        targetNodeSet.add(semanticNodeId)
+      }
+    })
+  } else {
+    targetBlockIds.forEach((id) => targetNodeSet.add(`node_${id}`))
+  }
+
+  const visible = new Set<string>(targetNodeSet)
+  edgeConnections.value.forEach(({ source, target }) => {
+    if (targetNodeSet.has(source)) visible.add(target)
+    if (targetNodeSet.has(target)) visible.add(source)
+  })
+
+  visibleNodes.value = visible
+  highlightedNodes.value = new Set(targetNodeSet)
+
+  const visibleEdgeSet = new Set<string>()
+  edgeConnections.value.forEach(({ source, target }, edgeId) => {
+    if (visible.has(source) && visible.has(target)) {
+      visibleEdgeSet.add(edgeId)
     }
   })
+  visibleEdges.value = visibleEdgeSet
+}
+
+function clearFilterState() {
+  visibleNodes.value.clear()
+  visibleEdges.value.clear()
+  highlightedNodes.value.clear()
+}
+
+function applyFilter() {
+  if (!graphContainer.value) return
+  const svg = graphContainer.value.querySelector('svg')
+  if (!svg) return
+
+  svg.querySelectorAll('.node').forEach((node) => {
+    const nodeName = getNodeName(node)
+    if (visibleNodes.value.size === 0) {
+      node.classList.remove('filtered-out', 'highlighted')
+    } else if (visibleNodes.value.has(nodeName)) {
+      node.classList.remove('filtered-out')
+      if (highlightedNodes.value.has(nodeName)) {
+        node.classList.add('highlighted')
+      } else {
+        node.classList.remove('highlighted')
+      }
+    } else {
+      node.classList.add('filtered-out')
+      node.classList.remove('highlighted')
+    }
+  })
+
+  svg.querySelectorAll('.edge').forEach((edge) => {
+    const title = getEdgeTitle(edge)
+    const matchesVisibleSelection =
+      visibleNodes.value.size === 0 ||
+      visibleEdges.value.size === 0 ||
+      visibleEdges.value.has(title)
+    const matchesEdgeType =
+      activeEdgeType.value === null || getEdgeType(edge) === activeEdgeType.value
+
+    if (matchesVisibleSelection && matchesEdgeType) {
+      edge.classList.remove('filtered-out')
+    } else {
+      edge.classList.add('filtered-out')
+    }
+  })
+}
+
+function resetZoom() {
+  fitGraphToViewport({ animate: true })
+}
+
+function resetFilter() {
+  activeEdgeType.value = null
+  emit('cfg-navigate', null)
+  if (!props.filteredEdgeIds?.length && !props.highlightedBlockId?.length) {
+    clearFilterState()
+    applyFilter()
+    nextTick(() => resetZoom())
+  }
+}
+
+function toggleEdgeTypeFilter(edgeType: CfgEdgeType) {
+  activeEdgeType.value = activeEdgeType.value === edgeType ? null : edgeType
+  applyFilter()
+}
+
+function clearEdgeTypeFilter() {
+  activeEdgeType.value = null
+  applyFilter()
+}
+
+function openEdgeTypesTooltip() {
+  if (edgeTooltipHideTimer !== null) {
+    window.clearTimeout(edgeTooltipHideTimer)
+    edgeTooltipHideTimer = null
+  }
+  showEdgeTypes.value = true
+}
+
+function queueCloseEdgeTypesTooltip() {
+  if (edgeTooltipHideTimer !== null) {
+    window.clearTimeout(edgeTooltipHideTimer)
+  }
+  edgeTooltipHideTimer = window.setTimeout(() => {
+    showEdgeTypes.value = false
+    edgeTooltipHideTimer = null
+  }, 180)
 }
 
 function formatInstruction(instr: string): string {
@@ -209,7 +778,7 @@ function hexToEth(hex: string): string {
   if (!hex) return '0'
   try {
     const wei = BigInt(hex)
-    const ethWhole = wei / BigInt(1e14)  // 保留4位小数精度
+    const ethWhole = wei / BigInt(1e14)
     const ethNum = Number(ethWhole) / 10000
     if (ethNum === 0 && wei > 0n) return '<0.0001 ETH'
     return `${ethNum} ETH`
@@ -218,16 +787,15 @@ function hexToEth(hex: string): string {
   }
 }
 
-function formatAction(action: any, index: number): string {
+function formatAction(action: BlockAction, index: number): string {
   const prefix = `Action${index + 1}`
 
   if (action.action_type === 'eth_transfer' && action.eth_event) {
-    const ev = action.eth_event
-    return `${prefix}: Send_ETH ${addrToName(ev.from)} \u2192 ${addrToName(ev.to)} ${hexToEth(ev.amount)}`
+    return `${prefix}: Send_ETH ${addrToName(action.eth_event.from)} -> ${addrToName(action.eth_event.to)} ${hexToEth(action.eth_event.amount)}`
   }
 
   if (action.erc20_events && action.erc20_events.length > 0) {
-    return action.erc20_events.map((ev: any, i: number) => {
+    return action.erc20_events.map((ev, i) => {
       const type = ev.type === 'read' ? 'Read' : 'Write'
       const token = ev.tokenname || 'ERC20'
       const user = addrToName(ev.user || '')
@@ -238,227 +806,21 @@ function formatAction(action: any, index: number): string {
   return `${prefix}: ${action.action_type}`
 }
 
-function parseEdgeConnections() {
-  if (!graphContainer.value) return
-
-  const svg = graphContainer.value.querySelector('svg')
-  if (!svg) return
-
-  edgeConnections.value.clear()
-
-  const edges = svg.querySelectorAll('.edge')
-  edges.forEach((edge) => {
-    const title = edge.querySelector('title')?.textContent
-    if (!title) return
-
-    const match = title.match(/^(node_\d+)->(node_\d+)$/)
-    if (match) {
-      edgeConnections.value.set(title, {
-        source: match[1],
-        target: match[2]
-      })
-    }
-  })
+function formatGas(gas: number | null | undefined): string {
+  if (gas === null || gas === undefined) return 'Unknown'
+  return Number(gas).toLocaleString(undefined, { maximumFractionDigits: 0 })
 }
 
-function buildEdgeLabelMap() {
-  if (!graphContainer.value) return
-
-  const svg = graphContainer.value.querySelector('svg')
-  if (!svg) return
-
-  edgeLabelToTitle.value.clear()
-
-  const edges = svg.querySelectorAll('.edge')
-  edges.forEach((edge) => {
-    const title = edge.querySelector('title')?.textContent || ''
-    if (!title) return
-
-    // Extract the edge label number from <text> elements
-    const textEls = edge.querySelectorAll('text')
-    textEls.forEach(t => {
-      const label = (t.textContent || '').trim()
-      if (label && /^\d+$/.test(label)) {
-        edgeLabelToTitle.value.set(label, title)
-      }
-    })
-  })
+function formatStepRange(stepRange: { entry_step: number | null, exit_step: number | null } | null | undefined): string {
+  if (!stepRange || stepRange.entry_step === null || stepRange.exit_step === null) return 'Unknown'
+  return `${stepRange.entry_step} - ${stepRange.exit_step}`
 }
 
-function applyEdgeFilter(edgeIds: string[]) {
-  // Convert edge IDs like "edge_28" to label numbers "28"
-  const labelNumbers = edgeIds.map(id => id.replace(/\D/g, ''))
-
-  // Find matching edge titles and their connected nodes
-  const matchedEdgeTitles = new Set<string>()
-  const matchedNodes = new Set<string>()
-
-  for (const label of labelNumbers) {
-    const edgeTitle = edgeLabelToTitle.value.get(label)
-    if (edgeTitle) {
-      matchedEdgeTitles.add(edgeTitle)
-      const conn = edgeConnections.value.get(edgeTitle)
-      if (conn) {
-        matchedNodes.add(conn.source)
-        matchedNodes.add(conn.target)
-      }
-    }
-  }
-
-  if (matchedNodes.size === 0) {
-    // No matches — show all
-    visibleNodes.value.clear()
-    visibleEdges.value.clear()
-    highlightedNodes.value.clear()
-    applyFilter()
-    nextTick(() => resetZoom())
-    return
-  }
-
-  visibleNodes.value = matchedNodes
-  visibleEdges.value = matchedEdgeTitles
-  highlightedNodes.value = new Set(matchedNodes)
-  applyFilter()
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
 }
 
-function calculateVisibleElements(targetBlockIds: number[]) {
-  const targetNodeIds = targetBlockIds.map(id => `node_${id}`)
-  const visible = new Set<string>(targetNodeIds)
-
-  edgeConnections.value.forEach(({source, target}) => {
-    if (targetNodeIds.includes(source)) {
-      visible.add(target)
-    }
-    if (targetNodeIds.includes(target)) {
-      visible.add(source)
-    }
-  })
-
-  visibleNodes.value = visible
-
-  const visibleEdgeSet = new Set<string>()
-  edgeConnections.value.forEach(({source, target}, edgeId) => {
-    if (visible.has(source) && visible.has(target)) {
-      visibleEdgeSet.add(edgeId)
-    }
-  })
-  visibleEdges.value = visibleEdgeSet
-
-  highlightedNodes.value = new Set(targetNodeIds)
-}
-
-function applyFilter() {
-  if (!graphContainer.value) return
-
-  const svg = graphContainer.value.querySelector('svg')
-  if (!svg) return
-
-  const nodes = svg.querySelectorAll('.node')
-  nodes.forEach((node) => {
-    const nodeName = node.querySelector('title')?.textContent || ''
-    if (visibleNodes.value.size === 0) {
-      node.classList.remove('filtered-out', 'highlighted')
-    } else if (visibleNodes.value.has(nodeName)) {
-      node.classList.remove('filtered-out')
-      if (highlightedNodes.value.has(nodeName)) {
-        node.classList.add('highlighted')
-      } else {
-        node.classList.remove('highlighted')
-      }
-    } else {
-      node.classList.add('filtered-out')
-      node.classList.remove('highlighted')
-    }
-  })
-
-  const edges = svg.querySelectorAll('.edge')
-  edges.forEach((edge) => {
-    const title = edge.querySelector('title')?.textContent || ''
-    if (visibleNodes.value.size === 0) {
-      edge.classList.remove('filtered-out')
-    } else if (visibleEdges.value.has(title)) {
-      edge.classList.remove('filtered-out')
-    } else {
-      edge.classList.add('filtered-out')
-    }
-  })
-}
-
-function applyZoomTransform(transform: any) {
-  if (!graphContainer.value) return
-  const svg = graphContainer.value.querySelector('svg')
-  if (!svg) return
-
-  try {
-    const zoomSel = graphvizInstance.zoomSelection()
-    const zoomBeh = graphvizInstance.zoomBehavior()
-    zoomSel.transition().duration(300).call(zoomBeh.transform, transform)
-  } catch {
-    try {
-      const svgSel = select(svg)
-      const zoomBeh = (svgSel.node() as any).__zoom_behavior
-      if (zoomBeh) {
-        svgSel.transition().duration(300).call(zoomBeh.transform, transform)
-      } else {
-        const g = svg.querySelector('g')
-        if (g) {
-          const { x, y, k } = transform
-          g.setAttribute('transform', `translate(${x}, ${y}) scale(${k})`)
-        }
-      }
-    } catch {
-      const g = svg.querySelector('g')
-      if (g) {
-        const { x, y, k } = transform
-        g.setAttribute('transform', `translate(${x}, ${y}) scale(${k})`)
-      }
-    }
-  }
-}
-
-watch(() => props.highlightedBlockId, (newBlockIds) => {
-  // Skip if edge filter from flame graph is active
-  if (props.filteredEdgeIds && props.filteredEdgeIds.length > 0) return
-
-  if (newBlockIds && newBlockIds.length > 0) {
-    calculateVisibleElements(newBlockIds)
-    applyFilter()
-  } else {
-    visibleNodes.value.clear()
-    visibleEdges.value.clear()
-    highlightedNodes.value.clear()
-    applyFilter()
-    nextTick(() => {
-      resetZoom()
-    })
-  }
-})
-
-watch(() => props.filteredEdgeIds, (edgeIds) => {
-  if (edgeIds && edgeIds.length > 0) {
-    applyEdgeFilter(edgeIds)
-  } else if (!props.highlightedBlockId || props.highlightedBlockId.length === 0) {
-    // Only clear if no block highlight is active either
-    visibleNodes.value.clear()
-    visibleEdges.value.clear()
-    highlightedNodes.value.clear()
-    applyFilter()
-    nextTick(() => resetZoom())
-  }
-})
-
-function resetZoom() {
-  if (!graphvizInstance || !initialTransform) return
-  applyZoomTransform(initialTransform)
-}
-
-function resetFilter() {
-  emit('cfg-navigate', null)
-}
-
-const showEdgeTypes = ref(false)
-
-const edgeTypes = [
+const edgeTypes: Array<{ type: CfgEdgeType, color: string, desc: string }> = [
   { type: 'NORMAL', color: '#939393', desc: 'Non-terminating opcodes' },
   { type: 'JUMP', color: '#242424', desc: 'JUMP, JUMPI' },
   { type: 'CALL', color: '#1F6800', desc: 'CALL, CALLCODE, STATICCALL' },
@@ -466,25 +828,54 @@ const edgeTypes = [
   { type: 'TERMINATE', color: '#C14A00', desc: 'RETURN, STOP, REVERT, INVALID, SELFDESTRUCT' },
 ]
 
+onBeforeUnmount(() => {
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+    resizeObserver = null
+  }
+  if (edgeTooltipHideTimer !== null) {
+    window.clearTimeout(edgeTooltipHideTimer)
+    edgeTooltipHideTimer = null
+  }
+})
 </script>
 
 <template>
   <div class="cfg-panel">
     <span class="panel-label">
       (e) Control Flow Graph
+      <span class="mode-badge" :class="cfgMode">{{ cfgModeBadge }}</span>
+      <button
+        v-if="hasSemanticView"
+        class="cfg-mode-toggle"
+        @click="toggleCfgMode"
+      >
+        {{ toggleButtonLabel }}
+      </button>
       <span
         class="edge-info-icon"
-        :class="{ active: showEdgeTypes }"
-        @mouseenter="showEdgeTypes = true"
-        @mouseleave="showEdgeTypes = false"
+        :class="{ active: showEdgeTypes || !!activeEdgeType }"
+        @mouseenter="openEdgeTypesTooltip"
+        @mouseleave="queueCloseEdgeTypesTooltip"
       >
         <svg width="14" height="14" viewBox="0 0 14 14">
           <circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" stroke-width="1.2" />
           <text x="7" y="10.5" text-anchor="middle" font-size="9" font-weight="600" fill="currentColor">?</text>
         </svg>
-        <div v-show="showEdgeTypes" class="edge-types-tooltip">
-          <div class="edge-tooltip-title">CFG's Edge Types</div>
-          <div v-for="edge in edgeTypes" :key="edge.type" class="edge-type-item">
+        <div
+          v-show="showEdgeTypes"
+          class="edge-types-tooltip"
+          @mouseenter="openEdgeTypesTooltip"
+          @mouseleave="queueCloseEdgeTypesTooltip"
+        >
+          <div class="edge-tooltip-title">CFG Edge Types</div>
+          <div
+            v-for="edge in edgeTypes"
+            :key="edge.type"
+            class="edge-type-item"
+            :class="{ active: activeEdgeType === edge.type }"
+            @click.stop="toggleEdgeTypeFilter(edge.type)"
+          >
             <svg width="32" height="12" viewBox="0 0 32 12">
               <line x1="2" y1="6" x2="24" y2="6" :stroke="edge.color" stroke-width="2.5" />
               <polygon :points="'24,3 30,6 24,9'" :fill="edge.color" />
@@ -494,6 +885,13 @@ const edgeTypes = [
               <span class="edge-type-desc">{{ edge.desc }}</span>
             </div>
           </div>
+          <button
+            v-if="activeEdgeType"
+            class="edge-filter-reset"
+            @click.stop="clearEdgeTypeFilter"
+          >
+            Show all edge types
+          </button>
         </div>
       </span>
     </span>
@@ -507,83 +905,150 @@ const edgeTypes = [
     </div>
 
     <div v-else-if="status === 'success'" class="cfg-container">
-      <div ref="graphContainer" class="graph-viewport"></div>
-      <button
-        v-if="visibleNodes.size > 0"
-        class="reset-button"
-        @click="resetFilter"
-      >Show All</button>
+      <div class="graph-stage">
+        <div
+          ref="graphContainer"
+          class="graph-viewport"
+          :class="{ 'folded-viewport': cfgMode === 'folded' }"
+        ></div>
+        <button
+          v-if="visibleNodes.size > 0 || activeEdgeType"
+          class="reset-button"
+          @click="resetFilter"
+        >Show All</button>
+      </div>
 
-      <!-- Right Side Panel: Information + Instructions -->
-      <div class="side-panel">
-        <!-- Upper: Information Panel -->
-        <div class="info-panel">
-          <div class="panel-section-header">Information</div>
-          <div class="info-content">
-            <template v-if="selectedBlockInfo">
-              <div class="info-row">
-                <span class="info-label">ID</span>
-                <span class="info-value">{{ selectedBlockInfo.block_id }}</span>
-              </div>
-              <div class="info-row">
-                <span class="info-label">Contract</span>
-                <span class="info-value">{{ selectedBlockInfo.address }}</span>
-              </div>
-              <div class="info-row">
-                <span class="info-label">Blocks</span>
-                <span class="info-value">{{ selectedBlockInfo.blocks_number }}</span>
-              </div>
-              <div class="info-row">
-                <span class="info-label">StartPC</span>
-                <span class="info-value">{{ selectedBlockInfo.start_pc }}</span>
-              </div>
-              <div class="info-row">
-                <span class="info-label">EndPC</span>
-                <span class="info-value">{{ selectedBlockInfo.end_pc }}</span>
-              </div>
-              <div class="info-row">
-                <span class="info-label">Gas</span>
-                <span class="info-value">{{ selectedBlockInfo.gas }}</span>
-              </div>
-              <div v-if="selectedBlockInfo.actions.length > 0" class="info-actions">
-                <div class="info-label">Actions</div>
-                <div v-for="(action, idx) in selectedBlockInfo.actions" :key="idx" class="action-line">
-                  {{ formatAction(action, idx) }}
+      <transition name="drawer">
+        <div v-if="hasSelection" class="side-panel">
+          <div class="panel-section-header">information</div>
+          <div class="information-content">
+            <template v-if="selectedSemanticInfo">
+              <div :id="`semantic-${selectedSemanticInfo.semantic_node_id}`" class="information-stack">
+                <div class="semantic-card">
+                  <div class="semantic-title">{{ selectedSemanticTitle }}</div>
+                  <div class="semantic-purpose">{{ selectedSemanticInfo.purpose }}</div>
+                  <div class="semantic-chip-row">
+                    <span class="semantic-chip">{{ selectedSemanticInfo.contract_name }}</span>
+                    <span class="semantic-chip">Conf {{ selectedSemanticInfo.confidence.toFixed(2) }}</span>
+                    <span class="semantic-chip">{{ selectedSemanticInfo.blocks_number }} blocks</span>
+                  </div>
                 </div>
-              </div>
-            </template>
-            <div v-else class="panel-placeholder">Click a node to view details</div>
-          </div>
-        </div>
 
-        <!-- Divider -->
-        <div class="panel-divider"></div>
+                <div class="info-row">
+                  <span class="info-label">Contract</span>
+                  <span class="info-value">{{ selectedSemanticInfo.contract_address }}</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">Step Range</span>
+                  <span class="info-value">{{ formatStepRange(selectedSemanticInfo.trace_step_range) }}</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">Gas</span>
+                  <span class="info-value">{{ formatGas(selectedSemanticInfo.gas) }}</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">PC</span>
+                  <span class="info-value">{{ selectedSemanticInfo.start_pc }} - {{ selectedSemanticInfo.end_pc }}</span>
+                </div>
 
-        <!-- Lower: Instructions Panel -->
-        <div ref="instructionsPanel" class="instructions-panel-section">
-          <div class="panel-section-header">Instructions</div>
-          <div class="instructions-content">
-            <template v-if="selectedBlockInfo">
-              <div
-                :id="`block-${selectedBlockInfo.block_id}`"
-                class="block-section selected"
-              >
-                <div class="block-header">Block {{ selectedBlockInfo.block_id }}</div>
-                <div class="block-instructions">
+                <div v-if="selectedSemanticInfo.action_summary.length > 0" class="summary-group">
+                  <div class="info-label">Action Summary</div>
                   <div
-                    v-for="(instr, idx) in selectedBlockInfo.instructions"
-                    :key="idx"
-                    class="instruction-line"
+                    v-for="(item, idx) in selectedSemanticInfo.action_summary"
+                    :key="`action-${idx}`"
+                    class="summary-line mono"
                   >
-                    {{ formatInstruction(instr) }}
+                    {{ item }}
+                  </div>
+                </div>
+
+                <div v-if="selectedSemanticBlocks.length > 0" class="summary-group">
+                  <div class="info-label">Blocks</div>
+                  <div class="semantic-block-stack">
+                    <details
+                      v-for="(block, idx) in selectedSemanticBlocks"
+                      :id="`block-${block.block_id}`"
+                      :key="block.block_id"
+                      class="member-block"
+                      :open="idx === 0"
+                    >
+                      <summary class="member-block-summary">
+                        <span>Block {{ block.block_id }}</span>
+                        <span>{{ block.start_pc }} - {{ block.end_pc }}</span>
+                      </summary>
+                      <div class="member-block-meta">
+                        <span>{{ block.address }}</span>
+                        <span>Gas {{ formatGas(block.gas) }}</span>
+                      </div>
+                      <div v-if="block.actions.length > 0" class="member-actions">
+                        <div v-for="(action, actionIdx) in block.actions" :key="actionIdx" class="action-line">
+                          {{ formatAction(action, actionIdx) }}
+                        </div>
+                      </div>
+                      <div class="block-instructions">
+                        <div
+                          v-for="(instr, instrIdx) in block.instructions"
+                          :key="instrIdx"
+                          class="instruction-line"
+                        >
+                          {{ formatInstruction(instr) }}
+                        </div>
+                      </div>
+                    </details>
                   </div>
                 </div>
               </div>
             </template>
-            <div v-else class="panel-placeholder">Click a node to view instructions</div>
+
+            <template v-else-if="selectedBlockInfo">
+              <div :id="`block-${selectedBlockInfo.block_id}`" class="information-stack">
+                <div class="info-row">
+                  <span class="info-label">ID</span>
+                  <span class="info-value">{{ selectedBlockInfo.block_id }}</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">Contract</span>
+                  <span class="info-value">{{ selectedBlockInfo.address }}</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">Blocks</span>
+                  <span class="info-value">{{ selectedBlockInfo.blocks_number }}</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">PC</span>
+                  <span class="info-value">{{ selectedBlockInfo.start_pc }} - {{ selectedBlockInfo.end_pc }}</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">Gas</span>
+                  <span class="info-value">{{ formatGas(selectedBlockInfo.gas) }}</span>
+                </div>
+
+                <div v-if="selectedBlockInfo.actions.length > 0" class="summary-group">
+                  <div class="info-label">Actions</div>
+                  <div v-for="(action, idx) in selectedBlockInfo.actions" :key="idx" class="summary-line mono">
+                    {{ formatAction(action, idx) }}
+                  </div>
+                </div>
+
+                <div class="summary-group">
+                  <div class="info-label">Instructions</div>
+                  <div class="block-section selected">
+                    <div class="block-instructions">
+                      <div
+                        v-for="(instr, idx) in selectedBlockInfo.instructions"
+                        :key="idx"
+                        class="instruction-line"
+                      >
+                        {{ formatInstruction(instr) }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
-      </div>
+      </transition>
     </div>
 
     <div v-else class="placeholder">
@@ -606,10 +1071,44 @@ const edgeTypes = [
   position: absolute;
   top: 8px;
   left: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
   color: var(--muted);
   letter-spacing: 0.5px;
   z-index: 10;
+}
+
+.mode-badge {
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 9px;
+  letter-spacing: 0.3px;
+  color: #475569;
+  background: #e2e8f0;
+}
+
+.mode-badge.semantic {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.cfg-mode-toggle {
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  background: rgba(255, 255, 255, 0.94);
+  color: #334155;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 9px;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.cfg-mode-toggle:hover {
+  background: #f8fafc;
+  border-color: rgba(100, 116, 139, 0.55);
 }
 
 .cfg-container {
@@ -618,9 +1117,16 @@ const edgeTypes = [
   flex: 1;
   min-height: 0;
   display: flex;
-  gap: 0;
   overflow: hidden;
   box-sizing: border-box;
+}
+
+.graph-stage {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
 }
 
 .graph-viewport {
@@ -628,7 +1134,11 @@ const edgeTypes = [
   overflow: hidden;
   min-width: 0;
   min-height: 0;
-  margin-top: 28px;
+}
+
+.graph-viewport.folded-viewport {
+  box-sizing: border-box;
+  padding-top: 34px;
 }
 
 .graph-viewport :deep(svg) {
@@ -637,7 +1147,6 @@ const edgeTypes = [
 }
 
 .graph-viewport :deep(.node) {
-  transition: opacity 0.15s;
   cursor: pointer;
 }
 
@@ -648,66 +1157,54 @@ const edgeTypes = [
 
 .graph-viewport :deep(.node.hovered ellipse),
 .graph-viewport :deep(.node.hovered polygon),
-.graph-viewport :deep(.node.hovered path) {
+.graph-viewport :deep(.node.hovered path),
+.graph-viewport :deep(.node.hovered rect) {
   stroke-width: 2;
   filter: brightness(1.05);
 }
 
-/* 过滤掉的元素 */
 .graph-viewport :deep(.node.filtered-out),
 .graph-viewport :deep(.edge.filtered-out) {
   opacity: 0.08;
   pointer-events: none;
 }
 
-/* 高亮的目标节点 */
 .graph-viewport :deep(.node.highlighted) {
-  filter: drop-shadow(0 0 8px rgba(255, 0, 0, 0.6));
+  filter: drop-shadow(0 0 8px rgba(255, 0, 0, 0.55));
 }
 
 .graph-viewport :deep(.node.highlighted ellipse),
 .graph-viewport :deep(.node.highlighted polygon),
-.graph-viewport :deep(.node.highlighted path) {
-  stroke: #ff0000;
+.graph-viewport :deep(.node.highlighted path),
+.graph-viewport :deep(.node.highlighted rect) {
+  stroke: #ef4444;
   stroke-width: 3;
 }
 
-/* 选中的节点 */
 .graph-viewport :deep(.node.selected) {
-  filter: drop-shadow(0 0 12px rgba(100, 120, 200, 1));
+  filter: drop-shadow(0 0 12px rgba(99, 102, 241, 0.9));
 }
 
 .graph-viewport :deep(.node.selected ellipse),
 .graph-viewport :deep(.node.selected polygon),
-.graph-viewport :deep(.node.selected path) {
-  stroke: #6478c8;
+.graph-viewport :deep(.node.selected path),
+.graph-viewport :deep(.node.selected rect) {
+  stroke: #4f46e5;
   stroke-width: 4;
-  fill: rgba(100, 120, 200, 0.15);
-}
-
-/* 平滑过渡 */
-.graph-viewport :deep(.node),
-.graph-viewport :deep(.edge) {
-  transition: opacity 0.2s ease;
 }
 
 .reset-button {
   position: absolute;
   top: 32px;
-  right: 168px;
-  padding: 3px 10px;
+  right: 12px;
+  padding: 4px 10px;
   font-size: 10px;
   background: var(--accent);
   color: white;
   border: none;
-  border-radius: 3px;
+  border-radius: 999px;
   cursor: pointer;
   z-index: 10;
-  transition: background 0.15s;
-}
-
-.reset-button:hover {
-  background: var(--accent-hover);
 }
 
 .status-overlay {
@@ -735,9 +1232,8 @@ const edgeTypes = [
   font-size: 12px;
 }
 
-/* Right Side Panel */
 .side-panel {
-  width: 160px;
+  width: 324px;
   background: var(--bg);
   border-left: 1px solid var(--border);
   display: flex;
@@ -745,185 +1241,221 @@ const edgeTypes = [
   overflow: hidden;
   flex-shrink: 0;
   min-height: 0;
-  align-self: stretch;
-  max-height: 100%;
+}
+
+.drawer-enter-active,
+.drawer-leave-active {
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.drawer-enter-from,
+.drawer-leave-to {
+  opacity: 0;
+  transform: translateX(12px);
 }
 
 .panel-section-header {
-  padding: 4px 8px;
+  padding: 6px 10px;
   font-size: 9px;
   color: var(--muted);
-  font-weight: 500;
-  letter-spacing: 0.3px;
+  font-weight: 600;
+  letter-spacing: 0.35px;
   border-bottom: 1px solid var(--border);
   background: var(--panel-bg);
   flex-shrink: 0;
+  text-transform: uppercase;
 }
 
-.info-panel {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.info-content {
+.information-content {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 4px 8px;
+  padding: 8px 10px;
   min-height: 0;
+}
+
+.information-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .info-row {
   display: flex;
   justify-content: space-between;
-  padding: 2px 0;
-  font-size: 9px;
-  gap: 4px;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 10px;
 }
 
 .info-label {
   color: var(--muted);
-  font-weight: 500;
-  font-size: 9px;
+  font-weight: 600;
+  font-size: 10px;
   flex-shrink: 0;
 }
 
 .info-value {
   color: var(--text);
   font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 9px;
+  font-size: 10px;
   text-align: right;
   word-break: break-all;
 }
 
-.info-actions {
-  margin-top: 4px;
-  padding-top: 4px;
+.semantic-card {
+  margin-bottom: 10px;
+  padding: 10px;
+  border: 1px solid rgba(79, 70, 229, 0.18);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(79, 70, 229, 0.08), rgba(255, 255, 255, 0.6));
+}
+
+.semantic-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.semantic-purpose {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #475569;
+}
+
+.semantic-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.semantic-chip {
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: rgba(15, 23, 42, 0.06);
+  color: #334155;
+  font-size: 10px;
+}
+
+.summary-group {
+  margin-top: 10px;
+  padding-top: 8px;
   border-top: 1px solid var(--border);
 }
 
-.action-line {
+.summary-line {
+  margin-top: 4px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: #475569;
+}
+
+.summary-line.mono,
+.action-line,
+.instruction-line {
   font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 8px;
-  color: #666;
-  padding: 1px 0;
-  line-height: 1.3;
-  word-break: break-all;
 }
 
-.panel-placeholder {
-  color: var(--muted);
-  font-size: 9px;
-  text-align: center;
-  padding: 12px 4px;
-}
-
-.panel-divider {
-  height: 1px;
-  background: var(--border);
-  flex-shrink: 0;
-}
-
-.instructions-panel-section {
-  flex: 1;
-  min-height: 0;
+.semantic-block-stack,
+.block-section {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-}
-
-/* Scrollbar for info panel */
-.info-content::-webkit-scrollbar {
-  width: 6px;
-}
-
-.info-content::-webkit-scrollbar-track {
-  background: var(--bg);
-}
-
-.info-content::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 3px;
-}
-
-.info-content::-webkit-scrollbar-thumb:hover {
-  background: var(--muted);
-}
-
-.instructions-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 4px 0;
-  min-height: 0;
-}
-
-.block-section {
-  margin-bottom: 8px;
-  padding: 0 8px;
-  transition: background 0.15s;
+  gap: 10px;
 }
 
 .block-section.selected {
-  background: rgba(100, 120, 200, 0.08);
-  border-left: 2px solid var(--accent);
-  padding-left: 6px;
-}
-
-.block-header {
-  font-size: 9px;
-  color: var(--muted);
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  margin-bottom: 3px;
-  text-transform: uppercase;
+  padding: 10px;
+  border: 1px solid rgba(79, 70, 229, 0.2);
+  border-radius: 10px;
+  background: rgba(99, 102, 241, 0.05);
 }
 
 .block-instructions {
-  font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 10px;
-  line-height: 1.4;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .instruction-line {
   white-space: nowrap;
-  color: #666666;
-  padding: 0.5px 0;
+  color: #475569;
+  font-size: 10px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* Custom scrollbar for instructions panel */
-.instructions-content::-webkit-scrollbar {
+.member-block {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.88);
+  overflow: hidden;
+}
+
+.member-block-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 10px;
+  font-weight: 700;
+  color: #334155;
+}
+
+.member-block-summary::-webkit-details-marker {
+  display: none;
+}
+
+.member-block-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 12px 8px;
+  color: var(--muted);
+  font-size: 10px;
+  word-break: break-all;
+}
+
+.member-actions {
+  padding: 0 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.action-line {
+  font-size: 9px;
+  line-height: 1.35;
+  color: #64748b;
+}
+
+.member-block .block-instructions {
+  padding: 0 12px 12px;
+}
+
+.information-content::-webkit-scrollbar {
   width: 6px;
 }
 
-.instructions-content::-webkit-scrollbar-track {
+.information-content::-webkit-scrollbar-track {
   background: var(--bg);
 }
 
-.instructions-content::-webkit-scrollbar-thumb {
+.information-content::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 3px;
 }
 
-.instructions-content::-webkit-scrollbar-thumb:hover {
-  background: var(--muted);
-}
-
-/* Edge Types Info Icon & Tooltip */
 .edge-info-icon {
   position: relative;
   display: inline-flex;
   align-items: center;
-  margin-left: 4px;
+  padding-bottom: 6px;
   cursor: pointer;
   color: var(--muted);
-  vertical-align: middle;
-  transition: color 0.15s;
 }
 
 .edge-info-icon.active,
@@ -933,57 +1465,71 @@ const edgeTypes = [
 
 .edge-types-tooltip {
   position: absolute;
-  top: 20px;
+  top: calc(100% - 2px);
   left: 0;
   background: rgba(255, 255, 255, 0.98);
   border: 1px solid var(--border);
-  border-radius: 3px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
-  padding: 8px 10px;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+  padding: 10px 12px;
   z-index: 200;
-  min-width: 220px;
+  min-width: 230px;
   white-space: nowrap;
 }
 
 .edge-tooltip-title {
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--text);
-  margin-bottom: 6px;
+  margin-bottom: 8px;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
 }
 
 .edge-type-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   margin-bottom: 4px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  cursor: pointer;
 }
 
-.edge-type-item:last-child {
-  margin-bottom: 0;
+.edge-type-item:hover {
+  background: rgba(56, 189, 248, 0.08);
 }
 
-.edge-type-item svg {
-  flex-shrink: 0;
+.edge-type-item.active {
+  background: rgba(56, 189, 248, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.35);
 }
 
 .edge-type-text {
   display: flex;
   flex-direction: column;
+  gap: 1px;
 }
 
 .edge-type-name {
   font-size: 10px;
-  font-weight: 600;
-  color: var(--text);
-  line-height: 1.3;
+  font-weight: 700;
+  color: #1f2937;
 }
 
 .edge-type-desc {
   font-size: 9px;
-  color: var(--muted);
-  line-height: 1.2;
+  color: #64748b;
+}
+
+.edge-filter-reset {
+  margin-top: 8px;
+  width: 100%;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: rgba(79, 70, 229, 0.08);
+  color: #4338ca;
+  font-size: 10px;
+  cursor: pointer;
 }
 </style>

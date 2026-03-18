@@ -45,16 +45,19 @@ class FoldableBlockNode(BlockNode):
 
     def merge_fold_info(self, other_nodes: List["FoldableBlockNode"]):
         if not other_nodes: return
-        
-        last_node = other_nodes[-1]
-        self.fold_info["blocks_number"] = 1 + len(other_nodes)
-        self.fold_info["total_gas"] = self.total_gas + sum([n.total_gas for n in other_nodes])
-        
-        # 直接合并 actions 和 instructions，不再需要 visible 判断
+
+        current_total_gas = self.fold_info.get("total_gas", self.total_gas)
+        merged_total_gas = current_total_gas + sum(
+            n.fold_info.get("total_gas", n.total_gas) for n in other_nodes
+        )
+
         for node in other_nodes:
-            self.folded_blocks.append(node) # 记录被合并的原始块
+            if node not in self.folded_blocks:
+                self.folded_blocks.append(node)
             self.fold_info["actions"].extend(node.actions)
-            self.instructions.extend(node.instructions)
+
+        self.fold_info["blocks_number"] = len(self.folded_blocks)
+        self.fold_info["total_gas"] = merged_total_gas
 
 class CFGConstructor:
     def __init__(self, all_base_blocks: List[Block]):
@@ -101,8 +104,8 @@ class CFGConstructor:
         return {e.target for e in cfg.edges if e.source == node and isinstance(e.target, FoldableBlockNode)}
     
 
-        # ========== 基础工具方法 ==========
-    def _find_base_block(self, address: str, pc: str) -> Block:
+    # ========== 基础工具方法 ==========
+    def _find_base_block(self, address: str, pc: str) -> Optional[Block]:
         key = (address, pc)
         if key in self.base_block_map:
             return self.base_block_map[key]
@@ -353,7 +356,6 @@ class CFGConstructor:
         if len(overlap_nodes) > 0:
             # 情况 A：存在重叠点（如 A-B-C, A-C）
             if len(overlap_nodes) == 1:
-                print(overlap_nodes)
                 candidate = next(iter(overlap_nodes))
                 candidate_children = {n for n in self._get_unique_children(cfg, candidate) if n.address == contract_addr}
                 # 检查除了这个 candidate 以外，是否还有其他的孙子节点
@@ -606,22 +608,28 @@ class CFGConstructor:
     
 
     # ========== CFG构建主逻辑 ==========
-    def construct_cfg(self, trace: Dict[str, Any], slot_map: Dict[str, str], erc20_token_map: Dict[str, str]) -> Tuple[CFG, List[Dict[str, Any]], Dict[str, List[str]], List[Dict[str, Any]], CFG]:
+    def construct_cfg(
+        self,
+        trace: Dict[str, Any],
+        slot_map: Dict[str, str],
+        erc20_token_map: Dict[str, str],
+    ) -> Tuple[CFG, CFG, List[Dict[str, Any]], Dict[str, List[str]], List[Dict[str, Any]]]:
         """构建CFG（核心入口）"""
         cfg = CFG(tx_hash=trace["tx_hash"])
         steps = trace["steps"]
         if not steps:
-            return cfg, [], {}, [], cfg
+            return cfg, cfg, [], {}, []
 
         processed_nodes: Dict[Tuple[str, str], FoldableBlockNode] = {}
         current_step_idx = 0
 
         # 初始化第一个节点
         first_step = steps[current_step_idx]
-        try:
-            current_base_block = self._find_base_block(first_step["address"], first_step["pc"])
-        except ValueError as e:
-            raise RuntimeError(f"初始化第一个块失败：{e}")
+        current_base_block = self._find_base_block(first_step["address"], first_step["pc"])
+        if current_base_block is None:
+            raise RuntimeError(
+                f"初始化第一个块失败：未找到 address={first_step['address']} 且 start_pc={first_step['pc']} 的基础块"
+            )
         
         current_node_key = (current_base_block.address, current_base_block.start_pc)
         current_node = FoldableBlockNode(current_base_block)
@@ -642,9 +650,8 @@ class CFGConstructor:
 
             # 处理JUMPDEST
             if current_opcode == "JUMPDEST":
-                try:
-                    jumpdest_block = self._find_base_block(current_step["address"], current_step["pc"])
-                except ValueError as e:
+                jumpdest_block = self._find_base_block(current_step["address"], current_step["pc"])
+                if jumpdest_block is None:
                     current_step_idx += 1
                     continue
 
@@ -749,9 +756,8 @@ class CFGConstructor:
             # 处理分块
             if current_opcode in self.split_opcodes and current_step_idx + 1 < len(steps):
                 next_step = steps[current_step_idx + 1]
-                try:
-                    next_block = self._find_base_block(next_step["address"], next_step["pc"])
-                except ValueError:
+                next_block = self._find_base_block(next_step["address"], next_step["pc"])
+                if next_block is None:
                     current_step_idx += 1
                     continue
                 next_node_key = (next_block.address, next_block.start_pc)
@@ -784,32 +790,57 @@ class CFGConstructor:
         folded_node_map = self._fold_linear_chains(cfg)
         return cfg, original_cfg, all_changes, folded_node_map, self.table
 
-    # 导出blockid和内部信息映射
-    def export_folded_blocks_information(self, cfg: CFG, output_path: str):
+    def build_folded_blocks_information(self, cfg: CFG) -> Dict[str, Any]:
         block_inst_map = {}
         for node in cfg.nodes:
-            if not isinstance(node, FoldableBlockNode): continue
+            if not isinstance(node, FoldableBlockNode):
+                continue
             block_inst_map[node.id] = {
                 "block_id": node.id,
                 "address": node.address,
-                "blocks_number": node.fold_info["blocks_number"],
-                "folded_blocks": [n.id for n in node.folded_blocks], # 记录具体包含的原始ID
-                "gas": node.fold_info["total_gas"],
+                "blocks_number": node.fold_info.get("blocks_number", len(node.folded_blocks)),
+                "folded_blocks": [n.id for n in node.folded_blocks],
+                "gas": node.fold_info.get("total_gas", node.total_gas),
                 "actions": node.fold_info.get("actions", node.actions),
-                "instructions": [str(instr) for instr in node.instructions]
+                "instructions": [str(instr) for instr in node.instructions],
             }
+        return block_inst_map
+
+    # 导出blockid和内部信息映射
+    def export_folded_blocks_information(self, cfg: CFG, output_path: str):
+        block_inst_map = self.build_folded_blocks_information(cfg)
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(block_inst_map, f, ensure_ascii=False, indent=2)
 
-    def export_edge_step_information(self, cfg: CFG, output_path: str):
+    def build_edge_step_information(self, cfg: CFG) -> Dict[str, Any]:
         edge_list = []
         for edge in cfg.edges:
             edge_id = getattr(edge, "edge_id", "unknown")
             edge_step = getattr(edge, "edge_step", None)
-            try: sort_key = int(edge_step) if edge_step is not None else float('inf')
-            except (ValueError, TypeError): sort_key = float('inf')
-            edge_list.append({"edge_id": edge_id, "edge_step": sort_key, "original_step": edge_step})
+            try:
+                sort_key = int(edge_step) if edge_step is not None else float('inf')
+            except (ValueError, TypeError):
+                sort_key = float('inf')
+            edge_list.append({
+                "edge_id": edge_id,
+                "edge_step": sort_key,
+                "original_step": edge_step,
+                "source_node": f"node_{edge.source.id}" if hasattr(edge, "source") and hasattr(edge.source, "id") else "unknown",
+                "target_node": f"node_{edge.target.id}" if hasattr(edge, "target") and hasattr(edge.target, "id") else "unknown",
+            })
         edge_list_sorted = sorted(edge_list, key=lambda x: x["edge_step"])
-        edge_step_map = {item["edge_id"]: {"edge_id": item["edge_id"], "edge_step": item["original_step"]} for item in edge_list_sorted}
+        edge_step_map = {
+            item["edge_id"]: {
+                "edge_id": item["edge_id"],
+                "edge_step": item["original_step"],
+                "source_node": item["source_node"],
+                "target_node": item["target_node"],
+            }
+            for item in edge_list_sorted
+        }
+        return edge_step_map
+
+    def export_edge_step_information(self, cfg: CFG, output_path: str):
+        edge_step_map = self.build_edge_step_information(cfg)
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(edge_step_map, f, ensure_ascii=False, indent=2)

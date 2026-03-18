@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 
 def build_refined_hierarchical_trace(steps):
     """
@@ -168,6 +170,52 @@ def build_refined_hierarchical_trace(steps):
     root_tree, _ = process_level(0)
     return root_tree
 
+def _build_message_link(call_id, from_name, to_name, entry_op):
+    tooltip = f"{entry_op}: {from_name} -> {to_name}"
+    tooltip = tooltip.replace("{", "(").replace("}", ")").replace("[", "(").replace("]", ")")
+    return f"[[#call-{call_id}{{{tooltip}}}]]"
+
+
+def render_puml_to_svg(puml_path):
+    """Render a PlantUML file to SVG if a PlantUML jar is available."""
+    abs_puml_path = os.path.abspath(puml_path)
+    svg_path = os.path.splitext(abs_puml_path)[0] + ".svg"
+
+    plantuml_jar = os.environ.get("PLANTUML_JAR")
+    if not plantuml_jar:
+        backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        plantuml_jar = os.path.join(backend_dir, "tools", "plantuml.jar")
+
+    plantuml_jar = os.path.abspath(plantuml_jar)
+    if not os.path.isfile(plantuml_jar):
+        print(f"WARNING: PlantUML jar not found, sequence SVG skipped: {plantuml_jar}")
+        return False
+
+    try:
+        proc = subprocess.run(
+            ["java", "-jar", plantuml_jar, "-charset", "UTF-8", "-tsvg", abs_puml_path],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+        if proc.stdout.strip():
+            print(proc.stdout.strip())
+        if proc.stderr.strip():
+            print(proc.stderr.strip())
+    except Exception as exc:
+        print(f"WARNING: PlantUML SVG generation failed for {abs_puml_path}: {exc}")
+        return False
+
+    if not os.path.isfile(svg_path):
+        print(f"WARNING: PlantUML reported success but SVG not found: {svg_path}")
+        return False
+
+    print(f"✅ 时序图SVG已生成：{svg_path}")
+    return True
+
+
 def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map, addr_color_map):
     
     # 新增：初始化calldata映射字典（
@@ -308,20 +356,34 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
                     full_calldata.append("无Calldata")
             calldata0 = segments[0]["val"] if (segments and len(segments) > 0) else "无Calldata"
             
+            call_id = call_data_mapping["total_calls"] + 1
+            message_link = _build_message_link(
+                call_id,
+                parent_instance["name"],
+                current_instance["name"],
+                entry_op,
+            )
+
             # 2. 原有PUML调用线生成逻辑
             op_type = entry_op.upper()
             if op_type in ["DELEGATECALL", "CALLCODE"]:
                 # 虚线
-                call_line = f"{indent}{parent_instance['alias']} -[dashed]-> {current_instance['alias']}: {entry_op}\\l{calldata0}"
+                call_line = (
+                    f"{indent}{parent_instance['alias']} -[dashed]-> {current_instance['alias']} "
+                    f"{message_link} : {entry_op}\\l{calldata0}"
+                )
             else:
                 # 实线
-                call_line = f"{indent}{parent_instance['alias']} -> {current_instance['alias']}: {entry_op}\\l{calldata0}"
+                call_line = (
+                    f"{indent}{parent_instance['alias']} -> {current_instance['alias']} "
+                    f"{message_link} : {entry_op}\\l{calldata0}"
+                )
             interaction_lines.append(call_line)
 
             # 3. 记录到JSON映射（核心）
-            call_data_mapping["total_calls"] += 1
+            call_data_mapping["total_calls"] = call_id
             call_data_mapping["calls"].append({
-                "call_id": call_data_mapping["total_calls"],
+                "call_id": call_id,
                 "entry_step": entry_step,
                 "exit_step": exit_step,
                 "entry_op": entry_op,
