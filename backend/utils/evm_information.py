@@ -180,10 +180,6 @@ class TraceFormatter:
                 ONLY_NAME_ABI = [{"constant":True,"inputs":[],"name":"name","outputs":[{"name":"","type":"string"}],"payable":False,"stateMutability":"view","type":"function"}]
                 name_contract = self.web3.eth.contract(address=Web3.to_checksum_address(norm_addr), abi=ONLY_NAME_ABI)
                 token_name = name_contract.functions.name().call().strip()
-                
-                # 过滤无效/非代币名称
-                if not token_name or any(key in token_name.lower() for key in ["swap", "pair", "router", "transfer","order"]):
-                    continue
 
                 # 2. 识别成功：添加代理合约到映射
                 erc20_token_map[norm_addr] = token_name

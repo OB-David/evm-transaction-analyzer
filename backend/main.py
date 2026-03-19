@@ -210,17 +210,17 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
     "#FD6767E6", # 1. 纯火焰红 (起始核心)
     "#FF956EE6", # 2. 猩红色
     "#FFA500E6", # 3. 鲜橙色
-    "#FFD700E6", # 4. 金黄色
-    "#FFFF00E6", # 5. 纯亮黄
-    "#B36EF985", # 6. 深天蓝 (蓝焰区开始)
-    "#1B87F3BB", # 7. 亮蓝
-    "#87CEFAE6", # 8. 浅蓝
-    "#ADD8E6E6", # 9. 淡蓝色
-    "#FFFFFFE6"  # 10. 纯白 (最高温/最外层)
+    "#80A700BC", # 4
+    "#21D22DBB", # 5
+    "#065700CA", # 6
+    "#B36EF985", # 7. 深天蓝 (蓝焰区开始)
+    "#1B87F3BB", # 8. 亮蓝
+    "#87CEFAE6", # 9. 浅蓝
+    "#ADD8E6E6", # 10. 淡蓝色
     ]
     EDGE_COLOR_MAP = {
         "NORMAL": "#939393",
-        "JUMP": "#242424",
+        "JUMP": "#5B4747",
         "CALL": "#1F6800",
         "DELEGATECALL": "#009DFF",
         "TERMINATE": "#C14A00",

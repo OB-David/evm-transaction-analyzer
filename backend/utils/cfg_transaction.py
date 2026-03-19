@@ -607,6 +607,153 @@ class CFGConstructor:
         return self.folded_node_map
     
 
+    def _identify_dispatch_pattern(self, cfg: CFG, mid_node: FoldableBlockNode) -> Optional[Dict[str, Any]]:
+        """
+        识别分发中转模式：Parent(A) -> Mid(M) -> Children(C1, C2...)
+        条件：
+        1. M 必须以 JUMPI 结尾（分发逻辑）
+        2. M 只有一个父节点 A
+        3. A 的入边数与出边数在本次分发中保持某种逻辑关联（此处采用你要求的入度/出度平衡触发）
+        """
+        m_node = mid_node
+        contract_addr = m_node.address
+
+        # 1. 验证 M 的入度安全性：必须有且仅有一个父节点
+        m_parents = list(self._get_unique_parents(cfg, m_node))
+        if len(m_parents) != 1:
+            return None
+        parent_a = m_parents[0]
+
+        # 2. 验证 M 的出度：必须有分歧（JUMPI 产生两个或多个去向）
+        m_children = list(self._get_unique_children(cfg, m_node))
+        if len(m_children) < 2:
+            return None
+
+        # 3. 验证 M 的末尾指令是否为 JUMPI
+        last_instr = m_node.instructions[-1]
+        opcode = last_instr[1] if isinstance(last_instr, tuple) else last_instr.get("opcode")
+        if opcode!= "JUMPI":
+            return None
+
+        # 4. 验证 M 的纯净度：确保其所有子节点都在当前合约内
+        if any(c.address != contract_addr for c in m_children):
+            return None
+
+        # 5. 数量平衡校验 (根据你的要求：M的入边数 == M的出边数)
+        # 注意：这里的入边/出边是指 cfg.edges 中的物理边数
+        m_in_edges = [e for e in cfg.edges if e.target == m_node]
+        m_out_edges = [e for e in cfg.edges if e.source == m_node]
+        
+        if len(m_in_edges) != len(m_out_edges):
+            return None
+
+
+        print("find dispatch pattern!")
+        return {
+            "parent": parent_a,
+            "mid": m_node,
+            "children": m_children
+        }
+    
+
+    def _fold_dispatch_patterns(self, cfg: CFG) -> Dict[str, List[str]]:
+        """
+        执行分发块下沉折叠：
+        将 M 的指令合并到每个子节点的头部，并让 A 直接连接到这些子节点。
+        """
+        overall_changed = True
+        while overall_changed:
+            overall_changed = False
+            nodes_to_remove = set()
+            current_scan_nodes = [n for n in cfg.nodes]
+
+            for node in current_scan_nodes:
+                if node in nodes_to_remove:
+                    continue
+
+                # 尝试以当前节点作为中间件 M 进行识别
+                pattern = self._identify_dispatch_pattern(cfg, node)
+                
+                if pattern:
+                    parent_a = pattern["parent"]
+                    m_node = pattern["mid"]
+                    children = pattern["children"]
+
+                    # 安全检查：确保子节点没有被本轮其他操作标记删除
+                    if any(c in nodes_to_remove for c in children):
+                        continue
+
+                    # --- 1. 指令下沉与合并 ---
+                    # 将 M 的指令复制并插入到每个子节点指令序列的开头
+                    for child in children:
+                        new_instructions = []
+                        # 插入语义边界标记
+                        new_instructions.append({
+                            "pc": "---", 
+                            "opcode": "DISPATCH_LOGIC_SINK", 
+                            "is_boundary": True,
+                            "from_id": m_node.id
+                        })
+                        # 插入 M 的原始指令
+                        new_instructions.extend(m_node.instructions)
+                        # 拼接子块原有的指令
+                        new_instructions.extend(child.instructions)
+                        # 更新子块指令集
+                        child.instructions = new_instructions
+
+                        # --- 2. 深度对象继承 ---
+                        # 子块继承 M 曾经折叠过的所有块对象
+                        if hasattr(m_node, 'folded_blocks'):
+                            ext_blocks = [b for b in m_node.folded_blocks if b != m_node]
+                            child.folded_blocks.extend(ext_blocks)
+
+                        # --- 3. 映射表更新 ---
+                        # 因为 M 被分发到了多个子块，M 代表的原始 ID 需要被所有子块 ID 共享
+                        m_original_ids = self.folded_node_map.get(m_node.id, [m_node.id])
+                        for oid in m_original_ids:
+                            if oid not in self.folded_node_map[child.id]:
+                                self.folded_node_map[child.id].append(oid)
+                        
+                        # --- 4. 物理信息继承 (Gas, Actions) ---
+                        child.merge_fold_info([m_node])
+
+                    # --- 5. 重连边关系 ---
+                    # 找到所有 A -> M 的边，改为 A -> Children
+                    # 由于 M 的出边和入边相等，这里我们通过重新创建边来实现
+                    new_edges = []
+                    for edge in cfg.edges:
+                        if edge.source == parent_a and edge.target == m_node:
+                            # 为每个子块创建一条从 A 发出的边
+                            for child in children:
+                                # 这里假设 Edge 类可以简单克隆，或者你可以直接构造
+                                # 保持与 A -> M 边相同的属性（如 condition 等）
+                                new_edges.append(edge.__class__(source=parent_a, target=child))
+                        elif edge.source == m_node:
+                            # M 发出的边将被废弃
+                            continue
+                        else:
+                            new_edges.append(edge)
+                    cfg.edges = new_edges
+
+                    # 映射表中移除 M 的独立词条
+                    if m_node.id in self.folded_node_map:
+                        self.folded_node_map.pop(m_node.id)
+
+                    nodes_to_remove.add(m_node)
+                    overall_changed = True
+
+            # 物理清理
+            if nodes_to_remove:
+                cfg.nodes = [n for n in cfg.nodes if n not in nodes_to_remove]
+                # 边已经在重连逻辑中清理过了
+        
+        # 最终去重
+        for rid in self.folded_node_map:
+            self.folded_node_map[rid] = list(dict.fromkeys(self.folded_node_map[rid]))
+
+        return self.folded_node_map
+    
+
     # ========== CFG构建主逻辑 ==========
     def construct_cfg(
         self,
@@ -787,6 +934,7 @@ class CFGConstructor:
         folded_node_map = self._fold_linear_chains(cfg)
         folded_node_map = self._fold_dianmond_patterns(cfg)
         folded_node_map = self._fold_feedback_patterns(cfg)
+        folded_node_map = self._fold_dispatch_patterns(cfg)
         folded_node_map = self._fold_linear_chains(cfg)
         return cfg, original_cfg, all_changes, folded_node_map, self.table
 
