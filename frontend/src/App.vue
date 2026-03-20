@@ -1,18 +1,37 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import TitleBar from './components/TitleBar.vue'
 import InputPanel from './components/InputPanel.vue'
 import CfgPanel from './components/CfgPanel.vue'
 import AfgPanel from './components/AfgPanel.vue'
 import FlameGraphPanel from './components/FlameGraphPanel.vue'
 import BlockPanel from './components/BlockPanel.vue'
-import { analyzeTransaction, fetchEdgeStepMap, type EdgeStepMap } from './api/analyze'
+import { analyzeTransaction, fetchEdgeStepMap, fetchArbitrageHashes, triggerArbitrageRefresh, type EdgeStepMap } from './api/analyze'
 
 const currentTxHash = ref<string | null>(null)
 const currentBlockNumber = ref<number | null>(null)
 const highlightedBlockId = ref<number[] | null>(null)
 const inputPanelRef = ref<InstanceType<typeof InputPanel> | null>(null)
 const isAnalyzing = ref(false)
+
+// Arbitrage hashes from Dune — stored as Sets for O(1) lookup in BlockPanel
+const arbitrageTxHashes = ref<Set<string>>(new Set())
+const arbitrageBlockNumbers = ref<Set<number>>(new Set())
+
+function applyArbitrageData(data: Awaited<ReturnType<typeof fetchArbitrageHashes>>) {
+  arbitrageTxHashes.value = new Set(data.transactions.map(t => t.tx_hash))
+  arbitrageBlockNumbers.value = new Set(
+    data.transactions.map(t => t.block_number).filter((n): n is number => n !== null)
+  )
+}
+
+onMounted(async () => {
+  try {
+    applyArbitrageData(await fetchArbitrageHashes())
+  } catch (e) {
+    console.warn('Failed to load arbitrage hashes:', e)
+  }
+})
 
 // Flame graph state
 const flameStepRange = ref<{ entryStep: number; exitStep: number } | null>(null)
@@ -64,6 +83,18 @@ function handleLatestBlock(blockNum: number) {
       inputPanelRef.value.updateBlockNumber(blockNum)
     }
   }
+}
+
+function handleLatestBlocksRefreshed() {
+  triggerArbitrageRefresh().then(() => {
+    setTimeout(async () => {
+      try {
+        applyArbitrageData(await fetchArbitrageHashes())
+      } catch (e) {
+        console.warn('Failed to refresh arbitrage hashes:', e)
+      }
+    }, 5_000)
+  }).catch(() => {})
 }
 
 async function handleTransactionSelected(txHash: string) {
@@ -122,9 +153,12 @@ function handleFlameSelect(stepRange: { entryStep: number; exitStep: number } | 
       <BlockPanel
         class="block-panel"
         :block-number="currentBlockNumber"
+        :arbitrage-tx-hashes="arbitrageTxHashes"
+        :arbitrage-block-numbers="arbitrageBlockNumbers"
         @transaction-selected="handleTransactionSelected"
         @block-selected="handleBlockSelected"
         @latest-block="handleLatestBlock"
+        @latest-blocks-refreshed="handleLatestBlocksRefreshed"
       />
     </div>
     <div class="right-col">

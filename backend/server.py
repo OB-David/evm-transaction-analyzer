@@ -4,20 +4,23 @@ import mimetypes
 import json, os
 import re
 import subprocess
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, field_validator
 from utils.block_exploration import fetch_block_gas_data, get_transaction_block_number, fetch_blocks_gas_summary, start_prefetch
+from utils.arbitrage_crawler import fetch_arbitrage_hashes, get_cached_hashes
 
 app = FastAPI(title="EVM Transaction Analyzer")
 
 
 @app.on_event("startup")
 def startup_prefetch():
-    """Start background block prefetch on server startup."""
+    """Start background block prefetch and arbitrage crawl on server startup."""
     start_prefetch()
+    threading.Thread(target=fetch_arbitrage_hashes, daemon=True).start()
 
 # Thread pool for running subprocesses on Windows
 executor = ThreadPoolExecutor(max_workers=4)
@@ -208,6 +211,19 @@ async def get_transaction_block(tx_hash: str):
         raise HTTPException(status_code=404, detail="Transaction not found")
 
     return BlockNumberResponse(block_number=block_number)
+
+@app.get("/api/arbitrage-hashes")
+async def get_arbitrage_hashes():
+    """Return the cached list of arbitrage tx hashes fetched from Dune."""
+    return get_cached_hashes()
+
+
+@app.post("/api/arbitrage-hashes/refresh")
+async def refresh_arbitrage_hashes():
+    """Trigger a fresh Dune query execution in the background."""
+    threading.Thread(target=fetch_arbitrage_hashes, daemon=True).start()
+    return {"status": "refresh started"}
+
 
 @app.get("/api/arbitrage/{tx_hash}")
 async def get_arbitrage(tx_hash: str):
