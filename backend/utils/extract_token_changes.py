@@ -411,6 +411,8 @@ def afg_to_cfg(paired, pending_erc20, tx_cfg: CFG, folded_node_map):
         sload_block = next((rid for rid, nids in folded_node_map.items() if sload_block in nids), sload_block)
         sstore_block = find_node_by_pc_address(tx_cfg, folded_node_map, v["token_addr"], v["source_pcs"][1])
         sstore_block = next((rid for rid, nids in folded_node_map.items() if sstore_block in nids), sstore_block)
+        if sload_block is None or sstore_block is None:
+            continue
         edge_link.append({
             "edge_id": v["order"], "type": "ERC20_BALANCE_CHANGE",
             "matched_blocks": [sload_block, sstore_block]

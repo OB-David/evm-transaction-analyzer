@@ -116,16 +116,25 @@ async function renderGraph() {
     const container = graphContainer.value
 
     graphvizInstance = graphviz(container, {
-      useWorker: false,
+      useWorker: true,
       zoom: true,
       fit: true,
       width: container.clientWidth,
       height: container.clientHeight,
     })
 
-    await graphvizInstance
-      .renderDot(dotContent.value)
-      .on('end', attachInteractivity)
+    await new Promise<void>((resolve, reject) => {
+      try {
+        graphvizInstance
+          .renderDot(dotContent.value)
+          .on('end', () => {
+            attachInteractivity()
+            resolve()
+          })
+      } catch (e) {
+        reject(e)
+      }
+    })
   } catch (e) {
     console.error('Graphviz render error:', e)
     errorMsg.value = 'Failed to render graph'
