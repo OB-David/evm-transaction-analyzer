@@ -5,6 +5,7 @@ import logging
 import requests
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+import json
 
 load_dotenv()
 
@@ -90,12 +91,15 @@ def fetch_arbitrage_hashes() -> list[dict]:
         transactions = _extract_transactions(execution_id)
         _cache["transactions"] = transactions
         _cache["fetched_at"] = datetime.now(timezone.utc).isoformat()
+        
+
+        # json for viewing
+        with open("dune_cache.json", "w") as f:
+            json.dump(_cache, f, indent=4)
+        logger.info("Saved cache to dune_cache.json")
+
         logger.info("Cached %d arbitrage transactions from Dune", len(transactions))
         return transactions
-    except TimeoutError as e:
-        logger.error("Dune query timed out: %s", e)
-    except RuntimeError as e:
-        logger.error("Dune query failed: %s", e)
     except Exception as e:
         logger.error("Unexpected error fetching arbitrage hashes: %s", e)
     return []
