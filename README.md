@@ -60,8 +60,8 @@ Environment variables (configured in `backend/.env`):
 | `OPENAI_SEMANTIC_CFG_MIN_CONFIDENCE` | Optional. Reject semantic labels below this confidence. Default: `0.45` |
 | `OPENAI_SEMANTIC_CFG_MAX_PROMPT_CHARS` | Optional. Max characters per semantic CFG batch before automatic split. Default: `120000` |
 | `OPENAI_SEMANTIC_CFG_API_MODE` | Optional. `auto`, `responses`, or `chat_completions`. Use `chat_completions` for providers that do not implement `/v1/responses` |
-| `OPENAI_SEMANTIC_CFG_BATCH_SIZE` | Optional. Fixed number of semantic regions per contract batch before request. Default: `20` |
-| `OPENAI_SEMANTIC_CFG_COARSE_GROUP_SIZE` | Optional. Number of fine-grained regions merged into one coarse semantic candidate before LLM labeling. Larger values usually mean fewer semantic nodes. Default: `18` |
+| `OPENAI_SEMANTIC_CFG_BATCH_SIZE` | Optional. Fixed number of semantic regions per contract batch before request. Recommended range: `6-10`. Default: `8` |
+| `OPENAI_SEMANTIC_CFG_COARSE_GROUP_SIZE` | Deprecated. Ignored by the current single-pass semantic aggregation pipeline |
 | `OPENAI_SEMANTIC_CFG_TARGET_NODE_COUNT` | Optional. Target number of semantic nodes after the second compression pass. Lower values produce a more condensed semantic CFG. Default: `28` |
 | `OPENAI_SEMANTIC_CFG_REASONING_EFFORT` | Optional. Thinking depth for compatible chat-completions providers. Recommended `minimal` for speed-sensitive semantic CFG generation |
 

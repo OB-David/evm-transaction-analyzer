@@ -210,9 +210,44 @@ export interface SemanticNodeInformation {
     entry_step: number | null
     exit_step: number | null
   }
+  sequence_hint_step?: number | null
+  sequence_index?: number
   actions: BlockAction[]
-  instruction_summary: string[]
-  action_summary: string[]
+  block_opcode_sequences?: Array<{
+    block_id: number
+    pc_range: string
+    opcodes: string[]
+    actions: BlockAction[]
+  }>
+  decision_signals?: {
+    opcode_focus_counts: Record<string, number>
+    external_calls: Array<Record<string, unknown>>
+    state_reads: Array<Record<string, unknown>>
+    state_writes: Array<Record<string, unknown>>
+    terminal_behavior: Record<string, boolean>
+  }
+  trace_state_changes?: Array<{
+    trace_index: number
+    address: string
+    pc: string
+    opcode: string
+    stack: string[]
+    memory: string[]
+    stack_change: {
+      before: string[]
+      after: string[]
+    }
+    memory_change: {
+      before: string[]
+      after: string[]
+    }
+  }>
+  neighbor_context?: {
+    previous: Array<Record<string, unknown>>
+    next: Array<Record<string, unknown>>
+  }
+  contains_exceptional_terminate?: boolean
+  is_routing_noise?: boolean
   member_blocks: BlockInformation[]
 }
 
@@ -225,6 +260,8 @@ export interface SemanticEdge {
   edge_types: string[]
   raw_edge_ids: string[]
   edge_steps: number[]
+  min_edge_step?: number | null
+  is_primary_path?: boolean
 }
 
 export interface SemanticCfgData {
@@ -233,6 +270,7 @@ export interface SemanticCfgData {
   nodes: SemanticNodeMap
   edges: SemanticEdge[]
   raw_to_semantic: Record<string, string>
+  background?: Record<string, unknown>
 }
 
 export type CfgMode = 'semantic' | 'folded'

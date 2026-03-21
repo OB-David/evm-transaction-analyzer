@@ -9,7 +9,7 @@ from utils.cfg_transaction import CFGConstructor
 from utils.render_cfg import render_transaction, render_semantic_transaction
 from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_cfg, edge_link_to_json, detect_arbitrage, compute_address_balances
 from utils.sequence_diagram import build_refined_hierarchical_trace, render_puml_to_svg, tree_to_puml
-from utils.semantic_cfg import generate_and_export_semantic_cfg
+from utils.semantic_cfg import generate_and_export_semantic_cfg, build_semantic_background
 
 
 # 加载环境变量
@@ -118,6 +118,20 @@ def main():
         edge_link = afg_to_cfg(pairs, pending_erc20, original_cfg, folded_node_map)
         json_output = edge_link_to_json(edge_link)
         print(f"共提取到 {len(all_changes)} 条资产变更事件，配对成功 {len(pairs)} 对交易流,存在孤立变动{len(annotations)}条\n")
+        arb_result = detect_arbitrage(pairs, pending_erc20)
+        addr_balances = compute_address_balances(pairs, pending_erc20)
+        semantic_background = build_semantic_background(
+            paired=pairs,
+            pending_erc20=pending_erc20,
+            edge_link=edge_link,
+            arb_result={
+                "is_arbitrage": len(arb_result["cycles"]) > 0,
+                "cycles": arb_result["cycles"],
+                "arb_edge_orders": list(arb_result["arb_edge_orders"]),
+            },
+            address_balances=addr_balances,
+            full_address_name_map=full_address_name_map,
+        )
 
         # 8. 保存轨迹数据
         trace_path = os.path.join(result_dir, "trace.json")
@@ -146,6 +160,8 @@ def main():
                 erc20_token_map=erc20_token_map,
                 folded_blocks_map=folded_blocks_map,
                 edge_step_map=edge_step_map,
+                semantic_background=semantic_background,
+                trace_steps=standardized_trace.get("steps", []),
             )
             if not semantic_cfg:
                 print("Semantic CFG skipped; fallback to folded CFG remains available.")
@@ -164,7 +180,6 @@ def main():
             f.write(json_output)
         print(f"边映射数据已保存到: {edge_link_path}")
 
-        arb_result = detect_arbitrage(pairs, pending_erc20)
         arb_json_path = os.path.join(result_dir, "arbitrage.json")
         with open(arb_json_path, "w", encoding="utf-8") as f:
             json.dump({
@@ -173,7 +188,6 @@ def main():
                 "arb_edge_orders": list(arb_result["arb_edge_orders"])
             }, f, indent=2, ensure_ascii=False)
 
-        addr_balances = compute_address_balances(pairs, pending_erc20)
         addr_balances_path = os.path.join(result_dir, "address_balances.json")
         with open(addr_balances_path, "w", encoding="utf-8") as f:
             json.dump(addr_balances, f, indent=2, ensure_ascii=False)

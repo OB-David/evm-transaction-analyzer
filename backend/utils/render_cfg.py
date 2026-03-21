@@ -236,6 +236,12 @@ def render_semantic_transaction(
         contract_name = escape_html(node.get("contract_name") or addr_short(contract_addr))
         label_lines = wrap_semantic_label(node.get("label", "Semantic Region"))
         label_rows = "".join(f'<TR><TD><B>{escape_html(line)}</B></TD></TR>' for line in label_lines)
+        sequence_index = node.get("sequence_index")
+        sequence_badge = (
+            f'<TR><TD><FONT POINT-SIZE="12" COLOR="#94A3B8">#{int(sequence_index):02d}</FONT></TD></TR>'
+            if isinstance(sequence_index, int)
+            else ""
+        )
         accent_color = addr_color_map.get(contract_addr, "#CBD5E1")
         fill_color = "#FFFDF8"
         actions = node.get("actions", [])
@@ -243,6 +249,7 @@ def render_semantic_transaction(
         penwidth = "3.2" if actions else "2.2"
         node_label = (
             "<<TABLE BORDER=\"0\" CELLBORDER=\"0\" CELLSPACING=\"0\" CELLPADDING=\"3\">"
+            f"{sequence_badge}"
             f"{label_rows}"
             f'<TR><TD><FONT POINT-SIZE="15" COLOR="#64748B">{contract_name}</FONT></TD></TR>'
             "</TABLE>>"
@@ -259,8 +266,11 @@ def render_semantic_transaction(
             continue
         primary_type = edge_types[0] if edge_types else "NORMAL"
         edge_color = edge_color_map.get(primary_type, "#94A3B8")
+        is_primary_path = bool(edge.get("is_primary_path"))
+        edge_penwidth = "2.6" if is_primary_path else "1.4"
+        arrow_size = "0.82" if is_primary_path else "0.65"
         dot_lines.append(
-            f'  {src_id} -> {tgt_id} [color="{edge_color}", minlen=1]'
+            f'  {src_id} -> {tgt_id} [color="{edge_color}", minlen=1, penwidth={edge_penwidth}, arrowsize={arrow_size}]'
         )
 
     dot_lines.append("}")

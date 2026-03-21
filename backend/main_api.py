@@ -12,7 +12,7 @@ from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
 from utils.extract_token_changes import pair_transactions, afg_to_cfg, edge_link_to_json, detect_arbitrage, compute_address_balances
 from utils.sequence_diagram import build_refined_hierarchical_trace
-from utils.semantic_cfg import generate_and_export_semantic_cfg
+from utils.semantic_cfg import generate_and_export_semantic_cfg, build_semantic_background
 from main import create_result_directory, save_graphs
 
 load_dotenv()
@@ -68,6 +68,20 @@ def run(tx_hash: str):
     pairs, annotations, pending_erc20 = pair_transactions(original_transfer, all_changes, token_decimals_map)
     edge_link = afg_to_cfg(pairs, pending_erc20, original_cfg, folded_node_map)
     json_output = edge_link_to_json(edge_link)
+    arb_result = detect_arbitrage(pairs, pending_erc20)
+    addr_balances = compute_address_balances(pairs, pending_erc20)
+    semantic_background = build_semantic_background(
+        paired=pairs,
+        pending_erc20=pending_erc20,
+        edge_link=edge_link,
+        arb_result={
+            "is_arbitrage": len(arb_result["cycles"]) > 0,
+            "cycles": arb_result["cycles"],
+            "arb_edge_orders": list(arb_result["arb_edge_orders"]),
+        },
+        address_balances=addr_balances,
+        full_address_name_map=full_address_name_map,
+    )
 
     # Save trace
     with open(os.path.join(result_dir, "trace.json"), "w", encoding="utf-8") as f:
@@ -100,6 +114,8 @@ def run(tx_hash: str):
             erc20_token_map=erc20_token_map,
             folded_blocks_map=folded_blocks_map,
             edge_step_map=edge_step_map,
+            semantic_background=semantic_background,
+            trace_steps=standardized_trace.get("steps", []),
         )
         if not semantic_cfg:
             print("Semantic CFG skipped; folded CFG remains the fallback output.")
@@ -107,7 +123,6 @@ def run(tx_hash: str):
         print(f"WARNING: Semantic CFG generation failed: {semantic_error}")
 
     # Save arbitrage results
-    arb_result = detect_arbitrage(pairs, pending_erc20)
     arb_json_path = os.path.join(result_dir, "arbitrage.json")
     with open(arb_json_path, "w", encoding="utf-8") as f:
         json.dump({
@@ -116,7 +131,6 @@ def run(tx_hash: str):
             "arb_edge_orders": list(arb_result["arb_edge_orders"])
         }, f, indent=2, ensure_ascii=False)
 
-    addr_balances = compute_address_balances(pairs, pending_erc20)
     addr_balances_path = os.path.join(result_dir, "address_balances.json")
     with open(addr_balances_path, "w", encoding="utf-8") as f:
         json.dump(addr_balances, f, indent=2, ensure_ascii=False)

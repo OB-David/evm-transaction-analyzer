@@ -951,17 +951,6 @@ onBeforeUnmount(() => {
                   <span class="info-value">{{ selectedSemanticInfo.start_pc }} - {{ selectedSemanticInfo.end_pc }}</span>
                 </div>
 
-                <div v-if="selectedSemanticInfo.action_summary.length > 0" class="summary-group">
-                  <div class="info-label">Action Summary</div>
-                  <div
-                    v-for="(item, idx) in selectedSemanticInfo.action_summary"
-                    :key="`action-${idx}`"
-                    class="summary-line mono"
-                  >
-                    {{ item }}
-                  </div>
-                </div>
-
                 <div v-if="selectedSemanticBlocks.length > 0" class="summary-group">
                   <div class="info-label">Blocks</div>
                   <div class="semantic-block-stack">
