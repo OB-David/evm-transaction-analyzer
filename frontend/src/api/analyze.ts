@@ -390,3 +390,25 @@ export async function fetchAddressBalances(txHash: string): Promise<Record<strin
   }
   return res.json()
 }
+
+export interface ArbitrageTransaction {
+  tx_hash: string
+  block_number: number | null
+}
+
+export interface ArbitrageHashesData {
+  transactions: ArbitrageTransaction[]
+  fetched_at: string | null
+  source: string
+  query_id: number
+}
+
+export async function fetchArbitrageHashes(): Promise<ArbitrageHashesData> {
+  const res = await fetch(`${API_BASE}/api/arbitrage-hashes`)
+  if (!res.ok) throw new Error(`Failed to fetch arbitrage hashes: ${res.status}`)
+  return res.json()
+}
+
+export async function triggerArbitrageRefresh(): Promise<void> {
+  await fetch(`${API_BASE}/api/arbitrage-hashes/refresh`, { method: 'POST' })
+}
