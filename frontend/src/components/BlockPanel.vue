@@ -12,12 +12,15 @@ type ViewMode = 'blocks' | 'transactions'
 
 const props = defineProps<{
   blockNumber: number | null
+  arbitrageTxHashes?: Set<string>
+  arbitrageBlockNumbers?: Set<number>
 }>()
 
 const emit = defineEmits<{
   'transaction-selected': [txHash: string]
   'block-selected': [blockNumber: number]
   'latest-block': [blockNumber: number]
+  'latest-blocks-refreshed': []
 }>()
 
 // Shared state
@@ -115,6 +118,18 @@ watch(() => props.blockNumber, async (newBlock) => {
   }
 })
 
+watch(() => props.arbitrageTxHashes, () => {
+  if (viewMode.value === 'transactions' && blockData.value) {
+    renderPlotly(blockData.value)
+  }
+})
+
+watch(() => props.arbitrageBlockNumbers, () => {
+  if (viewMode.value === 'blocks' && blocksData.value) {
+    renderBlocksPlotly(blocksData.value)
+  }
+})
+
 // ─── Blocks View ───
 
 async function loadBlocksHeatmap(): Promise<void> {
@@ -132,6 +147,7 @@ async function loadBlocksHeatmap(): Promise<void> {
     blocksLoading.value = false
 
     emit('latest-block', data.latest_block)
+    if (blocksOffset.value === 0) emit('latest-blocks-refreshed')
 
     await nextTick()
     if (blockPlotContainer.value && data.blocks.length > 0) {
@@ -191,6 +207,7 @@ function renderBlocksPlotly(data: BlocksHeatmapData) {
   const layout = {
     width: null as any,
     height: plotHeight,
+    showlegend: false,
     xaxis: { visible: false, fixedrange: true, range: [-0.5, 9.5] },
     yaxis: { visible: false, fixedrange: true, range: [rows - 0.5, -0.5] },
     margin: { l: 5, r: 5, t: 0, b: 0 },
@@ -198,7 +215,29 @@ function renderBlocksPlotly(data: BlocksHeatmapData) {
     paper_bgcolor: 'rgba(0,0,0,0)',
   }
 
-  Plotly.newPlot(blockPlotContainer.value, [trace], layout, {
+  const blockTraces: any[] = [trace]
+
+  const arbBlocks = props.arbitrageBlockNumbers
+  if (arbBlocks && arbBlocks.size > 0) {
+    const flagged = blocks.filter(b => arbBlocks.has(b.block_number))
+    if (flagged.length > 0) {
+      blockTraces.push({
+        x: flagged.map(b => b.x),
+        y: flagged.map(b => b.y),
+        mode: 'markers',
+        marker: {
+          symbol: 'square',
+          size: 32,
+          color: 'rgba(0,0,0,0)',
+          line: { width: 2.5, color: '#e53935' },
+        },
+        hoverinfo: 'skip',
+        showlegend: false,
+      })
+    }
+  }
+
+  Plotly.newPlot(blockPlotContainer.value, blockTraces, layout, {
     displayModeBar: false,
     responsive: true,
   })
@@ -326,6 +365,28 @@ function renderPlotly(data: BlockGasData) {
 
   // Highlight trace: draw selected tx as a separate layer on top
   const traces: any[] = [trace]
+
+  // Arbitrage overlay: red border for transactions flagged by Dune
+  const arbSet = props.arbitrageTxHashes
+  if (arbSet && arbSet.size > 0) {
+    const arbTxs = txs.filter(tx => arbSet.has(tx.hash))
+    if (arbTxs.length > 0) {
+      traces.push({
+        x: arbTxs.map(tx => tx.x),
+        y: arbTxs.map(tx => tx.y),
+        mode: 'markers',
+        marker: {
+          symbol: 'square',
+          size: 32,
+          color: 'rgba(0,0,0,0)',
+          line: { width: 2.5, color: '#e53935' },
+        },
+        hoverinfo: 'skip',
+        showlegend: false,
+      })
+    }
+  }
+
   if (selectedTxIndex.value !== null) {
     const sel = txs[selectedTxIndex.value]
     if (sel) {

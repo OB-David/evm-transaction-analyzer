@@ -5,3 +5,5 @@ __pycache__
 .claude/
 .vscode/
 Result/
+.env
+backend/dune_cache.json
