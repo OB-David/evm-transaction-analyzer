@@ -207,6 +207,7 @@ function renderBlocksPlotly(data: BlocksHeatmapData) {
   const layout = {
     width: null as any,
     height: plotHeight,
+    showlegend: false,
     xaxis: { visible: false, fixedrange: true, range: [-0.5, 9.5] },
     yaxis: { visible: false, fixedrange: true, range: [rows - 0.5, -0.5] },
     margin: { l: 5, r: 5, t: 0, b: 0 },

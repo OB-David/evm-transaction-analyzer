@@ -6,3 +6,4 @@ __pycache__
 .vscode/
 Result/
 .env
+backend/dune_cache.json
