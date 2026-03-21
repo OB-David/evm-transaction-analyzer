@@ -132,13 +132,8 @@ def main():
         cfg_constructor.export_folded_blocks_information(tx_cfg, folded_blocks_path)
         print(f"blcokid-information映射数据已保存到: {folded_blocks_path}")
 
-        print("正在导出边id与step映射...")
-        edge_info_path = os.path.join(result_dir, "edge_id-step.json")
-        edge_step_map = cfg_constructor.build_edge_step_information(tx_cfg)
-        cfg_constructor.export_edge_step_information(tx_cfg, edge_info_path)
-        print(f"边id-step映射数据已保存到: {folded_blocks_path}")
         semantic_cfg = None
-        try:
+        '''try:
             semantic_cfg = generate_and_export_semantic_cfg(
                 cfg=tx_cfg,
                 result_dir=result_dir,
@@ -150,7 +145,7 @@ def main():
             if not semantic_cfg:
                 print("Semantic CFG skipped; fallback to folded CFG remains available.")
         except Exception as semantic_error:
-            print(f"WARNING: Semantic CFG generation failed: {semantic_error}")
+            print(f"WARNING: Semantic CFG generation failed: {semantic_error}")'''
 
         # 10. 保存资产变更数据
         changes_path = os.path.join(result_dir, "balance_and_eth_changes.json") 
