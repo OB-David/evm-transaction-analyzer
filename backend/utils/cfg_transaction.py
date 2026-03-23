@@ -441,6 +441,9 @@ class CFGConstructor:
         通过 while 循环实现固定点迭代（Fixed-point Iteration），直到没有更多可折叠的钻石。
         """
         overall_changed = True
+
+        if not hasattr(self, 'folded_node_map') or self.folded_node_map is None:
+            self.folded_node_map = {n.id: [n.id] for n in cfg.nodes}
         
         while overall_changed:
             overall_changed = False
@@ -818,7 +821,7 @@ class CFGConstructor:
         fixed_opcodes = {
             'SSTORE', 'SLOAD', 'LOG0', 'LOG1', 'LOG2', 'LOG3', 'LOG4', 'SELFDESTRUCT',
             'CALL', 'DELEGATECALL', 'STATICCALL', 'CREATE', 'CREATE2',
-            'REVERT', 'INVALID', 'STOP', 'RETURN'
+            'REVERT', 'INVALID', 'STOP', 'RETURN', 'KECCACK256'
         }
 
         for node in cfg.nodes:
@@ -841,136 +844,146 @@ class CFGConstructor:
                 
         return fixed_ids
 
-    def _fold_timeline(self, current_cfg: Any) -> Any:
-        """
-        根据执行时序（edge_step）构建新图：
-        1. 连续的非固定节点（普通节点）被聚合成一个新的超级节点实例。
-        2. 固定节点（Fixed Nodes）在整个新图中保持唯一实例，作为枢纽。
-        3. 自动消除聚合块内部的边，只保留通往/离开固定节点的拓扑。
-        """
-        # 1. 预计算固定节点 ID 集合
-        fixed_node_ids = self._get_fixed_node_ids(current_cfg)
-        sorted_edges = sorted(current_cfg.edges, key=lambda x: x.edge_step)
 
-        # 2. 初始化新图容器
-        new_cfg = copy.deepcopy(current_cfg)
-        new_cfg.nodes = []
-        new_cfg.edges = []
+    def _create_and_add_node_instance(self, stack: List[Any], step_label: Any, is_isolated: bool = False) -> Any:
+        if not stack and not is_isolated:
+            return None
 
-        # 状态追踪
-        mergestack = []
-        fixed_instances = {}  # old_id -> new_node_obj (确保固定节点唯一)
-        last_node_in_new_graph = None
-
-        def _create_and_add_merged_node(stack, step_label):
-            """内部辅助函数：将 stack 里的普通节点揉成一个新实例并加入新图"""
-            if not stack:
-                return None
+        if is_isolated:
+            # --- 处理隔离节点（不合并，只克隆） ---
+            source_node = stack  # 此时传入的是单个 node 对象
+            new_node = copy.deepcopy(source_node)
+            new_node.id = f"{source_node.id}_iso_s{step_label}"
             
-            # 以 stack 第一个节点为模板创建“超级块”
-            # 使用 step 确保 ID 唯一，因为同一个地址可能在不同时序被多次聚合
+            # 注册映射关系
+            self.folded_node_map[new_node.id] = self.folded_node_map.get(source_node.id, [source_node.id])
+            return new_node
+        else:
+            # --- 处理聚合节点（将 stack 揉成超级块） ---
             first_node = stack[0]
             merged_node = copy.deepcopy(first_node)
             merged_node.id = f"{first_node.id}_merged_s{step_label}"
-            
-            # 清空并重新填充指令流（跳过第一个节点已有的指令，防止重复）
             merged_node.instructions = []
             
             for i, node in enumerate(stack):
-                # 插入语义边界标记
+                # 语义边界标记
                 merged_node.instructions.append({
                     "pc": "---", 
-                    "opcode": f"TIMELINE_FOLD_SEGMENT_{i}", 
+                    "opcode": f"TIMELINE_SEG_{i}", 
                     "is_boundary": True,
                     "from_id": node.id
                 })
                 merged_node.instructions.extend(node.instructions)
                 
-                # 维护映射表：将原始 ID 关联到这个新聚合块
+                # 维护映射
                 if merged_node.id not in self.folded_node_map:
                     self.folded_node_map[merged_node.id] = []
-                
-                # 获取该原始节点曾代表的所有 ID
                 orig_ids = self.folded_node_map.get(node.id, [node.id])
                 self.folded_node_map[merged_node.id].extend(orig_ids)
                 
-                # 同步物理信息（Gas, Actions 等）
-                if i > 0: # 第一个节点的信息已在 deepcopy 中
+                # 物理信息合并 (Gas 等)
+                if i > 0 and hasattr(merged_node, 'merge_fold_info'):
                     merged_node.merge_fold_info([node])
             
-            new_cfg.nodes.append(merged_node)
             return merged_node
 
-        # --- 算法主循环 ---
+
+    def _semantic_fold(self, current_cfg: Any, mode: str = "plain") -> Any:
+        """
+        折叠逻辑总入口：
+        :param mode: "plain" (隔离模式，不共享节点) 
+                     "folded" (枢纽模式，固定节点全局唯一)
+        """
+        # 1. 初始化
+        # 统一使用同一个判定函数，但在 plain 模式下将其视为 isolated
+        fixed_node_ids = self._get_fixed_node_ids(current_cfg)
+        sorted_edges = sorted(current_cfg.edges, key=lambda x: x.edge_step)
+
+        new_cfg = copy.deepcopy(current_cfg)
+        new_cfg.nodes = []
+        new_cfg.edges = []
+        
+        self.folded_node_map = {} # 重置映射
+        mergestack = []
+        fixed_instances = {}  # 仅在 "folded" 模式下有效
+        last_node_in_new_graph = None
+
         if not sorted_edges:
             return current_cfg
 
-        # A. 处理第一条边的起点 (Source)
+        # --- 内部辅助：连接边 ---
+        def _connect(src, tgt, orig_edge):
+            if src and tgt:
+                ne = copy.copy(orig_edge)
+                ne.source, ne.target = src, tgt
+                new_cfg.edges.append(ne)
+
+        # --- 内部辅助：结算 Stack ---
+        def _flush_stack(step_label, current_edge):
+            nonlocal last_node_in_new_graph, mergestack
+            if mergestack:
+                new_merged = self._create_and_add_node_instance(mergestack, step_label, is_isolated=False)
+                new_cfg.nodes.append(new_merged)
+                _connect(last_node_in_new_graph, new_merged, current_edge)
+                last_node_in_new_graph = new_merged
+                mergestack = []
+
+        # --- 算法主循环 ---
+        # A. 处理起点
         u_start = sorted_edges[0].source
         if u_start.id in fixed_node_ids:
-            # 起点就是固定节点：创建唯一实例
-            v_inst = copy.deepcopy(u_start)
-            fixed_instances[u_start.id] = v_inst
-            new_cfg.nodes.append(v_inst)
-            self.folded_node_map[v_inst.id] = self.folded_node_map.get(u_start.id, [u_start.id])
-            last_node_in_new_graph = v_inst
+            if mode == "plain":
+                last_node_in_new_graph = self._create_and_add_node_instance(u_start, 0, is_isolated=True)
+            else: # folded
+                last_node_in_new_graph = copy.deepcopy(u_start)
+                fixed_instances[u_start.id] = last_node_in_new_graph
+                self.folded_node_map[last_node_in_new_graph.id] = [u_start.id]
+            
+            new_cfg.nodes.append(last_node_in_new_graph)
         else:
-            # 起点是普通节点：入栈
             mergestack.append(u_start)
 
-        # B. 遍历边，以 Target 为切分点
+        # B. 遍历边
         for edge in sorted_edges:
             v_old = edge.target
             
             if v_old.id not in fixed_node_ids:
-                # [情况 1] 目标是普通节点：继续入栈，不产生边
                 mergestack.append(v_old)
             else:
-                # [情况 2] 撞到固定节点：结算栈并处理枢纽
-                
-                # 1. 结算聚合块
-                if mergestack:
-                    new_merged = _create_and_add_merged_node(mergestack, edge.edge_step)
-                    if last_node_in_new_graph:
-                        # 建立拓扑：[上一个点] -> [新的聚合块]
-                        new_edge = copy.copy(edge)
-                        new_edge.source, new_edge.target = last_node_in_new_graph, new_merged
-                        new_cfg.edges.append(new_edge)
-                    last_node_in_new_graph = new_merged
-                    mergestack = []
-                
-                # 2. 处理固定节点枢纽 (Ensure Uniqueness)
-                if v_old.id not in fixed_instances:
-                    v_inst = copy.deepcopy(v_old)
-                    fixed_instances[v_old.id] = v_inst
+                # 遇到固定/隔离点，先结算缓存
+                _flush_stack(edge.edge_step, edge)
+
+                # 处理目标节点实例
+                v_inst = None
+                if mode == "plain":
+                    # 总是创建新副本
+                    v_inst = self._create_and_add_node_instance(v_old, edge.edge_step, is_isolated=True)
                     new_cfg.nodes.append(v_inst)
-                    self.folded_node_map[v_inst.id] = self.folded_node_map.get(v_old.id, [v_old.id])
-                else:
-                    v_inst = fixed_instances[v_old.id]
+                else: 
+                    # folded 模式：尝试复用已有的实例
+                    if v_old.id not in fixed_instances:
+                        v_inst = copy.deepcopy(v_old)
+                        fixed_instances[v_old.id] = v_inst
+                        new_cfg.nodes.append(v_inst)
+                        self.folded_node_map[v_inst.id] = [v_old.id]
+                    else:
+                        v_inst = fixed_instances[v_old.id]
                 
-                # 3. 建立通往枢纽的边
-                if last_node_in_new_graph:
-                    new_edge = copy.copy(edge)
-                    new_edge.source, new_edge.target = last_node_in_new_graph, v_inst
-                    new_cfg.edges.append(new_edge)
-                
+                # 建立连接
+                _connect(last_node_in_new_graph, v_inst, edge)
                 last_node_in_new_graph = v_inst
 
-        # C. 结算残留的栈（末尾路径）
+        # C. 结算末尾
         if mergestack:
-            final_merged = _create_and_add_merged_node(mergestack, "END")
-            if last_node_in_new_graph:
-                # 既然这是最后一段，使用最后一条边的属性
-                new_edge = copy.copy(sorted_edges[-1])
-                new_edge.source, new_edge.target = last_node_in_new_graph, final_merged
-                new_cfg.edges.append(new_edge)
+            _flush_stack("END", sorted_edges[-1])
 
-        # 4. 最终去重映射表
+        # 清洗映射表
         for rid in self.folded_node_map:
             self.folded_node_map[rid] = list(dict.fromkeys(self.folded_node_map[rid]))
 
         return new_cfg
-    
+
+
 
     # ========== CFG构建主逻辑 ==========
     def construct_cfg(
@@ -1154,10 +1167,11 @@ class CFGConstructor:
         folded_node_map = self._fold_feedback_patterns(cfg)
         folded_node_map = self._fold_dianmond_patterns(cfg)
         folded_node_map = self._fold_dispatch_patterns(cfg)
-        folded_node_map = self._fold_linear_chains(cfg)
-        final_cfg = self._fold_timeline(cfg)
+        current_cfg = copy.deepcopy(cfg)
+        plain_cfg = self._semantic_fold(current_cfg, "plain")
+        folded_cfg = self._semantic_fold(current_cfg, "folded")
 
-        return final_cfg, original_cfg, all_changes, folded_node_map, self.table
+        return plain_cfg, folded_cfg, original_cfg, all_changes, folded_node_map, self.table
 
     def build_folded_blocks_information(self, cfg: CFG) -> Dict[str, Any]:
         """构建折叠块信息（移除JSON导出相关逻辑）"""

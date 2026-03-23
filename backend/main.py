@@ -94,14 +94,10 @@ def main():
         # 返回基本块连接的原始original_cfg，折叠后的tx_cfg
         # 查询关联都基于original_cfg
         # original_cfg基于pc，tx_cfg基于original_cfg的blockid
-        tx_cfg, original_cfg, all_changes, folded_node_map, table = cfg_constructor.construct_cfg(standardized_trace, slot_map, erc20_token_map)
-        print(f"成功构建交易级CFG，包含 {len(tx_cfg.nodes)} 个节点和 {len(tx_cfg.edges)} 条边\n")
+        plain_cfg, folded_cfg, original_cfg, all_changes, folded_node_map, table = cfg_constructor.construct_cfg(standardized_trace, slot_map, erc20_token_map)
+        print(f"成功构建交plain CFG，包含 {len(plain_cfg.nodes)} 个节点和 {len(plain_cfg.edges)} 条边\n")
+        print(f"成功构建交folded CFG，包含 {len(folded_cfg.nodes)} 个节点和 {len(folded_cfg.edges)} 条边\n")
 
-        # # 生成表格数据
-        # print("正在生成表格数据...")
-        # table_path = os.path.join(result_dir, "token_changes_table.xlsx")       
-        # generate_table_excel(table, table_path)
-        # print(f"表格数据已保存到: {table_path}\n")
 
         # 7. 构建代币交易流，生成边与基本块的映射
         print("正在提取代币交易流...")
@@ -142,8 +138,8 @@ def main():
         # 9. 保存折叠后Block ID与Instructions映射数据
         print("正在导出可见Block ID与Instructions映射...")
         folded_blocks_path = os.path.join(result_dir, "folded_blocks_information.json")
-        folded_blocks_map = cfg_constructor.build_folded_blocks_information(tx_cfg)
-        cfg_constructor.export_folded_blocks_information(tx_cfg, folded_blocks_path)
+        folded_blocks_map = cfg_constructor.build_folded_blocks_information(plain_cfg)
+        cfg_constructor.export_folded_blocks_information(plain_cfg, folded_blocks_path)
 
 
         print(f"blcokid-information映射数据已保存到: {folded_blocks_path}")
@@ -193,7 +189,7 @@ def main():
         print(f"所有结果已保存到: {os.path.abspath(result_dir)}")
 
         # 12. 渲染并保存三个核心图
-        save_graphs(result_dir=result_dir, tx_cfg=tx_cfg, full_address_name_map = full_address_name_map, erc20_token_map=erc20_token_map, 
+        save_graphs(result_dir=result_dir, plain_cfg=plain_cfg, folded_cfg = folded_cfg, full_address_name_map = full_address_name_map, erc20_token_map=erc20_token_map, 
                     users_addresses=users_addresses, pairs=pairs, annotations=annotations, pending_erc20=pending_erc20,
                     tree_data = tree_data, arb_result  = arb_result, semantic_cfg=semantic_cfg)
 
@@ -213,7 +209,7 @@ def create_result_directory(tx_hash: str) -> str:
     os.makedirs(result_dir, exist_ok=True)
     return result_dir
 
-def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]], tree_data, arb_result, semantic_cfg: Dict[str, Any] | None = None):
+def save_graphs(result_dir: str, plain_cfg: object,folded_cfg:object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]], tree_data, arb_result, semantic_cfg: Dict[str, Any] | None = None):
     '''渲染并保存所有图：交易级CFG图、CFG图例、代币交易流图'''
 
     # 定义Tx_CFG,Asset_Flow和图例的共用颜色规则
@@ -238,11 +234,11 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
     }
 
     # 保存交易级CFG的DOT文件
-    tx_dot_path = os.path.join(result_dir, "transaction_cfg")
+    tx_dot_path = os.path.join(result_dir, "plain_cfg")
     addr_color_map = render_transaction(
         contract_colors = CONTRACT_COLORS,
         edge_color_map = EDGE_COLOR_MAP,
-        cfg=tx_cfg, 
+        cfg=plain_cfg, 
         output_path=tx_dot_path, 
         full_address_name_map = full_address_name_map, 
         erc20_token_map = erc20_token_map,
@@ -252,7 +248,7 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
     # Render DOT to SVG using Graphviz CLI for frontend display
     import subprocess
     cfg_dot_file = f"{tx_dot_path}.dot"
-    cfg_svg_file = os.path.join(result_dir, "transaction_cfg.svg")
+    cfg_svg_file = os.path.join(result_dir, "plain_cfg.svg")
     try:
         subprocess.run(
             ["dot", "-Tsvg", cfg_dot_file, "-o", cfg_svg_file],
@@ -261,6 +257,36 @@ def save_graphs(result_dir: str, tx_cfg: object, full_address_name_map: Dict[str
         print(f"CFG SVG已生成: {cfg_svg_file}")
     except Exception as e:
         print(f"WARNING: CFG SVG生成失败: {e}")
+
+
+
+
+        # 保存交易级CFG的DOT文件
+    tx_dot_path = os.path.join(result_dir, "folded_cfg")
+    addr_color_map = render_transaction(
+        contract_colors = CONTRACT_COLORS,
+        edge_color_map = EDGE_COLOR_MAP,
+        cfg=folded_cfg, 
+        output_path=tx_dot_path, 
+        full_address_name_map = full_address_name_map, 
+        erc20_token_map = erc20_token_map,
+        rankdir="LR")
+    print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
+
+    # Render DOT to SVG using Graphviz CLI for frontend display
+    import subprocess
+    cfg_dot_file = f"{tx_dot_path}.dot"
+    cfg_svg_file = os.path.join(result_dir, "folded_cfg.svg")
+    try:
+        subprocess.run(
+            ["dot", "-Tsvg", cfg_dot_file, "-o", cfg_svg_file],
+            check=True, capture_output=True, text=True, timeout=120
+        )
+        print(f"CFG SVG已生成: {cfg_svg_file}")
+    except Exception as e:
+        print(f"WARNING: CFG SVG生成失败: {e}")
+
+
 
     if semantic_cfg:
         semantic_dot_path = os.path.join(result_dir, "semantic_cfg")
