@@ -3,6 +3,7 @@ import sys
 import io
 import json
 import os
+from typing import Any, Dict
 from web3 import Web3
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
@@ -16,6 +17,85 @@ from utils.semantic_cfg import generate_and_export_semantic_cfg, build_semantic_
 from main import create_result_directory, save_graphs
 
 load_dotenv()
+
+
+def _normalize_edge_step(value: Any) -> int:
+    """Normalize edge_step to int for stable sorting and frontend filtering."""
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value))
+    except Exception:
+        return 0
+
+
+def _build_edge_step_information_compat(cfg: Any) -> Dict[str, Dict[str, Any]]:
+    """
+    Build edge_id-step map for folded/timeline CFG output.
+    Also rewrites edge.edge_id as edge_{N} to keep downstream semantic mapping stable.
+    """
+    edges = list(getattr(cfg, "edges", []))
+    indexed_edges = list(enumerate(edges))
+    sorted_edges = sorted(
+        indexed_edges,
+        key=lambda item: (_normalize_edge_step(getattr(item[1], "edge_step", 0)), item[0]),
+    )
+
+    edge_step_map: Dict[str, Dict[str, Any]] = {}
+    for rank, (_original_index, edge) in enumerate(sorted_edges, start=1):
+        edge_id = f"edge_{rank}"
+        setattr(edge, "edge_id", edge_id)
+        edge_step = _normalize_edge_step(getattr(edge, "edge_step", 0))
+
+        source = getattr(edge, "source", None)
+        target = getattr(edge, "target", None)
+        source_id = getattr(source, "id", "unknown")
+        target_id = getattr(target, "id", "unknown")
+
+        edge_step_map[edge_id] = {
+            "edge_id": edge_id,
+            "edge_step": edge_step,
+            "source_node": f"node_{source_id}",
+            "target_node": f"node_{target_id}",
+        }
+    return edge_step_map
+
+
+def _enrich_folded_blocks_information(cfg: Any, folded_blocks_map: Dict[str, Any]) -> Dict[str, Any]:
+    """Backfill missing start_pc/end_pc fields for mixed-id folded blocks."""
+    node_by_id = {str(getattr(node, "id", "")): node for node in getattr(cfg, "nodes", [])}
+
+    for key, info in folded_blocks_map.items():
+        if not isinstance(info, dict):
+            continue
+
+        block_id = info.get("block_id", key)
+        node = node_by_id.get(str(block_id))
+
+        start_pc = info.get("start_pc")
+        end_pc = info.get("end_pc")
+
+        if node is not None:
+            if start_pc in (None, ""):
+                node_start_pc = getattr(node, "start_pc", None)
+                if node_start_pc not in (None, ""):
+                    info["start_pc"] = str(node_start_pc)
+
+            if end_pc in (None, ""):
+                fold_info = getattr(node, "fold_info", {})
+                fold_end_pc = fold_info.get("end_pc") if isinstance(fold_info, dict) else None
+                node_end_pc = fold_end_pc if fold_end_pc not in (None, "") else getattr(node, "end_pc", None)
+                if node_end_pc not in (None, ""):
+                    info["end_pc"] = str(node_end_pc)
+
+        if info.get("start_pc") in (None, ""):
+            info["start_pc"] = "Unknown"
+        if info.get("end_pc") in (None, ""):
+            info["end_pc"] = "Unknown"
+
+    return folded_blocks_map
 
 def run(tx_hash: str):
     PROVIDER_URL = os.environ.get("GETH_API")
@@ -98,12 +178,15 @@ def run(tx_hash: str):
     # Save folded blocks information
     folded_blocks_path = os.path.join(result_dir, "folded_blocks_information.json")
     folded_blocks_map = cfg_constructor.build_folded_blocks_information(tx_cfg)
-    cfg_constructor.export_folded_blocks_information(tx_cfg, folded_blocks_path)
+    folded_blocks_map = _enrich_folded_blocks_information(tx_cfg, folded_blocks_map)
+    with open(folded_blocks_path, "w", encoding="utf-8") as f:
+        json.dump(folded_blocks_map, f, indent=2, ensure_ascii=False)
 
     # Save edge step mapping
     edge_info_path = os.path.join(result_dir, "edge_id-step.json")
-    edge_step_map = cfg_constructor.build_edge_step_information(tx_cfg)
-    cfg_constructor.export_edge_step_information(tx_cfg, edge_info_path)
+    edge_step_map = _build_edge_step_information_compat(tx_cfg)
+    with open(edge_info_path, "w", encoding="utf-8") as f:
+        json.dump(edge_step_map, f, indent=2, ensure_ascii=False)
 
     semantic_cfg = None
     try:

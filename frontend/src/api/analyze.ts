@@ -5,12 +5,14 @@ export interface AnalyzeResult {
   error?: string | null
 }
 
+export type BlockId = string | number
+
 export interface EdgeLink {
   edge_id: number
   type: 'ETH_TRANSFER' | 'ERC20_TOKEN_TRANSFER' | 'ERC20_BALANCE_CHANGE'
-  matched_blocks: number | number[] | {
-    sender: number[]
-    receiver: number[]
+  matched_blocks: BlockId | BlockId[] | {
+    sender: BlockId[]
+    receiver: BlockId[]
   }
 }
 
@@ -176,7 +178,7 @@ export interface BlockAction {
 }
 
 export interface BlockInformation {
-  block_id: number
+  block_id: BlockId
   address: string
   blocks_number: number
   start_pc: string
@@ -197,7 +199,7 @@ export interface SemanticNodeInformation {
   confidence: number
   contract_address: string
   contract_name: string
-  member_block_ids: number[]
+  member_block_ids: BlockId[]
   blocks_number: number
   start_pc: string
   end_pc: string
@@ -214,7 +216,7 @@ export interface SemanticNodeInformation {
   sequence_index?: number
   actions: BlockAction[]
   block_opcode_sequences?: Array<{
-    block_id: number
+    block_id: BlockId
     pc_range: string
     opcodes: string[]
     actions: BlockAction[]

@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { zoom, zoomIdentity, type ZoomBehavior } from 'd3-zoom'
 import { select } from 'd3-selection'
 import {
+  type BlockId,
   fetchCfgViewData,
   fetchLegendData,
   type BlockAction,
@@ -17,7 +18,7 @@ import {
 
 const props = defineProps<{
   txHash: string | null
-  highlightedBlockId: number[] | null
+  highlightedBlockId: BlockId[] | null
   filteredEdgeIds: string[] | null
   isAnalyzing: boolean
   edgeStepMap: EdgeStepMap | null
@@ -25,7 +26,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  'cfg-navigate': [blockIds: number[] | null]
+  'cfg-navigate': [blockIds: BlockId[] | null]
   'mode-change': [mode: CfgMode]
 }>()
 
@@ -450,6 +451,12 @@ function syncFilterStateWithProps() {
   applyFilter()
 }
 
+function extractBlockIdFromNodeName(nodeName: string): string | null {
+  if (!nodeName.startsWith('node_')) return null
+  const rawId = nodeName.slice(5)
+  return rawId ? rawId : null
+}
+
 function handleNodeClick(nodeName: string) {
   if (!nodeName) return
 
@@ -481,8 +488,7 @@ function handleNodeClick(nodeName: string) {
       })
     }
   } else {
-    const match = nodeName.match(/^node_(\d+)$/)
-    const blockId = match ? parseInt(match[1]!, 10) : null
+    const blockId = extractBlockIdFromNodeName(nodeName)
     selectedBlockInfo.value = blockId !== null ? blockInformation.value[String(blockId)] || null : null
     selectedSemanticInfo.value = null
   }
@@ -639,7 +645,7 @@ function applyEdgeFilter(edgeIds: string[]) {
   applyFilter()
 }
 
-function calculateVisibleElements(targetBlockIds: number[]) {
+function calculateVisibleElements(targetBlockIds: BlockId[]) {
   const targetNodeSet = new Set<string>()
 
   if (cfgMode.value === 'semantic' && semanticData.value) {
@@ -650,7 +656,7 @@ function calculateVisibleElements(targetBlockIds: number[]) {
       }
     })
   } else {
-    targetBlockIds.forEach((id) => targetNodeSet.add(`node_${id}`))
+    targetBlockIds.forEach((id) => targetNodeSet.add(`node_${String(id)}`))
   }
 
   const visible = new Set<string>(targetNodeSet)
@@ -811,6 +817,15 @@ function formatGas(gas: number | null | undefined): string {
   return Number(gas).toLocaleString(undefined, { maximumFractionDigits: 0 })
 }
 
+function normalizePcValue(pc: string | null | undefined): string {
+  const text = String(pc ?? '').trim()
+  return text ? text : 'Unknown'
+}
+
+function formatPcRange(startPc: string | null | undefined, endPc: string | null | undefined): string {
+  return `${normalizePcValue(startPc)} - ${normalizePcValue(endPc)}`
+}
+
 function formatStepRange(stepRange: { entry_step: number | null, exit_step: number | null } | null | undefined): string {
   if (!stepRange || stepRange.entry_step === null || stepRange.exit_step === null) return 'Unknown'
   return `${stepRange.entry_step} - ${stepRange.exit_step}`
@@ -948,7 +963,7 @@ onBeforeUnmount(() => {
                 </div>
                 <div class="info-row">
                   <span class="info-label">PC</span>
-                  <span class="info-value">{{ selectedSemanticInfo.start_pc }} - {{ selectedSemanticInfo.end_pc }}</span>
+                  <span class="info-value">{{ formatPcRange(selectedSemanticInfo.start_pc, selectedSemanticInfo.end_pc) }}</span>
                 </div>
 
                 <div v-if="selectedSemanticBlocks.length > 0" class="summary-group">
@@ -963,7 +978,7 @@ onBeforeUnmount(() => {
                     >
                       <summary class="member-block-summary">
                         <span>Block {{ block.block_id }}</span>
-                        <span>{{ block.start_pc }} - {{ block.end_pc }}</span>
+                        <span>{{ formatPcRange(block.start_pc, block.end_pc) }}</span>
                       </summary>
                       <div class="member-block-meta">
                         <span>{{ block.address }}</span>
@@ -1005,7 +1020,7 @@ onBeforeUnmount(() => {
                 </div>
                 <div class="info-row">
                   <span class="info-label">PC</span>
-                  <span class="info-value">{{ selectedBlockInfo.start_pc }} - {{ selectedBlockInfo.end_pc }}</span>
+                  <span class="info-value">{{ formatPcRange(selectedBlockInfo.start_pc, selectedBlockInfo.end_pc) }}</span>
                 </div>
                 <div class="info-row">
                   <span class="info-label">Gas</span>

@@ -325,19 +325,20 @@ class SemanticCFGBuilder:
         visible_edges: List[Any],
         edge_step_map: Dict[str, Any],
     ) -> List[FoldableBlockNode]:
-        node_step_hint: Dict[int, int] = {}
+        node_step_hint: Dict[str, int] = {}
         for edge in visible_edges:
             raw_edge_id = getattr(edge, "edge_id", "")
             edge_step = edge_step_map.get(raw_edge_id, {}).get("edge_step", getattr(edge, "edge_step", None))
             if not isinstance(edge_step, int):
                 continue
-            for node_id in (edge.source.id, edge.target.id):
+            for node_id in (str(edge.source.id), str(edge.target.id)):
                 existing = node_step_hint.get(node_id)
                 if existing is None or edge_step < existing:
                     node_step_hint[node_id] = edge_step
 
-        def sort_key(node: FoldableBlockNode) -> Tuple[int, int]:
-            return (node_step_hint.get(node.id, 10**12), node.id)
+        def sort_key(node: FoldableBlockNode) -> Tuple[int, str]:
+            node_id = str(node.id)
+            return (node_step_hint.get(node_id, 10**12), node_id)
 
         return sorted(visible_nodes.values(), key=sort_key)
 
@@ -1306,8 +1307,9 @@ class SemanticCFGBuilder:
             if candidate is None:
                 raise RuntimeError(f"Unknown semantic node id from LLM: {semantic_node_id}")
 
-            member_block_ids = [int(block_id) for block_id in item.get("member_block_ids", [])]
-            if sorted(member_block_ids) != sorted(candidate.member_block_ids):
+            member_block_ids = [str(block_id) for block_id in item.get("member_block_ids", [])]
+            candidate_member_block_ids = [str(block_id) for block_id in candidate.member_block_ids]
+            if sorted(member_block_ids) != sorted(candidate_member_block_ids):
                 raise RuntimeError(f"LLM changed region membership for {semantic_node_id}")
             member_block_ids = candidate.member_block_ids
 

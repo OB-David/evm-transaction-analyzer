@@ -11,13 +11,14 @@ import {
   fetchEdgeStepMap,
   fetchArbitrageHashes,
   triggerArbitrageRefresh,
+  type BlockId,
   type CfgMode,
   type EdgeStepMap
 } from './api/analyze'
 
 const currentTxHash = ref<string | null>(null)
 const currentBlockNumber = ref<number | null>(null)
-const highlightedBlockId = ref<number[] | null>(null)
+const highlightedBlockId = ref<BlockId[] | null>(null)
 const inputPanelRef = ref<InstanceType<typeof InputPanel> | null>(null)
 const isAnalyzing = ref(false)
 const currentCfgMode = ref<CfgMode>('semantic')
@@ -133,7 +134,7 @@ async function handleTransactionSelected(txHash: string) {
   }
 }
 
-function handleCfgNavigate(blockIds: number[] | null) {
+function handleCfgNavigate(blockIds: BlockId[] | null) {
   // Clear sequence selection when AFG navigates
   sequenceStepRange.value = null
   highlightedBlockId.value = blockIds

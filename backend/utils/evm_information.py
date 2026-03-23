@@ -179,7 +179,15 @@ class TraceFormatter:
                 # 调用name()方法判断是否为ERC20
                 ONLY_NAME_ABI = [{"constant":True,"inputs":[],"name":"name","outputs":[{"name":"","type":"string"}],"payable":False,"stateMutability":"view","type":"function"}]
                 name_contract = self.web3.eth.contract(address=Web3.to_checksum_address(norm_addr), abi=ONLY_NAME_ABI)
-                token_name = name_contract.functions.name().call().strip()
+                raw_token_name = name_contract.functions.name().call()
+                token_name = str(raw_token_name).strip()
+                existing_name = str(erc20_token_map.get(norm_addr, "")).strip()
+                if not token_name:
+                    if existing_name:
+                        token_name = existing_name
+                    else:
+                        token_name = f"ERC20_{norm_addr[2:10]}"
+                        logger.info(f"[{norm_addr}] ERC20名称为空，使用兜底名称: {token_name}")
 
                 # 2. 识别成功：添加代理合约到映射
                 erc20_token_map[norm_addr] = token_name
@@ -189,8 +197,9 @@ class TraceFormatter:
                 for step in steps:
                     if step["opcode"] == "DELEGATECALL" and step["address"] == norm_addr and len(step["stack"]) >= 7:
                         logic_addr = self._normalize_address(step["stack"][-2])
-                        if logic_addr and logic_addr not in erc20_token_map:
-                            erc20_token_map[logic_addr] = f"{token_name.strip()}_logic"
+                        existing_logic_name = str(erc20_token_map.get(logic_addr, "")).strip() if logic_addr else ""
+                        if logic_addr and not existing_logic_name:
+                            erc20_token_map[logic_addr] = f"{token_name}_logic"
                             all_contracts.add(logic_addr)  # 逻辑合约加入总合约集合
                             logger.info(f"[{norm_addr}] 关联逻辑合约: {logic_addr} (名称: {token_name})")
 
@@ -727,7 +736,12 @@ class TraceFormatter:
         
         # 1. 处理ERC20合约（优先级最高）
         for addr, name in erc20_token_map.items():
-            full_name_map[addr] = name
+            cleaned_name = str(name).strip() if name is not None else ""
+            if not cleaned_name:
+                addr_text = str(addr)
+                short = addr_text[2:10] if addr_text.startswith("0x") else addr_text[:8]
+                cleaned_name = f"ERC20_{short}"
+            full_name_map[addr] = cleaned_name
         
         # 2. 处理非ERC20合约
         non_erc20_contracts = [addr for addr in contracts_addresses if addr not in full_name_map]
