@@ -1,11 +1,10 @@
-# cfg_transaction.py
 from typing import List, Dict, Tuple, Optional, Set, Any, Iterable
 from utils.evm_information import StandardizedStep
 from utils.basic_block import Block
 from utils.cfg_structure import CFG, BlockNode, Edge
 from collections import defaultdict
+import copy
 import json
-import copy  # 新增：用于克隆原始CFG
 
 # 全局辅助函数：标准化地址（确保地址格式唯一）
 def normalize_address(address: str) -> str:
@@ -94,7 +93,7 @@ class CFGConstructor:
         raw = step.get("gascost")
         return self._safe_hex_to_int(raw)
 
-    # ========== 线性链路识别与折叠 ==========
+    # ========== 图处理 ==========
     def _get_unique_parents(self, cfg: CFG, node: FoldableBlockNode) -> Set[FoldableBlockNode]:
         """获取节点的唯一父节点集合"""
         return {e.source for e in cfg.edges if e.target == node and isinstance(e.source, FoldableBlockNode)}
@@ -219,10 +218,18 @@ class CFGConstructor:
         contract_addr = start_node.address
         visited_nodes = {start_node} 
 
+
+        stop_ops = {'CALL', 'DELEGATECALL', 'STATICCALL', 'RETURN', 'REVERT', 'STOP'}
         while True:
+            # --- 新增拦截：如果当前块已经执行了环境切换，停止合并 ---
+            last_instr = current_node.instructions[-1]
+            last_op = last_instr[1] if isinstance(last_instr, tuple) else last_instr.get("opcode")
+            if last_op in stop_ops:
+                break
+
             # 1. 获取唯一子节点
             unique_children = self._get_unique_children(cfg, current_node)
-            unique_children = {n for n in unique_children if n.address == contract_addr}
+            unique_children = {n for n in unique_children}
             
             if len(unique_children) != 1:
                 break
@@ -316,58 +323,78 @@ class CFGConstructor:
         return self.folded_node_map
     
 
+    def _is_context_stable(self, node: FoldableBlockNode) -> bool:
+        """
+        辅助函数：检查节点是否不含导致环境/上下文切换的指令。
+        如果节点以这些指令结尾，说明它是一个边界，不能被当作普通的“中间块”折叠。
+        """
+        if not node.instructions:
+            return True
+        
+        # 获取最后一条指令的 opcode
+        last_instr = node.instructions[-1]
+        opcode = last_instr[1] if isinstance(last_instr, tuple) else last_instr.get("opcode")
+        
+        # 定义会导致上下文切换或终止的指令
+        stop_ops = {
+            'CALL', 'DELEGATECALL', 'STATICCALL', 'CALLCODE', 
+            'CREATE', 'CREATE2', 
+            'RETURN', 'REVERT', 'STOP', 'INVALID', 'SELFDESTRUCT'
+        }
+        
+        return opcode not in stop_ops
+
     def _identify_diamond_pattern(self, cfg: CFG, start_node: FoldableBlockNode) -> Optional[Dict[str, Any]]:
         """
         识别分叉收束结构（三角形/钻石形）：
         Layer 1 -> Layer 2 (mids) -> Layer 3 (end)
+        安全性：不判断 address，而是确保中间路径没有跨越上下文边界（CALL/RETURN）。
         """
         layer1 = start_node
-        contract_addr = layer1.address
         
+        # 规则 0：Layer 1 本身不能是环境切换的终点（如果是 CALL，逻辑已转出）
+        if not self._is_context_stable(layer1):
+            return None
+
         # 1. 获取 Layer 2：Layer 1 的直接子节点
         layer2_nodes = list(self._get_unique_children(cfg, layer1))
         
-        # 规则：Layer 1 必须有分叉 (>= 2)
+        # 规则 1：Layer 1 必须有分叉 (>= 2)
         if len(layer2_nodes) < 2:
             return None
             
-        # 规则：Layer 2 必须全部在当前合约内
-        if any(n.address != contract_addr for n in layer2_nodes):
+        # 规则 2：Layer 2 的节点必须是上下文稳定的（即：不能直接在这一层就 RETURN 或 CALL 走了）
+        if any(not self._is_context_stable(n) for n in layer2_nodes):
             return None
 
         # 2. 收集所有可能的 Layer 3（孙子节点）
-        # grandchildren_map 记录：哪个 Layer 2 节点指向了哪些孙子
         all_grandchildren = set()
         for l2 in layer2_nodes:
             children = self._get_unique_children(cfg, l2)
             for child in children:
                 all_grandchildren.add(child)
         
-        # 规则：Layer 3 必须全部在当前合约内
-        if any(n.address != contract_addr for n in all_grandchildren):
-            return None
-
         # 3. 判定唯一的收束点 (Layer 3)
-        # 找出既是子节点又是孙子节点的重叠点 (如三角形中的 C)
         overlap_nodes = set(layer2_nodes) & all_grandchildren
-        
         target_end_node = None
         
         if len(overlap_nodes) > 0:
-            # 情况 A：存在重叠点（如 A-B-C, A-C）
+            # 情况 A：存在重叠点（如 A-B-C, A-C，此时 C 是重叠点）
             if len(overlap_nodes) == 1:
                 candidate = next(iter(overlap_nodes))
-                candidate_children = {n for n in self._get_unique_children(cfg, candidate) if n.address == contract_addr}
-                # 检查除了这个 candidate 以外，是否还有其他的孙子节点
+                # candidate 是收束点，它可以是环境切换指令（因为它是结构的边界）
+                # 我们只需要检查它之前的“路径”是否稳定
+                candidate_children = set(self._get_unique_children(cfg, candidate))
+                
+                # 检查除了这个 candidate 及其后继以外，是否还有其他的孙子节点
                 remaining_grandchildren = all_grandchildren - {candidate} - candidate_children
-                # 如果没有其他孙子，则 candidate 是唯一收束点
                 if not remaining_grandchildren:
                     target_end_node = candidate
             else:
-                # 存在多个重叠点，逻辑太复杂，不处理
+                # 多个重叠点，逻辑复杂，跳过
                 return None
         else:
-            # 情况 B：不存在重叠点（标准的钻石形 A->B, A->C, B->D, C->D）
+            # 情况 B：标准的钻石形 A->B, A->C, B->D, C->D
             if len(all_grandchildren) == 1:
                 target_end_node = next(iter(all_grandchildren))
             else:
@@ -382,10 +409,15 @@ class CFGConstructor:
 
         # 5. 验证中间节点的纯净度 (入度/出度)
         for m in mid_nodes:
+            # 规则 3：中间节点必须是上下文稳定的
+            if not self._is_context_stable(m):
+                return None
+                
             # 中间节点只能从 Layer 1 来，且只能去 target_end_node
             m_parents = self._get_unique_parents(cfg, m)
             if len(m_parents) != 1 or next(iter(m_parents)) != layer1:
                 return None
+                
             m_children = self._get_unique_children(cfg, m)
             if len(m_children) != 1 or next(iter(m_children)) != target_end_node:
                 return None
@@ -647,8 +679,6 @@ class CFGConstructor:
         if len(m_in_edges) != len(m_out_edges):
             return None
 
-
-        print("find dispatch pattern!")
         return {
             "parent": parent_a,
             "mid": m_node,
@@ -717,22 +747,46 @@ class CFGConstructor:
                         # --- 4. 物理信息继承 (Gas, Actions) ---
                         child.merge_fold_info([m_node])
 
-                    # --- 5. 重连边关系 ---
-                    # 找到所有 A -> M 的边，改为 A -> Children
-                    # 由于 M 的出边和入边相等，这里我们通过重新创建边来实现
+                    # --- 5. 重连边关系 (去重处理逻辑) ---
+                    # 目标：对于 parent_a -> m_node 的所有入边，与 m_node -> children 的出边按序 1:1 匹配
+                    
+                    # 1. 准备：将入边和出边分别按 step 排序，确保 1:1 匹配的顺序正确
+                    ins = [e for e in cfg.edges if e.source == parent_a and e.target == m_node]
+                    outs = [e for e in cfg.edges if e.source == m_node]
+                    ins.sort(key=lambda x: x.edge_step)
+                    outs.sort(key=lambda x: x.edge_step)
+
                     new_edges = []
+                    # 使用一个标记位，确保这一组 (parent_a, m_node) 的重连只执行一次
+                    has_processed_this_dispatch = False
+
                     for edge in cfg.edges:
+                        # 识别到目标入边
                         if edge.source == parent_a and edge.target == m_node:
-                            # 为每个子块创建一条从 A 发出的边
-                            for child in children:
-                                # 这里假设 Edge 类可以简单克隆，或者你可以直接构造
-                                # 保持与 A -> M 边相同的属性（如 condition 等）
-                                new_edges.append(edge.__class__(source=parent_a, target=child))
-                        elif edge.source == m_node:
-                            # M 发出的边将被废弃
+                            if not has_processed_this_dispatch:
+                                # 【核心：一次性按序配对所有边】
+                                # 既然入边出边一样多，直接 zip 对应
+                                for in_e, out_e in zip(ins, outs):
+                                    new_edge = Edge(
+                                        source=parent_a, 
+                                        target=out_e.target, 
+                                        edge_type=in_e.edge_type, 
+                                        edge_step=out_e.edge_step # 使用后期 step
+                                    )
+                                    new_edges.append(new_edge)
+                                
+                                has_processed_this_dispatch = True
+                            # 无论是否处理过，原有的 A -> M 边都不再加入 new_edges（达到过滤效果）
                             continue
+                        
+                        # 过滤掉 M 发出的所有旧边
+                        elif edge.source == m_node:
+                            continue
+                            
+                        # 其他无关边正常保留
                         else:
                             new_edges.append(edge)
+                    
                     cfg.edges = new_edges
 
                     # 映射表中移除 M 的独立词条
@@ -752,6 +806,113 @@ class CFGConstructor:
             self.folded_node_map[rid] = list(dict.fromkeys(self.folded_node_map[rid]))
 
         return self.folded_node_map
+
+
+    def _get_fixed_node_ids(self, cfg: Any) -> Set[str]:
+        """预计算不可折叠块：敏感指令 + 高度数"""
+        fixed_ids = set()
+        fixed_opcodes = {
+            'SSTORE', 'LOG0', 'LOG1', 'LOG2', 'LOG3', 'LOG4', 'SELFDESTRUCT',
+            'CALL', 'DELEGATECALL', 'STATICCALL', 'CREATE', 'CREATE2',
+            'REVERT', 'INVALID', 'STOP', 'RETURN'
+        }
+
+        # 统计度数
+        in_degrees = {}
+        out_degrees = {}
+        for edge in cfg.edges:
+            out_degrees[edge.source.id] = out_degrees.get(edge.source.id, 0) + 1
+            in_degrees[edge.target.id] = in_degrees.get(edge.target.id, 0) + 1
+
+        for node in cfg.nodes:
+            # A. 指令判定
+            has_fixed_opcode = any(
+                (instr[1] if isinstance(instr, tuple) else instr.get("opcode")) in fixed_opcodes 
+                for instr in node.instructions
+            )
+            # B. 度数判定
+            is_busy_node = (in_degrees.get(node.id, 0) >= 8 or out_degrees.get(node.id, 0) >= 8)
+
+            if has_fixed_opcode or is_busy_node:
+                fixed_ids.add(node.id)
+        return fixed_ids
+
+    def _fold_timeline(self, current_cfg: Any) -> Any:
+        """
+        基于 Step 排序顺序强行构建新图
+        """
+        fixed_node_ids = self._get_fixed_node_ids(current_cfg)
+        sorted_edges = sorted(current_cfg.edges, key=lambda x: x.edge_step)
+        
+        # 克隆环境但清空容器
+        new_cfg = copy.deepcopy(current_cfg)
+        new_cfg.nodes = []
+        new_cfg.edges = []
+        
+        old_to_new_map = {} # old_id -> new_node_obj
+        absorbed_ids = set()
+
+        for edge in sorted_edges:
+            u_old = edge.source
+            v_old = edge.target
+            
+            # 暴力折叠判定
+            can_fold = (
+                v_old.id not in absorbed_ids and
+                v_old.id not in fixed_node_ids and
+                u_old.id not in fixed_node_ids and
+                u_old.address == v_old.address
+                
+            )
+
+            if can_fold:
+                root_node = old_to_new_map.get(u_old.id)
+                if root_node:
+                    # 吞噬 v_old
+                    root_node.instructions.append({
+                        "pc": "---", 
+                        "opcode": f"AGGRESSIVE_JOIN_STEP_{edge.edge_step}", 
+                        "is_boundary": True, 
+                        "from_id": v_old.id
+                    })
+                    root_node.instructions.extend(v_old.instructions)
+                    
+                    # 映射表迁移：直接操作类成员 self.folded_node_map
+                    v_orig_ids = self.folded_node_map.pop(v_old.id, [v_old.id])
+                    if root_node.id not in self.folded_node_map:
+                        self.folded_node_map[root_node.id] = [root_node.id]
+                    self.folded_node_map[root_node.id].extend(v_orig_ids)
+                    
+                    root_node.merge_fold_info([v_old])
+                    old_to_new_map[v_old.id] = root_node
+                    absorbed_ids.add(v_old.id)
+                    continue
+
+            # 无法折叠：确保 U 和 V 存在于新图中
+            for old_node in [u_old, v_old]:
+                if old_node.id not in old_to_new_map and old_node.id not in absorbed_ids:
+                    new_node = copy.deepcopy(old_node)
+                    new_cfg.nodes.append(new_node)
+                    old_to_new_map[old_node.id] = new_node
+                    if new_node.id not in self.folded_node_map:
+                        self.folded_node_map[new_node.id] = [new_node.id]
+
+            # 在新图中连边
+            src_new = old_to_new_map[u_old.id]
+            tgt_new = old_to_new_map[v_old.id]
+            
+            if src_new == tgt_new and u_old.id != v_old.id:
+                continue
+                
+            new_edge = copy.copy(edge)
+            new_edge.source, new_edge.target = src_new, tgt_new
+            new_cfg.edges.append(new_edge)
+
+        # 映射表最终清理
+        for rid in list(self.folded_node_map.keys()):
+            self.folded_node_map[rid] = list(dict.fromkeys(self.folded_node_map[rid]))
+
+        return new_cfg
     
 
     # ========== CFG构建主逻辑 ==========
@@ -820,6 +981,7 @@ class CFGConstructor:
                             if prev_node_key not in processed_nodes:
                                 processed_nodes[prev_node_key] = prev_node
                                 cfg.add_node(prev_node)
+                            # 保留 edge_step，移除 edge_id 相关逻辑
                             cfg.add_edge(prev_node, jumpdest_node, "NOTJUMP", current_step_idx)
 
                 current_node = jumpdest_node
@@ -914,8 +1076,9 @@ class CFGConstructor:
                     cfg.add_node(next_node)
                 edge_type = "NORMAL"
                 if current_opcode in self.jump_opcodes: edge_type = "JUMP"
-                elif current_opcode in {"CALL", "CALLCODE", "DELEGATECALL", "STATICCALL"}: edge_type = "CALL"
+                elif current_opcode in {"CALL", "CALLCODE", "DELEGATECALL", "STATICCALL","CREATE","CREATE2","CALLCODE"}: edge_type = "CALL"
                 elif current_opcode in {"RETURN", "STOP", "REVERT", "INVALID", "SELFDESTRUCT"}: edge_type = "TERMINATE"
+                # 保留 edge_step，移除 edge_id 相关逻辑
                 cfg.add_edge(current_node, next_node, edge_type, current_step_idx)
                 current_node = next_node
                 current_node_key = next_node_key
@@ -930,15 +1093,17 @@ class CFGConstructor:
         original_cfg = copy.deepcopy(cfg)
         
         # 2. 对原有的 cfg 对象进行折叠（这会修改 cfg 内部的 nodes 和 edges，使其变成折叠版）
-        
         folded_node_map = self._fold_linear_chains(cfg)
-        folded_node_map = self._fold_dianmond_patterns(cfg)
         folded_node_map = self._fold_feedback_patterns(cfg)
+        folded_node_map = self._fold_dianmond_patterns(cfg)
         folded_node_map = self._fold_dispatch_patterns(cfg)
         folded_node_map = self._fold_linear_chains(cfg)
-        return cfg, original_cfg, all_changes, folded_node_map, self.table
+        final_cfg = self._fold_timeline(cfg)
+
+        return final_cfg, original_cfg, all_changes, folded_node_map, self.table
 
     def build_folded_blocks_information(self, cfg: CFG) -> Dict[str, Any]:
+        """构建折叠块信息（移除JSON导出相关逻辑）"""
         block_inst_map = {}
         for node in cfg.nodes:
             if not isinstance(node, FoldableBlockNode):
@@ -953,42 +1118,9 @@ class CFGConstructor:
                 "instructions": [str(instr) for instr in node.instructions],
             }
         return block_inst_map
-
+    
     # 导出blockid和内部信息映射
     def export_folded_blocks_information(self, cfg: CFG, output_path: str):
         block_inst_map = self.build_folded_blocks_information(cfg)
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(block_inst_map, f, ensure_ascii=False, indent=2)
-
-    def build_edge_step_information(self, cfg: CFG) -> Dict[str, Any]:
-        edge_list = []
-        for edge in cfg.edges:
-            edge_id = getattr(edge, "edge_id", "unknown")
-            edge_step = getattr(edge, "edge_step", None)
-            try:
-                sort_key = int(edge_step) if edge_step is not None else float('inf')
-            except (ValueError, TypeError):
-                sort_key = float('inf')
-            edge_list.append({
-                "edge_id": edge_id,
-                "edge_step": sort_key,
-                "original_step": edge_step,
-                "source_node": f"node_{edge.source.id}" if hasattr(edge, "source") and hasattr(edge.source, "id") else "unknown",
-                "target_node": f"node_{edge.target.id}" if hasattr(edge, "target") and hasattr(edge.target, "id") else "unknown",
-            })
-        edge_list_sorted = sorted(edge_list, key=lambda x: x["edge_step"])
-        edge_step_map = {
-            item["edge_id"]: {
-                "edge_id": item["edge_id"],
-                "edge_step": item["original_step"],
-                "source_node": item["source_node"],
-                "target_node": item["target_node"],
-            }
-            for item in edge_list_sorted
-        }
-        return edge_step_map
-
-    def export_edge_step_information(self, cfg: CFG, output_path: str):
-        edge_step_map = self.build_edge_step_information(cfg)
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(edge_step_map, f, ensure_ascii=False, indent=2)

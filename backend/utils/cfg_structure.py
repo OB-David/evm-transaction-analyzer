@@ -15,7 +15,7 @@ class BlockNode:
         self.instructions = base_block.instructions.copy()
         self.total_gas = 0
         self.actions = []
-        self.id = BlockNode._node_id_counter    # 节点id分配
+        self.id = BlockNode._node_id_counter
         BlockNode._node_id_counter += 1
 
     def add_action(
@@ -41,21 +41,17 @@ class BlockNode:
         self.actions.append(action)
 
 class Edge:
-    """边的基础类（带序号）"""
-    def __init__(self, edge_id: str = "", source: Any = None, target: Any = None, edge_type: str = "NORMAL", edge_step: int=0):
-        self.edge_id = edge_id
+    def __init__(self, source: Any = None, target: Any = None, edge_type: str = "NORMAL", edge_step: int=0):
         self.source = source
         self.target = target
         self.edge_type = edge_type
         self.edge_step = edge_step
 
 class CFG:
-    """CFG基础类（边序号自增）"""
     def __init__(self, tx_hash: str):
         self.tx_hash = tx_hash
         self.nodes = []
         self.edges = []
-        self.edge_counter = 1
 
     def add_node(self, node: BlockNode):
         if node not in self.nodes:
@@ -63,7 +59,5 @@ class CFG:
 
     def add_edge(self, source: BlockNode, target: BlockNode, edge_type: str, edge_step: int):
 
-        edge_id = f"edge_{self.edge_counter}"
-        edge = Edge(edge_id=edge_id, source=source, target=target, edge_type=edge_type, edge_step=edge_step)
+        edge = Edge(source=source, target=target, edge_type=edge_type, edge_step=edge_step)
         self.edges.append(edge)
-        self.edge_counter += 1
