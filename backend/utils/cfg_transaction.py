@@ -809,107 +809,164 @@ class CFGConstructor:
 
 
     def _get_fixed_node_ids(self, cfg: Any) -> Set[str]:
-        """预计算不可折叠块：敏感指令 + 高度数"""
+        """
+        预计算不可折叠块：
+        1. 包含敏感/终止指令 (CALL, REVERT 等)
+        2. 拓扑枢纽：唯一父节点或唯一子节点数量过多 (>= 5)
+        """
         fixed_ids = set()
         fixed_opcodes = {
-            'SSTORE', 'LOG0', 'LOG1', 'LOG2', 'LOG3', 'LOG4', 'SELFDESTRUCT',
+            'SSTORE', 'SLOAD', 'LOG0', 'LOG1', 'LOG2', 'LOG3', 'LOG4', 'SELFDESTRUCT',
             'CALL', 'DELEGATECALL', 'STATICCALL', 'CREATE', 'CREATE2',
             'REVERT', 'INVALID', 'STOP', 'RETURN'
         }
 
-        # 统计度数
-        in_degrees = {}
-        out_degrees = {}
-        for edge in cfg.edges:
-            out_degrees[edge.source.id] = out_degrees.get(edge.source.id, 0) + 1
-            in_degrees[edge.target.id] = in_degrees.get(edge.target.id, 0) + 1
-
         for node in cfg.nodes:
-            # A. 指令判定
+            # A. 指令判定：检查块内是否有关键操作
             has_fixed_opcode = any(
                 (instr[1] if isinstance(instr, tuple) else instr.get("opcode")) in fixed_opcodes 
                 for instr in node.instructions
             )
-            # B. 度数判定
-            is_busy_node = (in_degrees.get(node.id, 0) >= 8 or out_degrees.get(node.id, 0) >= 8)
+            
+            # B. 拓扑判定：使用你定义的工具函数
+            # 统计物理上的“邻居”数量，不被循环执行的次数干扰
+            unique_parents = self._get_unique_parents(cfg, node)
+            unique_children = self._get_unique_children(cfg, node)
+            du = max(len(unique_children), len(unique_parents))
+            is_hub_node = (4 <= du <= 6)
+            
 
-            if has_fixed_opcode or is_busy_node:
+            if has_fixed_opcode or is_hub_node:
                 fixed_ids.add(node.id)
+                
         return fixed_ids
 
     def _fold_timeline(self, current_cfg: Any) -> Any:
         """
-        基于 Step 排序顺序强行构建新图
+        根据执行时序（edge_step）构建新图：
+        1. 连续的非固定节点（普通节点）被聚合成一个新的超级节点实例。
+        2. 固定节点（Fixed Nodes）在整个新图中保持唯一实例，作为枢纽。
+        3. 自动消除聚合块内部的边，只保留通往/离开固定节点的拓扑。
         """
+        # 1. 预计算固定节点 ID 集合
         fixed_node_ids = self._get_fixed_node_ids(current_cfg)
         sorted_edges = sorted(current_cfg.edges, key=lambda x: x.edge_step)
-        
-        # 克隆环境但清空容器
+
+        # 2. 初始化新图容器
         new_cfg = copy.deepcopy(current_cfg)
         new_cfg.nodes = []
         new_cfg.edges = []
-        
-        old_to_new_map = {} # old_id -> new_node_obj
-        absorbed_ids = set()
 
+        # 状态追踪
+        mergestack = []
+        fixed_instances = {}  # old_id -> new_node_obj (确保固定节点唯一)
+        last_node_in_new_graph = None
+
+        def _create_and_add_merged_node(stack, step_label):
+            """内部辅助函数：将 stack 里的普通节点揉成一个新实例并加入新图"""
+            if not stack:
+                return None
+            
+            # 以 stack 第一个节点为模板创建“超级块”
+            # 使用 step 确保 ID 唯一，因为同一个地址可能在不同时序被多次聚合
+            first_node = stack[0]
+            merged_node = copy.deepcopy(first_node)
+            merged_node.id = f"{first_node.id}_merged_s{step_label}"
+            
+            # 清空并重新填充指令流（跳过第一个节点已有的指令，防止重复）
+            merged_node.instructions = []
+            
+            for i, node in enumerate(stack):
+                # 插入语义边界标记
+                merged_node.instructions.append({
+                    "pc": "---", 
+                    "opcode": f"TIMELINE_FOLD_SEGMENT_{i}", 
+                    "is_boundary": True,
+                    "from_id": node.id
+                })
+                merged_node.instructions.extend(node.instructions)
+                
+                # 维护映射表：将原始 ID 关联到这个新聚合块
+                if merged_node.id not in self.folded_node_map:
+                    self.folded_node_map[merged_node.id] = []
+                
+                # 获取该原始节点曾代表的所有 ID
+                orig_ids = self.folded_node_map.get(node.id, [node.id])
+                self.folded_node_map[merged_node.id].extend(orig_ids)
+                
+                # 同步物理信息（Gas, Actions 等）
+                if i > 0: # 第一个节点的信息已在 deepcopy 中
+                    merged_node.merge_fold_info([node])
+            
+            new_cfg.nodes.append(merged_node)
+            return merged_node
+
+        # --- 算法主循环 ---
+        if not sorted_edges:
+            return current_cfg
+
+        # A. 处理第一条边的起点 (Source)
+        u_start = sorted_edges[0].source
+        if u_start.id in fixed_node_ids:
+            # 起点就是固定节点：创建唯一实例
+            v_inst = copy.deepcopy(u_start)
+            fixed_instances[u_start.id] = v_inst
+            new_cfg.nodes.append(v_inst)
+            self.folded_node_map[v_inst.id] = self.folded_node_map.get(u_start.id, [u_start.id])
+            last_node_in_new_graph = v_inst
+        else:
+            # 起点是普通节点：入栈
+            mergestack.append(u_start)
+
+        # B. 遍历边，以 Target 为切分点
         for edge in sorted_edges:
-            u_old = edge.source
             v_old = edge.target
             
-            # 暴力折叠判定
-            can_fold = (
-                v_old.id not in absorbed_ids and
-                v_old.id not in fixed_node_ids and
-                u_old.id not in fixed_node_ids and
-                u_old.address == v_old.address
+            if v_old.id not in fixed_node_ids:
+                # [情况 1] 目标是普通节点：继续入栈，不产生边
+                mergestack.append(v_old)
+            else:
+                # [情况 2] 撞到固定节点：结算栈并处理枢纽
                 
-            )
-
-            if can_fold:
-                root_node = old_to_new_map.get(u_old.id)
-                if root_node:
-                    # 吞噬 v_old
-                    root_node.instructions.append({
-                        "pc": "---", 
-                        "opcode": f"AGGRESSIVE_JOIN_STEP_{edge.edge_step}", 
-                        "is_boundary": True, 
-                        "from_id": v_old.id
-                    })
-                    root_node.instructions.extend(v_old.instructions)
-                    
-                    # 映射表迁移：直接操作类成员 self.folded_node_map
-                    v_orig_ids = self.folded_node_map.pop(v_old.id, [v_old.id])
-                    if root_node.id not in self.folded_node_map:
-                        self.folded_node_map[root_node.id] = [root_node.id]
-                    self.folded_node_map[root_node.id].extend(v_orig_ids)
-                    
-                    root_node.merge_fold_info([v_old])
-                    old_to_new_map[v_old.id] = root_node
-                    absorbed_ids.add(v_old.id)
-                    continue
-
-            # 无法折叠：确保 U 和 V 存在于新图中
-            for old_node in [u_old, v_old]:
-                if old_node.id not in old_to_new_map and old_node.id not in absorbed_ids:
-                    new_node = copy.deepcopy(old_node)
-                    new_cfg.nodes.append(new_node)
-                    old_to_new_map[old_node.id] = new_node
-                    if new_node.id not in self.folded_node_map:
-                        self.folded_node_map[new_node.id] = [new_node.id]
-
-            # 在新图中连边
-            src_new = old_to_new_map[u_old.id]
-            tgt_new = old_to_new_map[v_old.id]
-            
-            if src_new == tgt_new and u_old.id != v_old.id:
-                continue
+                # 1. 结算聚合块
+                if mergestack:
+                    new_merged = _create_and_add_merged_node(mergestack, edge.edge_step)
+                    if last_node_in_new_graph:
+                        # 建立拓扑：[上一个点] -> [新的聚合块]
+                        new_edge = copy.copy(edge)
+                        new_edge.source, new_edge.target = last_node_in_new_graph, new_merged
+                        new_cfg.edges.append(new_edge)
+                    last_node_in_new_graph = new_merged
+                    mergestack = []
                 
-            new_edge = copy.copy(edge)
-            new_edge.source, new_edge.target = src_new, tgt_new
-            new_cfg.edges.append(new_edge)
+                # 2. 处理固定节点枢纽 (Ensure Uniqueness)
+                if v_old.id not in fixed_instances:
+                    v_inst = copy.deepcopy(v_old)
+                    fixed_instances[v_old.id] = v_inst
+                    new_cfg.nodes.append(v_inst)
+                    self.folded_node_map[v_inst.id] = self.folded_node_map.get(v_old.id, [v_old.id])
+                else:
+                    v_inst = fixed_instances[v_old.id]
+                
+                # 3. 建立通往枢纽的边
+                if last_node_in_new_graph:
+                    new_edge = copy.copy(edge)
+                    new_edge.source, new_edge.target = last_node_in_new_graph, v_inst
+                    new_cfg.edges.append(new_edge)
+                
+                last_node_in_new_graph = v_inst
 
-        # 映射表最终清理
-        for rid in list(self.folded_node_map.keys()):
+        # C. 结算残留的栈（末尾路径）
+        if mergestack:
+            final_merged = _create_and_add_merged_node(mergestack, "END")
+            if last_node_in_new_graph:
+                # 既然这是最后一段，使用最后一条边的属性
+                new_edge = copy.copy(sorted_edges[-1])
+                new_edge.source, new_edge.target = last_node_in_new_graph, final_merged
+                new_cfg.edges.append(new_edge)
+
+        # 4. 最终去重映射表
+        for rid in self.folded_node_map:
             self.folded_node_map[rid] = list(dict.fromkeys(self.folded_node_map[rid]))
 
         return new_cfg
