@@ -184,45 +184,23 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
         dot_lines.append("  }")
 
     # 生成边（去重：同向相同边合并为一条，无标签）
+    edge_dedup = {}  # key: (src_id, tgt_id), value: edge_color
     for edge in getattr(cfg, 'edges', []):
         if not (hasattr(edge, 'source') and hasattr(edge, 'target')):
             continue
-            
         src_id = f"node_{edge.source.id}"
         tgt_id = f"node_{edge.target.id}"
-        
-        # 安全性检查：确保源和目标节点都在当前图中（防止渲染孤立边）
         if src_id not in rendered_node_ids or tgt_id not in rendered_node_ids:
             continue
 
-        # 2. 提取边属性：类型与颜色
-        edge_type = getattr(edge, 'edge_type', 'UNKNOWN')
-        edge_color = edge_color_map.get(edge_type, "#607D8B")
-        
-        # 3. 提取执行序号
-        step_idx = getattr(edge, 'edge_step', '?')
+        pair_key = (src_id, tgt_id)
+        if pair_key not in edge_dedup:
+            edge_type = escape_dot(getattr(edge, 'edge_type', 'UNKNOWN'))
+            edge_color = edge_color_map.get(edge_type, "#607D8B")
+            edge_dedup[pair_key] = edge_color
 
-        # 4. 构造 Label：显示序号和类型
-        # label 会显示在边线上，fontsize 设大一点方便查看
-        edge_label = f"[{step_idx}] {edge_type}"
-        
-        # 5. 生成 DOT 语句
-        # 注意：不再使用去重，因此每条边都会生成一个独立的 -> 语句
-        # 为了美观，可以给不同的边加一点 penwidth
-        edge_attrs = [
-            f'color="{edge_color}"',
-            f'label="{edge_label}"',
-            f'lp="{edge_label}"', # label position
-            f'fontsize=40',
-            f'fontname="Arial Bold"',
-            f'style="solid"',
-            f'penwidth=5',
-            f'arrowsize=2',
-            f'minlen=2' # 稍微拉开节点距离，防止标签重叠
-        ]
-        
-        dot_lines.append(f'  {src_id} -> {tgt_id} [{", ".join(edge_attrs)}];')
-
+    for (src_id, tgt_id), edge_color in edge_dedup.items():
+        dot_lines.append(f'  {src_id} -> {tgt_id} [color="{edge_color}", style="solid", minlen=1]')
     dot_lines.append("}")
 
     # 写入DOT文件

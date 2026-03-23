@@ -130,6 +130,8 @@ def main():
         folded_blocks_path = os.path.join(result_dir, "folded_blocks_information.json")
         folded_blocks_map = cfg_constructor.build_folded_blocks_information(tx_cfg)
         cfg_constructor.export_folded_blocks_information(tx_cfg, folded_blocks_path)
+
+
         print(f"blcokid-information映射数据已保存到: {folded_blocks_path}")
 
         semantic_cfg = None
