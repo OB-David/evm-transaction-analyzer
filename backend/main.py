@@ -127,11 +127,9 @@ def main():
         # 9. 保存折叠后Block ID与Instructions映射数据
         print("正在导出可见Block ID与Instructions映射...")
         folded_blocks_path = os.path.join(result_dir, "folded_blocks_information.json")
-        folded_blocks_map = cfg_constructor.build_folded_blocks_information(folded_cfg)
-        cfg_constructor.export_folded_blocks_information(folded_cfg, folded_blocks_path)
-
+        cfg_constructor.export_fcfg_blocks_information(folded_cfg, folded_blocks_path)
         plain_blocks_path = os.path.join(result_dir, "plain_blocks_information.json")
-        cfg_constructor.export_folded_blocks_information(plain_cfg, plain_blocks_path)
+        cfg_constructor.export_pcfg_blocks_information(plain_cfg, plain_blocks_path)
 
 
         print(f"blcokid-information映射数据已保存到: {folded_blocks_path}")

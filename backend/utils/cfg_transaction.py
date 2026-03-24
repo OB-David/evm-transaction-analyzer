@@ -958,6 +958,7 @@ class CFGConstructor:
             return merged_node
 
 
+
     def _mode_fold(self, current_cfg: Any, mode: str = "plain") -> Any:
         fixed_node_ids = self._get_fixed_node_ids(current_cfg)
         sorted_edges = sorted(current_cfg.edges, key=lambda x: x.edge_step)
@@ -966,29 +967,30 @@ class CFGConstructor:
         new_cfg.nodes = []
         new_cfg.edges = []
 
-        self.folded_node_map = {}
+        # 继承历史折叠映射，不重置（关键修复）
+        if not hasattr(self, 'folded_node_map') or self.folded_node_map is None:
+            self.folded_node_map = {n.id: [n.id] for n in current_cfg.nodes}
+
         mergestack = []
         fixed_instances = {}
         last_node_in_new_graph = None
         pending_entry_edge = None
 
         if not sorted_edges:
-            return current_cfg
+            return new_cfg
 
         def _connect(src, tgt, orig_edge):
             if src and tgt and orig_edge:
                 ne = copy.copy(orig_edge)
-                ne.source, ne.target = src, tgt
+                ne.source = src
+                ne.target = tgt
                 new_cfg.edges.append(ne)
 
-        # 安全工具：确保 fold_info 存在
         def _ensure_fold_info(node):
             if not hasattr(node, 'fold_info'):
                 node.fold_info = {}
 
-        # ==========================
-        # A. 处理起点
-        # ==========================
+        # 处理起点
         u_start = sorted_edges[0].source
         if u_start.id in fixed_node_ids:
             if mode == "plain":
@@ -1000,14 +1002,11 @@ class CFGConstructor:
             _ensure_fold_info(last_node_in_new_graph)
             last_node_in_new_graph.fold_info["start_step"] = 0
             last_node_in_new_graph.fold_info["end_step"] = 0
-
             new_cfg.nodes.append(last_node_in_new_graph)
         else:
             mergestack.append(u_start)
 
-        # ==========================
-        # B. 遍历边（核心修复）
-        # ==========================
+        # 遍历边
         for edge in sorted_edges:
             v_old = edge.target
             edge_step = edge.edge_step
@@ -1017,20 +1016,15 @@ class CFGConstructor:
                     pending_entry_edge = edge
                 mergestack.append(v_old)
             else:
-                # ==========================
-                # 1) 合并折叠块（安全处理 None）
-                # ==========================
+                # 合并折叠块
                 if mergestack:
-                    # ✅ 修复：pending_entry_edge 为 None 时安全赋值
                     if pending_entry_edge:
                         start_step = pending_entry_edge.edge_step + 1
                     else:
-                        start_step = 0  # 无入口边 → 起始步 0
+                        start_step = 0
                     end_step = edge_step
 
-                    label = pending_entry_edge.edge_step if pending_entry_edge else "START"
-                    new_merged = self._create_and_add_node_instance(mergestack, label, is_isolated=False)
-
+                    new_merged = self._create_and_add_node_instance(mergestack, start_step, is_isolated=False)
                     _ensure_fold_info(new_merged)
                     new_merged.fold_info["start_step"] = start_step
                     new_merged.fold_info["end_step"] = end_step
@@ -1038,22 +1032,15 @@ class CFGConstructor:
                     new_cfg.nodes.append(new_merged)
                     _connect(last_node_in_new_graph, new_merged, pending_entry_edge)
 
-                    # 修正上一个节点 end_step
                     if last_node_in_new_graph:
                         _ensure_fold_info(last_node_in_new_graph)
-                        if pending_entry_edge:
-                            last_node_in_new_graph.fold_info["end_step"] = pending_entry_edge.edge_step
-                        else:
-                            last_node_in_new_graph.fold_info["end_step"] = 0
+                        last_node_in_new_graph.fold_info["end_step"] = pending_entry_edge.edge_step if pending_entry_edge else 0
 
                     last_node_in_new_graph = new_merged
                     mergestack = []
                     pending_entry_edge = None
 
-                # ==========================
-                # 2) 处理固定节点
-                # ==========================
-                v_inst = None
+                # 固定节点
                 if mode == "plain":
                     v_inst = self._create_and_add_node_instance(v_old, edge_step + 1, is_isolated=True)
                 else:
@@ -1067,10 +1054,7 @@ class CFGConstructor:
                 v_inst.fold_info["start_step"] = edge_step + 1
                 v_inst.fold_info["end_step"] = -1
 
-
-                if v_inst not in new_cfg.nodes:
-                    new_cfg.nodes.append(v_inst)
-
+                new_cfg.nodes.append(v_inst)
                 _connect(last_node_in_new_graph, v_inst, edge)
 
                 if last_node_in_new_graph:
@@ -1078,9 +1062,13 @@ class CFGConstructor:
                     last_node_in_new_graph.fold_info["end_step"] = edge_step
 
                 last_node_in_new_graph = v_inst
+
+        # 最终去重（和你所有折叠逻辑一致）
+        for rid in self.folded_node_map:
+            self.folded_node_map[rid] = list(dict.fromkeys(self.folded_node_map[rid]))
+
         return new_cfg
-
-
+        
     # ========== CFG构建主逻辑 ==========
     def construct_cfg(
         self,
@@ -1273,20 +1261,18 @@ class CFGConstructor:
         current_cfg = copy.deepcopy(cfg)
         plain_cfg = self._mode_fold(current_cfg, "plain")
         folded_cfg = self._mode_fold(current_cfg, "folded") # 自动继承cfg语义
+        folded_node_map = self.folded_node_map
 
         # 基于step填充plain_cfg的语义
         self._fill_actions_from_table(folded_cfg, "step")
 
         return plain_cfg, folded_cfg, original_cfg, all_changes, folded_node_map, self.table
     
-    def build_folded_blocks_information(self, cfg: Any) -> Dict[str, Any]:
-        """构建折叠块信息：直接从折叠节点的 fold_info 读取 Step（极简版）"""
+    def build_pcfg_blocks_information(self, cfg: Any) -> Dict[str, Any]:
         block_inst_map = {}
-
         for node in cfg.nodes:
             if not isinstance(node, FoldableBlockNode):
                 continue
-
             # 直接从折叠节点获取已存储的 step（核心简化点）
             start_step = node.fold_info.get("start_step", -1)
             end_step = node.fold_info.get("end_step", start_step)
@@ -1297,15 +1283,40 @@ class CFGConstructor:
                 "start_step": start_step,
                 "end_step": end_step,
                 "blocks_number": node.fold_info.get("blocks_number", len(node.folded_blocks)),
-                "folded_blocks": [n.id for n in node.folded_blocks],
                 "gas": node.fold_info.get("total_gas", node.total_gas),
                 "actions": node.fold_info.get("actions", node.actions),
             }
 
         return block_inst_map
-        
-    # 导出blockid和内部信息映射
-    def export_folded_blocks_information(self, cfg: CFG, output_path: str):
-        block_inst_map = self.build_folded_blocks_information(cfg)
+
+    def export_pcfg_blocks_information(self, cfg: CFG, output_path: str):
+        block_inst_map = self.build_pcfg_blocks_information(cfg)
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(block_inst_map, f, ensure_ascii=False, indent=2)
+
+
+
+    def build_fcfg_blocks_information(self, cfg: Any) -> Dict[str, Any]:
+        block_inst_map = {}
+        for node in cfg.nodes:
+            if not isinstance(node, FoldableBlockNode):
+                continue
+
+            block_inst_map[node.id] = {
+                "block_id": node.id,
+                "address": node.address,
+                "blocks_number": node.fold_info.get("blocks_number", len(node.folded_blocks)),
+                "folded_blocks": [n.id for n in node.folded_blocks],
+                "gas": node.fold_info.get("total_gas", node.total_gas),
+                "actions": node.fold_info.get("actions", node.actions),
+                "instructions": [str(instr) for instr in node.instructions],
+            }
+
+        return block_inst_map
+        
+    # 导出blockid和内部信息映射
+    def export_fcfg_blocks_information(self, cfg: CFG, output_path: str):
+        block_inst_map = self.build_fcfg_blocks_information(cfg)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(block_inst_map, f, ensure_ascii=False, indent=2)
+
