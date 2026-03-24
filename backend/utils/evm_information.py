@@ -389,7 +389,7 @@ class TraceFormatter:
                 # 单独处理CALL合约时的gascost计算
                 # 执行CALL时会向合约预支付一笔gas，在trace中记录为CALL的gasCost
                 # CALL本身的gascost是预支付的gasCost减去CALL下一步剩下的gasleft。
-                if opcode in {"CALL", "CALLCODE", "DELEGATECALL", "STATICCALL"}:
+                if opcode in {"CALL", "CALLCODE", "DELEGATECALL", "STATICCALL"} and struct_logs[i + 1].get("address","") != step.get("address",""):
                     next_gasleft = struct_logs[i + 1].get("gas", 0)
                     gasCost = step.get("gasCost", 0)
                     gascost = gasCost - next_gasleft

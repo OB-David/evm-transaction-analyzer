@@ -40,6 +40,7 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
         "token": "ETH",
         "token_addr": "ETH",
         "source_pcs": None,
+        "source_steps": None,
     })
 
     for c in all_changes:
@@ -56,6 +57,7 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
                 "token": "ETH",
                 "token_addr": "ETH",
                 "source_pcs": [c["pc"]],
+                "source_steps":[c["step"]],
             })
             continue
 
@@ -81,6 +83,7 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
             "token": token_name,
             "token_addr": token_addr,
             "source_pcs": [c["SLOAD_pc"], c["SSTORE_pc"]],
+            "source_steps":[c["SLOAD_step"], c["SSTORE_step"]],
             "decimals": decimals,
         }    
 
@@ -94,6 +97,7 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
             "token": token_name,
             "token_addr": token_addr,
             "source_pcs": [c["SLOAD_pc"], c["SSTORE_pc"]],
+            "source_steps":[c["SLOAD_step"], c["SSTORE_step"]],
             "decimals": decimals,
         }  
         else:
@@ -120,6 +124,12 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
                         "sender_sstore_pc": sender.get("source_pcs", [])[1],
                         "receiver_sload_pc": receiver.get("source_pcs", [])[0],
                         "receiver_sstore_pc": receiver.get("source_pcs", [])[1]
+                    },
+                    "source_steps":{
+                        "sender_sload_step": sender.get("source_steps", [])[0],
+                        "sender_sstore_step": sender.get("source_steps", [])[1],
+                        "receiver_sload_step": receiver.get("source_steps", [])[0],
+                        "receiver_sstore_step": receiver.get("source_steps", [])[1]
                     }
                 })
                 del pending_erc20[token_addr]
@@ -337,6 +347,7 @@ def render_asset_flow(paired, node_annotations, users_addresses,
     dot.save(output_file)
     return dot
 
+
 def find_node_by_pc_address(original_cfg: CFG, folded_node_map: Dict[str, List[str]], address: str, pc: str):
     def pc_to_int(v):
         if v is None:
@@ -378,7 +389,7 @@ def find_node_by_pc_address(original_cfg: CFG, folded_node_map: Dict[str, List[s
     return None
 
 # --- 后续的 afg_to_cfg 和序列化函数保持不变 ---
-def afg_to_cfg(paired, pending_erc20, tx_cfg: CFG, folded_node_map):
+def afg_to_fcfg(paired, pending_erc20, tx_cfg: CFG, folded_node_map):
     edge_link = []
     for p in paired:
         if p["order"] == 0:
@@ -421,6 +432,120 @@ def afg_to_cfg(paired, pending_erc20, tx_cfg: CFG, folded_node_map):
     edge_link.sort(key=lambda x: x["edge_id"])
     return edge_link
 
+
+
+def find_node_by_step(cfg: CFG, step: int):
+    """
+    根据 step 值，匹配落在 cfg 节点 [start_step, end_step] 区间内的块
+    """
+    def to_int(v):
+        if v is None:
+            return None
+        try:
+            return int(v)
+        except:
+            return None
+
+    step_val = to_int(step)
+    if step_val is None:
+        return None
+
+    # 遍历所有块，匹配 step 区间
+    for node in cfg.nodes:
+        if not hasattr(node, "fold_info"):
+            continue
+        
+        start = node.fold_info.get("start_step", 0)
+        end = node.fold_info.get("end_step", -1)
+
+        # 区间匹配逻辑
+        if end == -1:
+            # 末尾 return 块：step >= start 即匹配
+            if step_val >= start:
+                return node.id
+        else:
+            # 普通块：start ≤ step ≤ end
+            if start <= step_val <= end:
+                return node.id
+
+    return None
+
+
+def afg_to_pcfg(paired, pending_erc20, plain_cfg):
+    edge_link = []
+
+    for p in paired:
+        if p["order"] == 0:
+            continue
+
+        # ------------------------------
+        # ETH 转移：从 source_steps 获取 step
+        # ------------------------------
+        if p["token"] == "ETH":
+            # ✅ 正确：从 source_steps 列表取 step
+            step_list = p.get("source_steps", [])
+            step = step_list[0] if len(step_list) > 0 else None
+            
+            matched_block = find_node_by_step(plain_cfg, step)
+            if matched_block:
+                edge_link.append({
+                    "edge_id": p["order"],
+                    "type": "ETH_TRANSFER",
+                    "matched_blocks": matched_block
+                })
+
+        else:
+            source_steps = p.get("source_steps", {})
+            s_l_step = source_steps.get("sender_sload_step")
+            s_s_step = source_steps.get("sender_sstore_step")
+            r_l_step = source_steps.get("receiver_sload_step")
+            r_s_step = source_steps.get("receiver_sstore_step")
+
+            s_l = find_node_by_step(plain_cfg, s_l_step)
+            s_s = find_node_by_step(plain_cfg, s_s_step)
+            r_l = find_node_by_step(plain_cfg, r_l_step)
+            r_s = find_node_by_step(plain_cfg, r_s_step)
+
+            blocks = {
+                "s_l": s_l,
+                "s_s": s_s,
+                "r_l": r_l,
+                "r_s": r_s
+            }
+
+            if all(blocks.values()):
+                edge_link.append({
+                    "edge_id": p["order"],
+                    "type": "ERC20_TOKEN_TRANSFER",
+                    "matched_blocks": {
+                        "sender": (blocks["s_l"], blocks["s_s"]),
+                        "receiver": (blocks["r_l"], blocks["r_s"])
+                    }
+                })
+
+    for v in pending_erc20.values():
+        # ✅ 正确：从 source_steps 取（不是 source_pcs）
+        source_steps = v.get("source_steps", [])
+        if len(source_steps) < 2:
+            continue
+        
+        sload_step = source_steps[0]
+        sstore_step = source_steps[1]
+
+        sload_block = find_node_by_step(plain_cfg, sload_step)
+        sstore_block = find_node_by_step(plain_cfg, sstore_step)
+
+        if sload_block is None or sstore_block is None:
+            continue
+
+        edge_link.append({
+            "edge_id": v["order"],
+            "type": "ERC20_BALANCE_CHANGE",
+            "matched_blocks": [sload_block, sstore_block]
+        })
+
+    edge_link.sort(key=lambda x: x["edge_id"])
+    return edge_link
 
 def edge_link_to_json(edge_link):
     return json.dumps(

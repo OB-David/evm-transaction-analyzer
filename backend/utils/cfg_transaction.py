@@ -27,7 +27,10 @@ class FoldableBlockNode(BlockNode):
         self.fold_info = {
             "blocks_number": 1,
             "total_gas": 0.0,
-            "actions": self.actions.copy()
+            "actions": self.actions.copy(),
+            "start_step":0,
+            "end_step":-1
+
         }
         self.processed_addr_pc = set()
 
@@ -161,25 +164,80 @@ class CFGConstructor:
         return None
 
     # ========== 语义信息填充 ==========
-    def _fill_actions_from_table(self, cfg: CFG):
-        """从table填充语义信息（ETH/ERC20事件）"""
-        node_table_map: Dict[FoldableBlockNode, List[Dict[str, Any]]] = {}
+    def _fill_actions_from_table(self, cfg: CFG, match_mode: str = "addr_pc"):
+        """
+        从table填充语义信息（ETH/ERC20事件）
+        :param match_mode: 匹配模式
+            - "addr_pc"  : 按 address + pc 匹配（原逻辑）
+            - "step"     : 按 step 落在块 [start_step, end_step] 区间匹配
+        """
+        from collections import defaultdict
+        node_table_map = defaultdict(list)
+
+        # ======================
+        # 1. 按不同模式匹配节点
+        # ======================
         for item in self.table:
             addr = item.get("codecontract_address")
             pc = item.get("pc")
-            if not addr or not pc:
-                continue
-            
-            node = self.find_node_by_pc_address(cfg, addr, pc)
-            if node:
-                if node not in node_table_map:
-                    node_table_map[node] = []
-                node_table_map[node].append(item)
+            step = item.get("step")
 
+            # ----------------------
+            # 模式 A：addr + pc 匹配（原有逻辑）
+            # ----------------------
+            if match_mode == "addr_pc":
+                if not addr or not pc:
+                    continue
+                node = self.find_node_by_pc_address(cfg, addr, pc)
+                if node:
+                    node_table_map[node].append(item)
+
+            # ----------------------
+            # 模式 B：step 区间匹配（新增）
+            # ----------------------
+            elif match_mode == "step":
+                if step is None:
+                    continue
+                step_val = int(step)
+                # 遍历所有块，找到 step 落在 [start_step, end_step] 区间内的节点
+                matched_node = None
+                for node in cfg.nodes:
+                    if not hasattr(node, "fold_info"):
+                        continue
+                    start = node.fold_info.get("start_step", 0)
+                    end = node.fold_info.get("end_step", -1)
+
+                    # 区间匹配规则：start ≤ step ≤ end
+                    if end == -1:  # 末尾块（无出边）
+                        if step_val >= start:
+                            matched_node = node
+                            break
+                    else:
+                        if start <= step_val <= end:
+                            matched_node = node
+                            break
+
+                if matched_node:
+                    node_table_map[matched_node].append(item)
+
+        # ======================
+        # 2. 统一覆写写入 actions
+        # ======================
         for node, table_items in node_table_map.items():
-            eth_table_items = [item for item in table_items if item.get("token_name") == "ETH" and item.get("op") == "CALL"]
-            erc20_table_items = [item for item in table_items if item.get("op") in {"SLOAD", "SSTORE"}]
+            # 【覆写核心】先清空节点原有 actions
+            node.actions = []
+            node.fold_info["actions"] = []
 
+            eth_table_items = [
+                item for item in table_items
+                if item.get("token_name") == "ETH" and item.get("op") == "CALL"
+            ]
+            erc20_table_items = [
+                item for item in table_items
+                if item.get("op") in {"SLOAD", "SSTORE"}
+            ]
+
+            # 处理 ERC20 读写
             if erc20_table_items:
                 for item in erc20_table_items:
                     op = item.get("op")
@@ -191,10 +249,16 @@ class CFGConstructor:
                         "balance": self._normalize_hex_value(item.get("balance/amount", ""))
                     }
                     try:
-                        node.add_action(action_type=action_type, erc20_events=[erc20_event], send_eth="NO", eth_event=None)
-                    except Exception as e:
-                        raise
+                        node.add_action(
+                            action_type=action_type,
+                            erc20_events=[erc20_event],
+                            send_eth="NO",
+                            eth_event=None
+                        )
+                    except Exception:
+                        pass
 
+            # 处理 ETH 转账
             if eth_table_items:
                 for eth_item in eth_table_items:
                     eth_event = {
@@ -204,10 +268,16 @@ class CFGConstructor:
                         "amount": eth_item.get("balance/amount", "")
                     }
                     try:
-                        node.add_action(action_type="eth_transfer", erc20_events=[], send_eth="YES", eth_event=eth_event)
-                    except Exception as e:
-                        raise
-            
+                        node.add_action(
+                            action_type="eth_transfer",
+                            erc20_events=[],
+                            send_eth="YES",
+                            eth_event=eth_event
+                        )
+                    except Exception:
+                        pass
+
+            # 最终覆写 fold_info
             node.fold_info["actions"] = node.actions.copy()
 
 
@@ -850,141 +920,157 @@ class CFGConstructor:
             return None
 
         if is_isolated:
-            # --- 处理隔离节点（不合并，只克隆） ---
-            source_node = stack  # 此时传入的是单个 node 对象
+            source_node = stack
             new_node = copy.deepcopy(source_node)
-            new_node.id = f"{source_node.id}_iso_s{step_label}"
-            
-            # 注册映射关系
+
+            if not hasattr(self, '_plain_node_counter'):
+                self._plain_node_counter = 1
+            new_node.id = self._plain_node_counter
+            self._plain_node_counter += 1
+
+            # 映射关系
             self.folded_node_map[new_node.id] = self.folded_node_map.get(source_node.id, [source_node.id])
             return new_node
         else:
-            # --- 处理聚合节点（将 stack 揉成超级块） ---
             first_node = stack[0]
             merged_node = copy.deepcopy(first_node)
-            merged_node.id = f"{first_node.id}_merged_s{step_label}"
             merged_node.instructions = []
-            
+
+            if not hasattr(self, '_plain_node_counter'):
+                self._plain_node_counter = 1
+            merged_node.id = self._plain_node_counter
+            self._plain_node_counter += 1
+
             for i, node in enumerate(stack):
-                # 语义边界标记
                 merged_node.instructions.append({
-                    "pc": "---", 
-                    "opcode": f"TIMELINE_SEG_{i}", 
+                    "pc": "---",
+                    "opcode": f"TIMELINE_SEG_{i}",
                     "is_boundary": True,
                     "from_id": node.id
                 })
                 merged_node.instructions.extend(node.instructions)
-                
-                # 维护映射
+
                 if merged_node.id not in self.folded_node_map:
                     self.folded_node_map[merged_node.id] = []
                 orig_ids = self.folded_node_map.get(node.id, [node.id])
                 self.folded_node_map[merged_node.id].extend(orig_ids)
-                
-                # 物理信息合并 (Gas 等)
+
+                # 合并信息
                 if i > 0 and hasattr(merged_node, 'merge_fold_info'):
                     merged_node.merge_fold_info([node])
-            
+
             return merged_node
 
-
     def _mode_fold(self, current_cfg: Any, mode: str = "plain") -> Any:
-        """
-        折叠逻辑总入口：
-        :param mode: "plain" (隔离模式，不共享节点) 
-                     "folded" (枢纽模式，固定节点全局唯一)
-        """
-        # 1. 初始化
-        # 统一使用同一个判定函数，但在 plain 模式下将其视为 isolated
         fixed_node_ids = self._get_fixed_node_ids(current_cfg)
         sorted_edges = sorted(current_cfg.edges, key=lambda x: x.edge_step)
 
         new_cfg = copy.deepcopy(current_cfg)
         new_cfg.nodes = []
         new_cfg.edges = []
-        
-        self.folded_node_map = {} # 重置映射
+
+        # 继承历史折叠映射，不重置（关键修复）
+        if not hasattr(self, 'folded_node_map') or self.folded_node_map is None:
+            self.folded_node_map = {n.id: [n.id] for n in current_cfg.nodes}
+
         mergestack = []
-        fixed_instances = {}  # 仅在 "folded" 模式下有效
+        fixed_instances = {}
         last_node_in_new_graph = None
+        pending_entry_edge = None
 
         if not sorted_edges:
-            return current_cfg
+            return new_cfg
 
-        # --- 内部辅助：连接边 ---
         def _connect(src, tgt, orig_edge):
-            if src and tgt:
+            if src and tgt and orig_edge:
                 ne = copy.copy(orig_edge)
-                ne.source, ne.target = src, tgt
+                ne.source = src
+                ne.target = tgt
                 new_cfg.edges.append(ne)
 
-        # --- 内部辅助：结算 Stack ---
-        def _flush_stack(step_label, current_edge):
-            nonlocal last_node_in_new_graph, mergestack
-            if mergestack:
-                new_merged = self._create_and_add_node_instance(mergestack, step_label, is_isolated=False)
-                new_cfg.nodes.append(new_merged)
-                _connect(last_node_in_new_graph, new_merged, current_edge)
-                last_node_in_new_graph = new_merged
-                mergestack = []
+        def _ensure_fold_info(node):
+            if not hasattr(node, 'fold_info'):
+                node.fold_info = {}
 
-        # --- 算法主循环 ---
-        # A. 处理起点
+        # 处理起点
         u_start = sorted_edges[0].source
         if u_start.id in fixed_node_ids:
             if mode == "plain":
                 last_node_in_new_graph = self._create_and_add_node_instance(u_start, 0, is_isolated=True)
-            else: # folded
+            else:
                 last_node_in_new_graph = copy.deepcopy(u_start)
                 fixed_instances[u_start.id] = last_node_in_new_graph
-                self.folded_node_map[last_node_in_new_graph.id] = [u_start.id]
-            
+
+            _ensure_fold_info(last_node_in_new_graph)
+            last_node_in_new_graph.fold_info["start_step"] = 0
+            last_node_in_new_graph.fold_info["end_step"] = 0
             new_cfg.nodes.append(last_node_in_new_graph)
         else:
             mergestack.append(u_start)
 
-        # B. 遍历边
+        # 遍历边
         for edge in sorted_edges:
             v_old = edge.target
-            
+            edge_step = edge.edge_step
+
             if v_old.id not in fixed_node_ids:
+                if not mergestack:
+                    pending_entry_edge = edge
                 mergestack.append(v_old)
             else:
-                # 遇到固定/隔离点，先结算缓存
-                _flush_stack(edge.edge_step, edge)
+                # 合并折叠块
+                if mergestack:
+                    if pending_entry_edge:
+                        start_step = pending_entry_edge.edge_step + 1
+                    else:
+                        start_step = 0
+                    end_step = edge_step
 
-                # 处理目标节点实例
-                v_inst = None
+                    new_merged = self._create_and_add_node_instance(mergestack, start_step, is_isolated=False)
+                    _ensure_fold_info(new_merged)
+                    new_merged.fold_info["start_step"] = start_step
+                    new_merged.fold_info["end_step"] = end_step
+
+                    new_cfg.nodes.append(new_merged)
+                    _connect(last_node_in_new_graph, new_merged, pending_entry_edge)
+
+                    if last_node_in_new_graph:
+                        _ensure_fold_info(last_node_in_new_graph)
+                        last_node_in_new_graph.fold_info["end_step"] = pending_entry_edge.edge_step if pending_entry_edge else 0
+
+                    last_node_in_new_graph = new_merged
+                    mergestack = []
+                    pending_entry_edge = None
+
+                # 固定节点
                 if mode == "plain":
-                    # 总是创建新副本
-                    v_inst = self._create_and_add_node_instance(v_old, edge.edge_step, is_isolated=True)
-                    new_cfg.nodes.append(v_inst)
-                else: 
-                    # folded 模式：尝试复用已有的实例
+                    v_inst = self._create_and_add_node_instance(v_old, edge_step + 1, is_isolated=True)
+                else:
                     if v_old.id not in fixed_instances:
                         v_inst = copy.deepcopy(v_old)
                         fixed_instances[v_old.id] = v_inst
-                        new_cfg.nodes.append(v_inst)
-                        self.folded_node_map[v_inst.id] = [v_old.id]
                     else:
                         v_inst = fixed_instances[v_old.id]
-                
-                # 建立连接
+
+                _ensure_fold_info(v_inst)
+                v_inst.fold_info["start_step"] = edge_step + 1
+                v_inst.fold_info["end_step"] = -1
+
+                new_cfg.nodes.append(v_inst)
                 _connect(last_node_in_new_graph, v_inst, edge)
+
+                if last_node_in_new_graph:
+                    _ensure_fold_info(last_node_in_new_graph)
+                    last_node_in_new_graph.fold_info["end_step"] = edge_step
+
                 last_node_in_new_graph = v_inst
 
-        # C. 结算末尾
-        if mergestack:
-            _flush_stack("END", sorted_edges[-1])
-
-        # 清洗映射表
+        # 最终去重（和你所有折叠逻辑一致）
         for rid in self.folded_node_map:
             self.folded_node_map[rid] = list(dict.fromkeys(self.folded_node_map[rid]))
 
         return new_cfg
-
-
-
+        
     # ========== CFG构建主逻辑 ==========
     def construct_cfg(
         self,
@@ -1065,14 +1151,14 @@ class CFGConstructor:
                 to_addr = normalize_address(to_addr_raw)
                 if value_hex != "0x0":
                     self.table.append({
-                        "pc": current_pc, "codecontract_address": current_address,
+                        "pc": current_pc, "codecontract_address": current_address, "step": current_step_idx,
                         "op": "CALL", "from": RW_address, "to": to_addr,
                         "token_name": "ETH", "token_address": "ETH", "balance/amount": value_hex
                     })
                     all_changes.append({
                         "type": "ETH_TRANSFER", "codecontract_address": current_address,
                         "from_address": RW_address, "to_address": to_addr,
-                        "eth_value": str(eth_value), "pc": current_pc
+                        "eth_value": str(eth_value), "pc": current_pc, "step": current_step_idx
                     })
 
             # 处理SLOAD
@@ -1088,13 +1174,15 @@ class CFGConstructor:
                             balance_hex = next_stack[-1] if next_stack else "0x0"
                         
                         self.table.append({
-                            "pc": current_pc, "codecontract_address": current_address,
+                            "pc": current_pc, "codecontract_address": current_address,"step": current_step_idx,
                             "op": "SLOAD", "from": from_addr, "to": None,
                             "token_name": token_name, "token_address": RW_address,
                             "balance/amount": self._normalize_hex_value(balance_hex)
                         })
                         balance_traces[(current_address, from_addr)]["SLOAD"] = self._normalize_hex_value(balance_hex)
                         balance_traces[(current_address, from_addr)]["SLOAD_pc"] = current_pc
+                        balance_traces[(current_address, from_addr)]["SLOAD_step"] = current_step_idx
+
 
             # 处理SSTORE
             if current_opcode == "SSTORE" and len(current_stack) >= 2:
@@ -1105,13 +1193,14 @@ class CFGConstructor:
                     token_name = self._get_token_name_by_address(RW_address, erc20_token_map)
                     if token_name != "":
                         self.table.append({
-                            "pc": current_pc, "codecontract_address": current_address,
+                            "pc": current_pc, "codecontract_address": current_address,"step": current_step_idx,
                             "op": "SSTORE", "from": None, "to": to_addr,
                             "token_name": token_name, "token_address": RW_address,
                             "balance/amount": self._normalize_hex_value(balance_hex)
                         })
                         balance_traces[(current_address, to_addr)]["SSTORE"] = self._normalize_hex_value(balance_hex)
                         balance_traces[(current_address, to_addr)]["SSTORE_pc"] = current_pc
+                        balance_traces[(current_address, to_addr)]["SSTORE_step"] = current_step_idx
                         sload_raw = balance_traces[(current_address, to_addr)]["SLOAD"]
                         if sload_raw is not None:
                             sload_val = self._hex_to_int_safe(sload_raw) or 0
@@ -1123,7 +1212,10 @@ class CFGConstructor:
                                     "erc20_token_address": RW_address, "token_name": token_name,
                                     "user_address": to_addr, "changed_balance": str(diff),
                                     "SLOAD_pc": balance_traces[(current_address, to_addr)]["SLOAD_pc"],
-                                    "SSTORE_pc": balance_traces[(current_address, to_addr)]["SSTORE_pc"]
+                                    "SLOAD_step": balance_traces[(current_address, from_addr)]["SLOAD_step"] ,
+                                    "SSTORE_pc": balance_traces[(current_address, to_addr)]["SSTORE_pc"],
+                                    "SSTORE_step": balance_traces[(current_address, to_addr)]["SSTORE_step"]
+                                    
                                 })
                             balance_traces[(current_address, to_addr)]["SLOAD"] = None
                             balance_traces[(current_address, to_addr)]["SSTORE"] = None
@@ -1146,7 +1238,8 @@ class CFGConstructor:
                     cfg.add_node(next_node)
                 edge_type = "NORMAL"
                 if current_opcode in self.jump_opcodes: edge_type = "JUMP"
-                elif current_opcode in {"CALL", "CALLCODE", "DELEGATECALL", "STATICCALL","CREATE","CREATE2","CALLCODE"}: edge_type = "CALL"
+                elif current_opcode in {"CALL", "CALLCODE",  "STATICCALL","CREATE","CREATE2","CALLCODE"}: edge_type = "CALL"
+                elif current_opcode in {"DELEGATECALL"}: edge_type = "DELEGATECALL"
                 elif current_opcode in {"RETURN", "STOP", "REVERT", "INVALID", "SELFDESTRUCT"}: edge_type = "TERMINATE"
                 # 保留 edge_step，移除 edge_id 相关逻辑
                 cfg.add_edge(current_node, next_node, edge_type, current_step_idx)
@@ -1155,8 +1248,8 @@ class CFGConstructor:
 
             current_step_idx += 1
 
-        # 填充语义
-        self._fill_actions_from_table(cfg)
+        # 基于pc填充cfg语义
+        self._fill_actions_from_table(cfg, "addr_pc")
         
         # --- 核心改动：物理双轨制 ---
         # 1. 在折叠前，先克隆出一份完整的、原始的 CFG 结构用于查询（tx_cfg）
@@ -1169,16 +1262,48 @@ class CFGConstructor:
         folded_node_map = self._fold_dispatch_patterns(cfg)
         current_cfg = copy.deepcopy(cfg)
         plain_cfg = self._mode_fold(current_cfg, "plain")
-        folded_cfg = self._mode_fold(current_cfg, "folded")
+        folded_cfg = self._mode_fold(current_cfg, "folded") # 自动继承cfg语义
+        folded_node_map = self.folded_node_map
+
+        # 基于step填充plain_cfg的语义
+        self._fill_actions_from_table(folded_cfg, "step")
 
         return plain_cfg, folded_cfg, original_cfg, all_changes, folded_node_map, self.table
-
-    def build_folded_blocks_information(self, cfg: CFG) -> Dict[str, Any]:
-        """构建折叠块信息（移除JSON导出相关逻辑）"""
+    
+    def build_pcfg_blocks_information(self, cfg: Any) -> Dict[str, Any]:
         block_inst_map = {}
         for node in cfg.nodes:
             if not isinstance(node, FoldableBlockNode):
                 continue
+            # 直接从折叠节点获取已存储的 step（核心简化点）
+            start_step = node.fold_info.get("start_step", -1)
+            end_step = node.fold_info.get("end_step", start_step)
+
+            block_inst_map[node.id] = {
+                "block_id": node.id,
+                "address": node.address,
+                "start_step": start_step,
+                "end_step": end_step,
+                "blocks_number": node.fold_info.get("blocks_number", len(node.folded_blocks)),
+                "gas": node.fold_info.get("total_gas", node.total_gas),
+                "actions": node.fold_info.get("actions", node.actions),
+            }
+
+        return block_inst_map
+
+    def export_pcfg_blocks_information(self, cfg: CFG, output_path: str):
+        block_inst_map = self.build_pcfg_blocks_information(cfg)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(block_inst_map, f, ensure_ascii=False, indent=2)
+
+
+
+    def build_fcfg_blocks_information(self, cfg: Any) -> Dict[str, Any]:
+        block_inst_map = {}
+        for node in cfg.nodes:
+            if not isinstance(node, FoldableBlockNode):
+                continue
+
             block_inst_map[node.id] = {
                 "block_id": node.id,
                 "address": node.address,
@@ -1188,10 +1313,12 @@ class CFGConstructor:
                 "actions": node.fold_info.get("actions", node.actions),
                 "instructions": [str(instr) for instr in node.instructions],
             }
+
         return block_inst_map
-    
+        
     # 导出blockid和内部信息映射
-    def export_folded_blocks_information(self, cfg: CFG, output_path: str):
-        block_inst_map = self.build_folded_blocks_information(cfg)
+    def export_fcfg_blocks_information(self, cfg: CFG, output_path: str):
+        block_inst_map = self.build_fcfg_blocks_information(cfg)
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(block_inst_map, f, ensure_ascii=False, indent=2)
+
