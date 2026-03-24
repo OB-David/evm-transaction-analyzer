@@ -112,6 +112,7 @@ def main():
         pairs, annotations, pending_erc20 = pair_transactions(original_transfer,all_changes, token_decimals_map)
         edge_link1 = afg_to_fcfg(pairs, pending_erc20, original_cfg, folded_node_map)
         edge_link2 = afg_to_pcfg(pairs, pending_erc20, plain_cfg)
+        
         json_output1 = edge_link_to_json(edge_link1)
         json_output2 = edge_link_to_json(edge_link2)
         print(f"共提取到 {len(all_changes)} 条资产变更事件，配对成功 {len(pairs)} 对交易流,存在孤立变动{len(annotations)}条\n")
@@ -128,6 +129,7 @@ def main():
         print("正在导出可见Block ID与Instructions映射...")
         folded_blocks_path = os.path.join(result_dir, "folded_blocks_information.json")
         cfg_constructor.export_fcfg_blocks_information(folded_cfg, folded_blocks_path)
+
         plain_blocks_path = os.path.join(result_dir, "plain_blocks_information.json")
         cfg_constructor.export_pcfg_blocks_information(plain_cfg, plain_blocks_path)
 

@@ -920,44 +920,46 @@ class CFGConstructor:
             return None
 
         if is_isolated:
-            # --- 处理隔离节点 ---
-            source_node = stack  # 此时传入的是单个 node 对象
+            source_node = stack
             new_node = copy.deepcopy(source_node)
-            new_node.id = f"{source_node.id}_iso_s{step_label}"
-            
-            # 注册映射关系
+
+            if not hasattr(self, '_plain_node_counter'):
+                self._plain_node_counter = 1
+            new_node.id = self._plain_node_counter
+            self._plain_node_counter += 1
+
+            # 映射关系
             self.folded_node_map[new_node.id] = self.folded_node_map.get(source_node.id, [source_node.id])
             return new_node
         else:
-            # --- 处理聚合节点（将 stack 揉成超级块） ---
             first_node = stack[0]
             merged_node = copy.deepcopy(first_node)
-            merged_node.id = f"{first_node.id}_merged_s{step_label}"
             merged_node.instructions = []
-            
+
+            if not hasattr(self, '_plain_node_counter'):
+                self._plain_node_counter = 1
+            merged_node.id = self._plain_node_counter
+            self._plain_node_counter += 1
+
             for i, node in enumerate(stack):
-                # 语义边界标记
                 merged_node.instructions.append({
-                    "pc": "---", 
-                    "opcode": f"TIMELINE_SEG_{i}", 
+                    "pc": "---",
+                    "opcode": f"TIMELINE_SEG_{i}",
                     "is_boundary": True,
                     "from_id": node.id
                 })
                 merged_node.instructions.extend(node.instructions)
-                
-                # 维护映射
+
                 if merged_node.id not in self.folded_node_map:
                     self.folded_node_map[merged_node.id] = []
                 orig_ids = self.folded_node_map.get(node.id, [node.id])
                 self.folded_node_map[merged_node.id].extend(orig_ids)
-                
-                # 物理信息合并 (Gas 等)
+
+                # 合并信息
                 if i > 0 and hasattr(merged_node, 'merge_fold_info'):
                     merged_node.merge_fold_info([node])
-            
+
             return merged_node
-
-
 
     def _mode_fold(self, current_cfg: Any, mode: str = "plain") -> Any:
         fixed_node_ids = self._get_fixed_node_ids(current_cfg)
