@@ -7,7 +7,7 @@ from utils.evm_information import TraceFormatter
 from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
 from utils.render_cfg import render_transaction
-from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_cfg, edge_link_to_json, detect_arbitrage, compute_address_balances
+from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_fcfg, afg_to_pcfg, edge_link_to_json, detect_arbitrage, compute_address_balances
 from utils.sequence_diagram import build_refined_hierarchical_trace, render_puml_to_svg, tree_to_puml
 
 
@@ -110,8 +110,10 @@ def main():
         original_transfer = [from_address.lower(),to_address.lower(), int(amount)]
         print(int(amount))
         pairs, annotations, pending_erc20 = pair_transactions(original_transfer,all_changes, token_decimals_map)
-        edge_link = afg_to_cfg(pairs, pending_erc20, original_cfg, folded_node_map)
-        json_output = edge_link_to_json(edge_link)
+        edge_link1 = afg_to_fcfg(pairs, pending_erc20, original_cfg, folded_node_map)
+        edge_link2 = afg_to_pcfg(pairs, pending_erc20, plain_cfg)
+        json_output1 = edge_link_to_json(edge_link1)
+        json_output2 = edge_link_to_json(edge_link2)
         print(f"共提取到 {len(all_changes)} 条资产变更事件，配对成功 {len(pairs)} 对交易流,存在孤立变动{len(annotations)}条\n")
         arb_result = detect_arbitrage(pairs, pending_erc20)
         addr_balances = compute_address_balances(pairs, pending_erc20)
@@ -141,10 +143,13 @@ def main():
         print(f"资产变更数据已保存到: {changes_path}")
 
         # 11. 保存边映射JSON文件
-        edge_link_path = os.path.join(result_dir, "edge_link.json")
-        with open(edge_link_path, "w", encoding="utf-8") as f:
-            f.write(json_output)
-        print(f"边映射数据已保存到: {edge_link_path}")
+        edge_link_path1 = os.path.join(result_dir, "TFG_link_FCFG.json")
+        edge_link_path2 = os.path.join(result_dir, "TFG_link_PCFG.json")
+        with open(edge_link_path1, "w", encoding="utf-8") as f:
+            f.write(json_output1)
+        print(f"边映射数据已保存到: {edge_link_path1}")
+        with open(edge_link_path2, "w", encoding="utf-8") as f:
+            f.write(json_output2)
 
         arb_json_path = os.path.join(result_dir, "arbitrage.json")
         with open(arb_json_path, "w", encoding="utf-8") as f:
