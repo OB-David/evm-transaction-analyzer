@@ -152,16 +152,14 @@ async function loadCfgData(txHash: string) {
   try {
     const [cfgViewBundle, legend] = await Promise.all([
       fetchCfgViewData(txHash, props.preferredMode),
-      fetchLegendData(txHash).catch(() => null),
+      fetchLegendData(txHash),
     ])
 
     cfgViews.value = cfgViewBundle
 
     addressNameMap.value.clear()
-    if (legend) {
-      for (const entry of [...legend.user_addresses, ...legend.erc20_tokens, ...legend.normal_contracts]) {
-        addressNameMap.value.set(entry.address.toLowerCase(), entry.name)
-      }
+    for (const entry of [...legend.user_addresses, ...legend.erc20_tokens, ...legend.normal_contracts]) {
+      addressNameMap.value.set(entry.address.toLowerCase(), entry.name)
     }
 
     status.value = 'success'

@@ -55,15 +55,6 @@ async function fetchJsonFile<T>(filename: string, txHash: string): Promise<T> {
   return res.json()
 }
 
-async function fetchOptionalTextFile(filename: string, txHash: string): Promise<string | null> {
-  const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`)
-  if (res.status === 404) return null
-  if (!res.ok) {
-    throw new Error(`Failed to fetch ${filename}: ${res.status}`)
-  }
-  return res.text()
-}
-
 export async function analyzeTransaction(txHash: string): Promise<AnalyzeResult> {
   const res = await fetch(`${API_BASE}/api/analyze`, {
     method: 'POST',
@@ -83,23 +74,11 @@ export async function fetchDotFile(txHash: string): Promise<string> {
 }
 
 export async function fetchCfgDotFile(txHash: string): Promise<string> {
-  const foldedDot = await fetchOptionalTextFile('folded_cfg.dot', txHash)
-  if (foldedDot) return foldedDot
-
-  const plainDot = await fetchOptionalTextFile('plain_cfg.dot', txHash)
-  if (plainDot) return plainDot
-
-  return fetchTextFile('transaction_cfg.dot', txHash)
+  return fetchTextFile('folded_cfg.dot', txHash)
 }
 
 export async function fetchCfgSvg(txHash: string): Promise<string> {
-  const foldedSvg = await fetchOptionalTextFile('folded_cfg.svg', txHash)
-  if (foldedSvg) return foldedSvg
-
-  const plainSvg = await fetchOptionalTextFile('plain_cfg.svg', txHash)
-  if (plainSvg) return plainSvg
-
-  return fetchTextFile('transaction_cfg.svg', txHash)
+  return fetchTextFile('folded_cfg.svg', txHash)
 }
 
 export async function fetchEdgeLink(txHash: string): Promise<EdgeLink[]> {
@@ -227,34 +206,20 @@ export async function fetchLegendData(txHash: string): Promise<LegendData> {
 
 export async function fetchBlockInformation(txHash: string, mode: CfgMode = 'folded'): Promise<BlockInformationMap> {
   const filename = mode === 'plain' ? 'plain_blocks_information.json' : 'folded_blocks_information.json'
-  try {
-    return await fetchJsonFile<BlockInformationMap>(filename, txHash)
-  } catch (error) {
-    if (mode === 'plain') {
-      return fetchJsonFile<BlockInformationMap>('folded_blocks_information.json', txHash)
-    }
-    throw error
-  }
+  return fetchJsonFile<BlockInformationMap>(filename, txHash)
 }
 
 async function fetchCfgSvgByMode(txHash: string, mode: CfgMode): Promise<string> {
-  const preferredFile = mode === 'plain' ? 'plain_cfg.svg' : 'folded_cfg.svg'
-  const preferredSvg = await fetchOptionalTextFile(preferredFile, txHash)
-  if (preferredSvg) return preferredSvg
-
-  const fallbackFile = mode === 'plain' ? 'folded_cfg.svg' : 'plain_cfg.svg'
-  const fallbackSvg = await fetchOptionalTextFile(fallbackFile, txHash)
-  if (fallbackSvg) return fallbackSvg
-
-  return fetchTextFile('transaction_cfg.svg', txHash)
+  const filename = mode === 'plain' ? 'plain_cfg.svg' : 'folded_cfg.svg'
+  return fetchTextFile(filename, txHash)
 }
 
 export async function fetchCfgViewData(txHash: string, preferredMode: CfgMode = 'folded'): Promise<CfgViewBundle> {
   const [foldedSvgContent, plainSvgContent, foldedBlockInformation, plainBlockInformation] = await Promise.all([
     fetchCfgSvgByMode(txHash, 'folded'),
     fetchCfgSvgByMode(txHash, 'plain'),
-    fetchBlockInformation(txHash, 'folded').catch(() => ({} as BlockInformationMap)),
-    fetchBlockInformation(txHash, 'plain').catch(() => ({} as BlockInformationMap)),
+    fetchBlockInformation(txHash, 'folded'),
+    fetchBlockInformation(txHash, 'plain'),
   ])
 
   return {
