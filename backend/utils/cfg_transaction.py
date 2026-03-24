@@ -850,7 +850,7 @@ class CFGConstructor:
             return None
 
         if is_isolated:
-            # --- 处理隔离节点（不合并，只克隆） ---
+            # --- 处理隔离节点 ---
             source_node = stack  # 此时传入的是单个 node 对象
             new_node = copy.deepcopy(source_node)
             new_node.id = f"{source_node.id}_iso_s{step_label}"
@@ -889,13 +889,6 @@ class CFGConstructor:
 
 
     def _mode_fold(self, current_cfg: Any, mode: str = "plain") -> Any:
-        """
-        折叠逻辑总入口：
-        :param mode: "plain" (隔离模式，不共享节点) 
-                     "folded" (枢纽模式，固定节点全局唯一)
-        """
-        # 1. 初始化
-        # 统一使用同一个判定函数，但在 plain 模式下将其视为 isolated
         fixed_node_ids = self._get_fixed_node_ids(current_cfg)
         sorted_edges = sorted(current_cfg.edges, key=lambda x: x.edge_step)
 
@@ -903,83 +896,88 @@ class CFGConstructor:
         new_cfg.nodes = []
         new_cfg.edges = []
         
-        self.folded_node_map = {} # 重置映射
+        self.folded_node_map = {}
         mergestack = []
-        fixed_instances = {}  # 仅在 "folded" 模式下有效
+        fixed_instances = {}
         last_node_in_new_graph = None
+        
+        # 核心修正：记录进入当前普通节点序列的那条边
+        pending_entry_edge = None 
 
         if not sorted_edges:
             return current_cfg
 
-        # --- 内部辅助：连接边 ---
         def _connect(src, tgt, orig_edge):
-            if src and tgt:
+            if src and tgt and orig_edge:
                 ne = copy.copy(orig_edge)
                 ne.source, ne.target = src, tgt
                 new_cfg.edges.append(ne)
 
-        # --- 内部辅助：结算 Stack ---
-        def _flush_stack(step_label, current_edge):
-            nonlocal last_node_in_new_graph, mergestack
-            if mergestack:
-                new_merged = self._create_and_add_node_instance(mergestack, step_label, is_isolated=False)
-                new_cfg.nodes.append(new_merged)
-                _connect(last_node_in_new_graph, new_merged, current_edge)
-                last_node_in_new_graph = new_merged
-                mergestack = []
-
-        # --- 算法主循环 ---
-        # A. 处理起点
+        # --- A. 处理起点 ---
         u_start = sorted_edges[0].source
         if u_start.id in fixed_node_ids:
             if mode == "plain":
                 last_node_in_new_graph = self._create_and_add_node_instance(u_start, 0, is_isolated=True)
-            else: # folded
+            else:
                 last_node_in_new_graph = copy.deepcopy(u_start)
                 fixed_instances[u_start.id] = last_node_in_new_graph
-                self.folded_node_map[last_node_in_new_graph.id] = [u_start.id]
-            
             new_cfg.nodes.append(last_node_in_new_graph)
         else:
             mergestack.append(u_start)
+            # 起点到第一个普通节点没有入边，pending_entry_edge 保持 None
 
-        # B. 遍历边
+        # --- B. 遍历边 ---
         for edge in sorted_edges:
             v_old = edge.target
             
             if v_old.id not in fixed_node_ids:
+                # [情况 1] 目标是普通节点
+                if not mergestack:
+                    # 说明刚从固定点出来，记录这条“进入普通序列”的边
+                    pending_entry_edge = edge
                 mergestack.append(v_old)
             else:
-                # 遇到固定/隔离点，先结算缓存
-                _flush_stack(edge.edge_step, edge)
+                # [情况 2] 撞到固定点
+                
+                # Step 1: 结算超级块
+                if mergestack:
+                    # 使用起始步数作为标签
+                    label = pending_entry_edge.edge_step if pending_entry_edge else "START"
+                    new_merged = self._create_and_add_node_instance(mergestack, label, is_isolated=False)
+                    new_cfg.nodes.append(new_merged)
+                    
+                    # 连接：[上个点] -> [超级块] (使用进入时的边)
+                    if pending_entry_edge:
+                        _connect(last_node_in_new_graph, new_merged, pending_entry_edge)
+                    
+                    last_node_in_new_graph = new_merged
+                    mergestack = []
+                    pending_entry_edge = None
 
-                # 处理目标节点实例
+                # Step 2: 处理当前固定点实例
                 v_inst = None
                 if mode == "plain":
-                    # 总是创建新副本
                     v_inst = self._create_and_add_node_instance(v_old, edge.edge_step, is_isolated=True)
-                    new_cfg.nodes.append(v_inst)
-                else: 
-                    # folded 模式：尝试复用已有的实例
+                else:
                     if v_old.id not in fixed_instances:
                         v_inst = copy.deepcopy(v_old)
                         fixed_instances[v_old.id] = v_inst
-                        new_cfg.nodes.append(v_inst)
-                        self.folded_node_map[v_inst.id] = [v_old.id]
                     else:
                         v_inst = fixed_instances[v_old.id]
                 
-                # 建立连接
+                if v_inst not in new_cfg.nodes:
+                    new_cfg.nodes.append(v_inst)
+
+                # Step 3: 连接：[超级块/上个固定点] -> [当前固定点] (使用当前的边)
                 _connect(last_node_in_new_graph, v_inst, edge)
+                
                 last_node_in_new_graph = v_inst
 
-        # C. 结算末尾
+        # --- C. 结算末尾 ---
         if mergestack:
-            _flush_stack("END", sorted_edges[-1])
-
-        # 清洗映射表
-        for rid in self.folded_node_map:
-            self.folded_node_map[rid] = list(dict.fromkeys(self.folded_node_map[rid]))
+            final_merged = self._create_and_add_node_instance(mergestack, "END", is_isolated=False)
+            new_cfg.nodes.append(final_merged)
+            _connect(last_node_in_new_graph, final_merged, pending_entry_edge)
 
         return new_cfg
 
