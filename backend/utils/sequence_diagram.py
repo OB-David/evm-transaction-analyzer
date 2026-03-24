@@ -276,6 +276,13 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
     ]
 
     # -------------------------- 工具函数 --------------------------
+    def _sanitize_puml_text(text, fallback):
+        cleaned = str(text).strip() if text is not None else ""
+        if not cleaned:
+            cleaned = fallback
+        cleaned = cleaned.replace('"', "'").replace("\n", " ").replace("\r", " ")
+        return cleaned
+
     def _get_contract_name(addr):
         """精准获取合约名称"""
         if not addr:
@@ -283,11 +290,24 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
         addr_lower = addr.lower().strip()
         
         if addr_lower in full_address_name_map:
-            return full_address_name_map[addr_lower]
+            mapped_name = _sanitize_puml_text(
+                full_address_name_map[addr_lower],
+                f"{addr[:12]}..." if len(addr) > 12 else addr
+            )
+            if mapped_name:
+                return mapped_name
         elif addr_lower in erc20_token_map:
-            return erc20_token_map[addr_lower].get("name", f"ERC20_{addr_lower[:6]}")
+            token_info = erc20_token_map[addr_lower]
+            if isinstance(token_info, dict):
+                token_name = token_info.get("name")
+            else:
+                token_name = token_info
+            token_name = _sanitize_puml_text(token_name, f"ERC20_{addr_lower[2:10]}")
+            if token_name:
+                return token_name
         else:
             return f"{addr[:12]}..." if len(addr) > 12 else addr
+        return f"{addr[:12]}..." if len(addr) > 12 else addr
 
     def _is_token_contract(addr):
         """判断是否为Token合约"""
@@ -296,7 +316,7 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
     def _get_contract_color(addr):
         """获取统一颜色"""
         addr_lower = addr.lower().strip()
-        return addr_color_map[addr_lower]
+        return addr_color_map.get(addr_lower, "#B0BEC5E6")
 
     def _create_contract_instance(addr, depth):
         """创建合约实例"""
@@ -313,12 +333,13 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
         alias = f"inst_{addr_short}_{call_num}"
         
         # 记录实例信息
+        fallback_name = addr[:12] + "..." if len(addr) > 12 else addr
         instance = {
             "id": instance_id,
             "alias": alias,
             "address": addr,
             "address_short": addr[:12] + "..." if len(addr) > 12 else addr,  # 新增：短地址，便于JSON显示
-            "name": _get_contract_name(addr),
+            "name": _sanitize_puml_text(_get_contract_name(addr), fallback_name),
             "call_num": call_num,
             "depth": depth,
             "is_token": _is_token_contract(addr),
@@ -428,7 +449,7 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
         
         # 生成合约实例
         for instance in instances:
-            display_name = f"{instance['name']}"
+            display_name = _sanitize_puml_text(instance["name"], instance["address_short"])
             if instance["is_token"]:
                 puml_lines.append(
                     f'    participant "{display_name}" as {instance["alias"]} {instance["color"]}'

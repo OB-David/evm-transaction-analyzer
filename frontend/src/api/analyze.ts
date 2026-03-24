@@ -5,12 +5,14 @@ export interface AnalyzeResult {
   error?: string | null
 }
 
+export type BlockId = string | number
+
 export interface EdgeLink {
   edge_id: number
   type: 'ETH_TRANSFER' | 'ERC20_TOKEN_TRANSFER' | 'ERC20_BALANCE_CHANGE'
-  matched_blocks: number | number[] | {
-    sender: number[]
-    receiver: number[]
+  matched_blocks: BlockId | BlockId[] | {
+    sender: BlockId[]
+    receiver: BlockId[]
   }
 }
 
@@ -62,15 +64,6 @@ async function fetchOptionalTextFile(filename: string, txHash: string): Promise<
   return res.text()
 }
 
-async function fetchOptionalJsonFile<T>(filename: string, txHash: string): Promise<T | null> {
-  const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`)
-  if (res.status === 404) return null
-  if (!res.ok) {
-    throw new Error(`Failed to fetch ${filename}: ${res.status}`)
-  }
-  return res.json()
-}
-
 export async function analyzeTransaction(txHash: string): Promise<AnalyzeResult> {
   const res = await fetch(`${API_BASE}/api/analyze`, {
     method: 'POST',
@@ -90,10 +83,22 @@ export async function fetchDotFile(txHash: string): Promise<string> {
 }
 
 export async function fetchCfgDotFile(txHash: string): Promise<string> {
+  const foldedDot = await fetchOptionalTextFile('folded_cfg.dot', txHash)
+  if (foldedDot) return foldedDot
+
+  const plainDot = await fetchOptionalTextFile('plain_cfg.dot', txHash)
+  if (plainDot) return plainDot
+
   return fetchTextFile('transaction_cfg.dot', txHash)
 }
 
 export async function fetchCfgSvg(txHash: string): Promise<string> {
+  const foldedSvg = await fetchOptionalTextFile('folded_cfg.svg', txHash)
+  if (foldedSvg) return foldedSvg
+
+  const plainSvg = await fetchOptionalTextFile('plain_cfg.svg', txHash)
+  if (plainSvg) return plainSvg
+
   return fetchTextFile('transaction_cfg.svg', txHash)
 }
 
@@ -176,7 +181,7 @@ export interface BlockAction {
 }
 
 export interface BlockInformation {
-  block_id: number
+  block_id: BlockId
   address: string
   blocks_number: number
   start_pc: string
@@ -190,64 +195,18 @@ export interface BlockInformationMap {
   [blockId: string]: BlockInformation
 }
 
-export interface SemanticNodeInformation {
-  semantic_node_id: string
-  label: string
-  purpose: string
-  confidence: number
-  contract_address: string
-  contract_name: string
-  member_block_ids: number[]
-  blocks_number: number
-  start_pc: string
-  end_pc: string
-  gas: number
-  entry_conditions: string[]
-  exit_effects: string[]
-  entry_edge_types: string[]
-  exit_edge_types: string[]
-  trace_step_range: {
-    entry_step: number | null
-    exit_step: number | null
-  }
-  actions: BlockAction[]
-  instruction_summary: string[]
-  action_summary: string[]
-  member_blocks: BlockInformation[]
-}
-
-export type SemanticNodeMap = Record<string, SemanticNodeInformation>
-
-export interface SemanticEdge {
-  edge_id: string
-  source_node: string
-  target_node: string
-  edge_types: string[]
-  raw_edge_ids: string[]
-  edge_steps: number[]
-}
-
-export interface SemanticCfgData {
-  mode: 'semantic'
-  model: string
-  nodes: SemanticNodeMap
-  edges: SemanticEdge[]
-  raw_to_semantic: Record<string, string>
-}
-
-export type CfgMode = 'semantic' | 'folded'
+export type CfgMode = 'folded' | 'plain'
 
 export interface CfgViewData {
   mode: CfgMode
   svgContent: string
-  semanticData: SemanticCfgData | null
   blockInformation: BlockInformationMap
 }
 
 export interface CfgViewBundle {
   initialMode: CfgMode
-  semantic: CfgViewData | null
   folded: CfgViewData
+  plain: CfgViewData
 }
 
 export interface LegendEntry {
@@ -266,54 +225,50 @@ export async function fetchLegendData(txHash: string): Promise<LegendData> {
   return fetchJsonFile<LegendData>('legend.json', txHash)
 }
 
-export async function fetchBlockInformation(txHash: string): Promise<BlockInformationMap> {
-  return fetchJsonFile<BlockInformationMap>('folded_blocks_information.json', txHash)
+export async function fetchBlockInformation(txHash: string, mode: CfgMode = 'folded'): Promise<BlockInformationMap> {
+  const filename = mode === 'plain' ? 'plain_blocks_information.json' : 'folded_blocks_information.json'
+  try {
+    return await fetchJsonFile<BlockInformationMap>(filename, txHash)
+  } catch (error) {
+    if (mode === 'plain') {
+      return fetchJsonFile<BlockInformationMap>('folded_blocks_information.json', txHash)
+    }
+    throw error
+  }
 }
 
-export async function fetchCfgViewData(txHash: string, preferredMode: CfgMode = 'semantic'): Promise<CfgViewBundle> {
-  const [foldedSvgContent, foldedBlockInformation] = await Promise.all([
-    fetchCfgSvg(txHash),
-    fetchBlockInformation(txHash).catch(() => ({} as BlockInformationMap)),
+async function fetchCfgSvgByMode(txHash: string, mode: CfgMode): Promise<string> {
+  const preferredFile = mode === 'plain' ? 'plain_cfg.svg' : 'folded_cfg.svg'
+  const preferredSvg = await fetchOptionalTextFile(preferredFile, txHash)
+  if (preferredSvg) return preferredSvg
+
+  const fallbackFile = mode === 'plain' ? 'folded_cfg.svg' : 'plain_cfg.svg'
+  const fallbackSvg = await fetchOptionalTextFile(fallbackFile, txHash)
+  if (fallbackSvg) return fallbackSvg
+
+  return fetchTextFile('transaction_cfg.svg', txHash)
+}
+
+export async function fetchCfgViewData(txHash: string, preferredMode: CfgMode = 'folded'): Promise<CfgViewBundle> {
+  const [foldedSvgContent, plainSvgContent, foldedBlockInformation, plainBlockInformation] = await Promise.all([
+    fetchCfgSvgByMode(txHash, 'folded'),
+    fetchCfgSvgByMode(txHash, 'plain'),
+    fetchBlockInformation(txHash, 'folded').catch(() => ({} as BlockInformationMap)),
+    fetchBlockInformation(txHash, 'plain').catch(() => ({} as BlockInformationMap)),
   ])
 
-  const folded: CfgViewData = {
-    mode: 'folded',
-    svgContent: foldedSvgContent,
-    semanticData: null,
-    blockInformation: foldedBlockInformation,
-  }
-
-  let semantic: CfgViewData | null = null
-
-  try {
-    const [semanticSvg, semanticData] = await Promise.all([
-      fetchOptionalTextFile('semantic_cfg.svg', txHash),
-      fetchOptionalJsonFile<SemanticCfgData>('semantic_cfg.json', txHash),
-    ])
-
-    if (semanticSvg && semanticData && semanticData.mode === 'semantic') {
-      const blockInformation: BlockInformationMap = {}
-      Object.values(semanticData.nodes).forEach((node) => {
-        node.member_blocks.forEach((block) => {
-          blockInformation[String(block.block_id)] = block
-        })
-      })
-
-      semantic = {
-        mode: 'semantic',
-        svgContent: semanticSvg,
-        semanticData,
-        blockInformation,
-      }
-    }
-  } catch (e) {
-    console.warn('Semantic CFG unavailable, falling back to folded CFG.', e)
-  }
-
   return {
-    initialMode: preferredMode === 'semantic' && semantic ? 'semantic' : 'folded',
-    semantic,
-    folded,
+    initialMode: preferredMode === 'plain' ? 'plain' : 'folded',
+    folded: {
+      mode: 'folded',
+      svgContent: foldedSvgContent,
+      blockInformation: foldedBlockInformation,
+    },
+    plain: {
+      mode: 'plain',
+      svgContent: plainSvgContent,
+      blockInformation: plainBlockInformation,
+    },
   }
 }
 
@@ -350,18 +305,7 @@ export async function fetchSequenceCalldataMapping(txHash: string): Promise<Sequ
   return fetchJsonFile<SequenceCalldataMapping>('trace_sequence_calldata_mapping.json', txHash)
 }
 
-export async function fetchEdgeStepMap(txHash: string, preferredMode: CfgMode = 'semantic'): Promise<EdgeStepMap> {
-  if (preferredMode === 'semantic') {
-    try {
-      const semanticMap = await fetchOptionalJsonFile<EdgeStepMap>('semantic_edge_id-step.json', txHash)
-      if (semanticMap) {
-        return semanticMap
-      }
-    } catch (e) {
-      console.warn('Semantic edge-step map unavailable, falling back to folded edge map.', e)
-    }
-  }
-
+export async function fetchEdgeStepMap(txHash: string, _preferredMode: CfgMode = 'folded'): Promise<EdgeStepMap> {
   return fetchJsonFile<EdgeStepMap>('edge_id-step.json', txHash)
 }
 

@@ -2,16 +2,16 @@
 import { ref, watch, nextTick } from 'vue'
 import { graphviz } from 'd3-graphviz'
 import LegendPanel from './LegendPanel.vue'
-import { fetchDotFile, fetchEdgeLink, fetchArbitrageResult, fetchAddressBalances, fetchLegendData, type EdgeLink } from '../api/analyze'
+import { fetchDotFile, fetchEdgeLink, fetchArbitrageResult, fetchAddressBalances, fetchLegendData, type BlockId, type EdgeLink } from '../api/analyze'
 
 const props = defineProps<{
   txHash: string | null
-  highlightedBlockId: number[] | null
+  highlightedBlockId: BlockId[] | null
   isAnalyzing: boolean
 }>()
 
 const emit = defineEmits<{
-  'cfg-navigate': [blockIds: number[] | null]
+  'cfg-navigate': [blockIds: BlockId[] | null]
 }>()
 
 const dotContent = ref<string>('')
@@ -300,9 +300,9 @@ function handleEdgeClick(edgeId: number) {
     return
   }
 
-  const blockIds: number[] = []
+  const blockIds: BlockId[] = []
 
-  if (typeof link.matched_blocks === 'number') {
+  if (typeof link.matched_blocks === 'number' || typeof link.matched_blocks === 'string') {
     blockIds.push(link.matched_blocks)
   } else if (Array.isArray(link.matched_blocks)) {
     blockIds.push(...link.matched_blocks)

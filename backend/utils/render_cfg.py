@@ -1,6 +1,6 @@
 # render_cfg.py
 # 仅负责CFG DOT文件生成，无任何图例相关代码/依赖/调用
-from typing import Any, Optional, List, Dict, Tuple
+from typing import Any, List, Dict, Tuple
 
 def escape_dot(s: Any) -> str:
     """转义DOT特殊字符"""
@@ -14,47 +14,12 @@ def addr_short(s: Any) -> str:
     s = str(s)
     return s[:8] + "..." + s[-4:] if s.startswith("0x") and len(s) > 8 else s
 
-
-def escape_html(s: Any) -> str:
-    """转义 DOT HTML-like label 字符。"""
-    if s is None:
-        return ""
-    text = str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return text.replace('"', "&quot;")
-
-
-def wrap_semantic_label(label: Any, words_per_line: int = 2, max_lines: int = 3) -> List[str]:
-    """Turn semantic labels into short multi-line titles for readability."""
-    raw = str(label or "Semantic Region").replace("_", " ").strip()
-    words = [word for word in raw.split() if word]
-    if not words:
-        return ["Semantic Region"]
-
-    lines: List[str] = []
-    current: List[str] = []
-    for word in words:
-        current.append(word)
-        if len(current) >= words_per_line:
-            lines.append(" ".join(current))
-            current = []
-        if len(lines) >= max_lines:
-            break
-
-    if current and len(lines) < max_lines:
-        lines.append(" ".join(current))
-
-    if len(lines) == max_lines and len(words) > words_per_line * max_lines:
-        lines[-1] = f"{lines[-1]}..."
-
-    return lines
-
-def get_valid_nodes_and_colors(cfg: object, contract_colors: List[str]) -> Tuple[List[object], List[str], List[str], Dict[str, int]]:
+def get_valid_nodes_and_colors(cfg: object, contract_colors: List[str]) -> Tuple[List[object], List[str], Dict[str, str]]:
     """
     按合约第一次出现顺序依次分配颜色
     """
     valid_nodes = []
     node_colors = []
-    node_contract_addrs = []
     addr_color_map = {}
 
     # 记录合约地址→颜色索引（按首次出现顺序）
@@ -80,7 +45,6 @@ def get_valid_nodes_and_colors(cfg: object, contract_colors: List[str]) -> Tuple
 
         valid_nodes.append(node)
         node_colors.append(color)
-        node_contract_addrs.append(node_addr)
         addr_color_map[node_addr] = color
 
     return valid_nodes, node_colors, addr_color_map
@@ -210,63 +174,3 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
 
     print(f"[OK] CFG DOT文件已生成：{final_output_path}")
     return addr_color_map
-
-
-def render_semantic_transaction(
-    addr_color_map: Dict[str, str],
-    edge_color_map: Dict[str, str],
-    semantic_cfg: Dict[str, Any],
-    output_path: str,
-    rankdir: str = "LR",
-) -> None:
-    """渲染语义抽象后的 CFG DOT 文件。"""
-    nodes = semantic_cfg.get("nodes", {})
-    edges = semantic_cfg.get("edges", [])
-
-    dot_lines = [
-        "digraph SemanticCFG {",
-        f"  rankdir={rankdir};",
-        '  graph [nodesep=0.38, ranksep=0.62, charset="utf-8", splines=ortho, overlap=false, pad=0.2];',
-        '  node [fontname="Arial", fontsize=26, shape=rect, style="rounded,filled", margin="0.32,0.22", penwidth=2.2];',
-        '  edge [color="#94A3B8", arrowsize=0.65, penwidth=1.4];',
-    ]
-
-    for node_id, node in nodes.items():
-        contract_addr = str(node.get("contract_address", "Unknown"))
-        contract_name = escape_html(node.get("contract_name") or addr_short(contract_addr))
-        label_lines = wrap_semantic_label(node.get("label", "Semantic Region"))
-        label_rows = "".join(f'<TR><TD><B>{escape_html(line)}</B></TD></TR>' for line in label_lines)
-        accent_color = addr_color_map.get(contract_addr, "#CBD5E1")
-        fill_color = "#FFFDF8"
-        actions = node.get("actions", [])
-        border_color = "#B91C1C" if actions else accent_color[:7]
-        penwidth = "3.2" if actions else "2.2"
-        node_label = (
-            "<<TABLE BORDER=\"0\" CELLBORDER=\"0\" CELLSPACING=\"0\" CELLPADDING=\"3\">"
-            f"{label_rows}"
-            f'<TR><TD><FONT POINT-SIZE="15" COLOR="#64748B">{contract_name}</FONT></TD></TR>'
-            "</TABLE>>"
-        )
-        dot_lines.append(
-            f'  {node_id} [label={node_label}, fillcolor="{fill_color}", color="{border_color}", penwidth={penwidth}];'
-        )
-
-    for edge in edges:
-        src_id = edge.get("source_node")
-        tgt_id = edge.get("target_node")
-        edge_types = edge.get("edge_types", [])
-        if not src_id or not tgt_id:
-            continue
-        primary_type = edge_types[0] if edge_types else "NORMAL"
-        edge_color = edge_color_map.get(primary_type, "#94A3B8")
-        dot_lines.append(
-            f'  {src_id} -> {tgt_id} [color="{edge_color}", minlen=1]'
-        )
-
-    dot_lines.append("}")
-
-    final_output_path = f"{output_path}.dot" if not output_path.endswith(".dot") else output_path
-    with open(final_output_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(dot_lines))
-
-    print(f"[OK] Semantic CFG DOT文件已生成：{final_output_path}")

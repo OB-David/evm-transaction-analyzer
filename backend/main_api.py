@@ -3,6 +3,7 @@ import sys
 import io
 import json
 import os
+from typing import Any, Dict
 from web3 import Web3
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
@@ -12,10 +13,88 @@ from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
 from utils.extract_token_changes import pair_transactions, afg_to_cfg, edge_link_to_json, detect_arbitrage, compute_address_balances
 from utils.sequence_diagram import build_refined_hierarchical_trace
-from utils.semantic_cfg import generate_and_export_semantic_cfg
 from main import create_result_directory, save_graphs
 
 load_dotenv()
+
+
+def _normalize_edge_step(value: Any) -> int:
+    """Normalize edge_step to int for stable sorting and frontend filtering."""
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value))
+    except Exception:
+        return 0
+
+
+def _build_edge_step_information_compat(cfg: Any) -> Dict[str, Dict[str, Any]]:
+    """
+    Build edge_id-step map for folded/timeline CFG output.
+    Also rewrites edge.edge_id as edge_{N} for stable frontend filtering.
+    """
+    edges = list(getattr(cfg, "edges", []))
+    indexed_edges = list(enumerate(edges))
+    sorted_edges = sorted(
+        indexed_edges,
+        key=lambda item: (_normalize_edge_step(getattr(item[1], "edge_step", 0)), item[0]),
+    )
+
+    edge_step_map: Dict[str, Dict[str, Any]] = {}
+    for rank, (_original_index, edge) in enumerate(sorted_edges, start=1):
+        edge_id = f"edge_{rank}"
+        setattr(edge, "edge_id", edge_id)
+        edge_step = _normalize_edge_step(getattr(edge, "edge_step", 0))
+
+        source = getattr(edge, "source", None)
+        target = getattr(edge, "target", None)
+        source_id = getattr(source, "id", "unknown")
+        target_id = getattr(target, "id", "unknown")
+
+        edge_step_map[edge_id] = {
+            "edge_id": edge_id,
+            "edge_step": edge_step,
+            "source_node": f"node_{source_id}",
+            "target_node": f"node_{target_id}",
+        }
+    return edge_step_map
+
+
+def _enrich_folded_blocks_information(cfg: Any, folded_blocks_map: Dict[str, Any]) -> Dict[str, Any]:
+    """Backfill missing start_pc/end_pc fields for mixed-id folded blocks."""
+    node_by_id = {str(getattr(node, "id", "")): node for node in getattr(cfg, "nodes", [])}
+
+    for key, info in folded_blocks_map.items():
+        if not isinstance(info, dict):
+            continue
+
+        block_id = info.get("block_id", key)
+        node = node_by_id.get(str(block_id))
+
+        start_pc = info.get("start_pc")
+        end_pc = info.get("end_pc")
+
+        if node is not None:
+            if start_pc in (None, ""):
+                node_start_pc = getattr(node, "start_pc", None)
+                if node_start_pc not in (None, ""):
+                    info["start_pc"] = str(node_start_pc)
+
+            if end_pc in (None, ""):
+                fold_info = getattr(node, "fold_info", {})
+                fold_end_pc = fold_info.get("end_pc") if isinstance(fold_info, dict) else None
+                node_end_pc = fold_end_pc if fold_end_pc not in (None, "") else getattr(node, "end_pc", None)
+                if node_end_pc not in (None, ""):
+                    info["end_pc"] = str(node_end_pc)
+
+        if info.get("start_pc") in (None, ""):
+            info["start_pc"] = "Unknown"
+        if info.get("end_pc") in (None, ""):
+            info["end_pc"] = "Unknown"
+
+    return folded_blocks_map
 
 def run(tx_hash: str):
     PROVIDER_URL = os.environ.get("GETH_API")
@@ -54,7 +133,7 @@ def run(tx_hash: str):
     all_blocks = processor.process_multiple_contracts(contracts_bytecode)
 
     cfg_constructor = CFGConstructor(all_blocks)
-    tx_cfg, original_cfg, all_changes, folded_node_map, table = cfg_constructor.construct_cfg(
+    plain_cfg, folded_cfg, original_cfg, all_changes, folded_node_map, table = cfg_constructor.construct_cfg(
         standardized_trace,
         slot_map,
         erc20_token_map,
@@ -68,6 +147,8 @@ def run(tx_hash: str):
     pairs, annotations, pending_erc20 = pair_transactions(original_transfer, all_changes, token_decimals_map)
     edge_link = afg_to_cfg(pairs, pending_erc20, original_cfg, folded_node_map)
     json_output = edge_link_to_json(edge_link)
+    arb_result = detect_arbitrage(pairs, pending_erc20)
+    addr_balances = compute_address_balances(pairs, pending_erc20)
 
     # Save trace
     with open(os.path.join(result_dir, "trace.json"), "w", encoding="utf-8") as f:
@@ -83,31 +164,24 @@ def run(tx_hash: str):
 
     # Save folded blocks information
     folded_blocks_path = os.path.join(result_dir, "folded_blocks_information.json")
-    folded_blocks_map = cfg_constructor.build_folded_blocks_information(tx_cfg)
-    cfg_constructor.export_folded_blocks_information(tx_cfg, folded_blocks_path)
+    folded_blocks_map = cfg_constructor.build_folded_blocks_information(folded_cfg)
+    folded_blocks_map = _enrich_folded_blocks_information(folded_cfg, folded_blocks_map)
+    with open(folded_blocks_path, "w", encoding="utf-8") as f:
+        json.dump(folded_blocks_map, f, indent=2, ensure_ascii=False)
+
+    plain_blocks_path = os.path.join(result_dir, "plain_blocks_information.json")
+    plain_blocks_map = cfg_constructor.build_folded_blocks_information(plain_cfg)
+    plain_blocks_map = _enrich_folded_blocks_information(plain_cfg, plain_blocks_map)
+    with open(plain_blocks_path, "w", encoding="utf-8") as f:
+        json.dump(plain_blocks_map, f, indent=2, ensure_ascii=False)
 
     # Save edge step mapping
     edge_info_path = os.path.join(result_dir, "edge_id-step.json")
-    edge_step_map = cfg_constructor.build_edge_step_information(tx_cfg)
-    cfg_constructor.export_edge_step_information(tx_cfg, edge_info_path)
-
-    semantic_cfg = None
-    try:
-        semantic_cfg = generate_and_export_semantic_cfg(
-            cfg=tx_cfg,
-            result_dir=result_dir,
-            full_address_name_map=full_address_name_map,
-            erc20_token_map=erc20_token_map,
-            folded_blocks_map=folded_blocks_map,
-            edge_step_map=edge_step_map,
-        )
-        if not semantic_cfg:
-            print("Semantic CFG skipped; folded CFG remains the fallback output.")
-    except Exception as semantic_error:
-        print(f"WARNING: Semantic CFG generation failed: {semantic_error}")
+    edge_step_map = _build_edge_step_information_compat(folded_cfg)
+    with open(edge_info_path, "w", encoding="utf-8") as f:
+        json.dump(edge_step_map, f, indent=2, ensure_ascii=False)
 
     # Save arbitrage results
-    arb_result = detect_arbitrage(pairs, pending_erc20)
     arb_json_path = os.path.join(result_dir, "arbitrage.json")
     with open(arb_json_path, "w", encoding="utf-8") as f:
         json.dump({
@@ -116,7 +190,6 @@ def run(tx_hash: str):
             "arb_edge_orders": list(arb_result["arb_edge_orders"])
         }, f, indent=2, ensure_ascii=False)
 
-    addr_balances = compute_address_balances(pairs, pending_erc20)
     addr_balances_path = os.path.join(result_dir, "address_balances.json")
     with open(addr_balances_path, "w", encoding="utf-8") as f:
         json.dump(addr_balances, f, indent=2, ensure_ascii=False)
@@ -127,7 +200,8 @@ def run(tx_hash: str):
     # Render graphs
     save_graphs(
         result_dir=result_dir,
-        tx_cfg=tx_cfg,
+        plain_cfg=plain_cfg,
+        folded_cfg=folded_cfg,
         full_address_name_map=full_address_name_map,
         erc20_token_map=erc20_token_map,
         users_addresses=users_addresses,
@@ -136,7 +210,6 @@ def run(tx_hash: str):
         pending_erc20=pending_erc20,
         tree_data=tree_data,
         arb_result=arb_result,
-        semantic_cfg=semantic_cfg,
     )
 
     print(f"RESULT_DIR={os.path.abspath(result_dir)}")
