@@ -21,7 +21,7 @@ const currentBlockNumber = ref<number | null>(null)
 const highlightedBlockId = ref<BlockId[] | null>(null)
 const inputPanelRef = ref<InstanceType<typeof InputPanel> | null>(null)
 const isAnalyzing = ref(false)
-const currentCfgMode = ref<CfgMode>('semantic')
+const currentCfgMode = ref<CfgMode>('folded')
 
 // Arbitrage hashes from Dune — stored as Sets for O(1) lookup in BlockPanel
 const arbitrageTxHashes = ref<Set<string>>(new Set())

@@ -888,7 +888,7 @@ class CFGConstructor:
             return merged_node
 
 
-    def _semantic_fold(self, current_cfg: Any, mode: str = "plain") -> Any:
+    def _mode_fold(self, current_cfg: Any, mode: str = "plain") -> Any:
         """
         折叠逻辑总入口：
         :param mode: "plain" (隔离模式，不共享节点) 
@@ -1168,8 +1168,8 @@ class CFGConstructor:
         folded_node_map = self._fold_dianmond_patterns(cfg)
         folded_node_map = self._fold_dispatch_patterns(cfg)
         current_cfg = copy.deepcopy(cfg)
-        plain_cfg = self._semantic_fold(current_cfg, "plain")
-        folded_cfg = self._semantic_fold(current_cfg, "folded")
+        plain_cfg = self._mode_fold(current_cfg, "plain")
+        folded_cfg = self._mode_fold(current_cfg, "folded")
 
         return plain_cfg, folded_cfg, original_cfg, all_changes, folded_node_map, self.table
 

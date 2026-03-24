@@ -12,8 +12,6 @@ import {
   type CfgMode,
   type CfgViewBundle,
   type EdgeStepMap,
-  type SemanticCfgData,
-  type SemanticNodeInformation,
 } from '../api/analyze'
 
 const props = defineProps<{
@@ -36,11 +34,9 @@ const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
 const cfgMode = ref<CfgMode>('folded')
 const cfgViews = ref<CfgViewBundle | null>(null)
-const semanticData = ref<SemanticCfgData | null>(null)
 const blockInformation = ref<BlockInformationMap>({})
 const selectedNodeName = ref<string | null>(null)
 const selectedBlockInfo = ref<BlockInformation | null>(null)
-const selectedSemanticInfo = ref<SemanticNodeInformation | null>(null)
 const graphContainer = ref<HTMLElement | null>(null)
 const addressNameMap = ref<Map<string, string>>(new Map())
 const highlightedNodes = ref<Set<string>>(new Set())
@@ -48,24 +44,20 @@ const visibleNodes = ref<Set<string>>(new Set())
 const visibleEdges = ref<Set<string>>(new Set())
 const edgeConnections = ref<Map<string, { source: string, target: string }>>(new Map())
 const nodeNameToEl = ref<Map<string, Element>>(new Map())
-const nodeDisplayLabelMap = ref<Map<string, string>>(new Map())
 const edgeIdToSvgTitle = ref<Map<string, string>>(new Map())
 const activeEdgeType = ref<CfgEdgeType | null>(null)
 const showEdgeTypes = ref(false)
+const PLAIN_SCALE_MULTIPLIER = 1.35
+const PLAIN_MIN_WIDTH_RATIO = 1.15
+const PLAIN_VIEW_PADDING = 20
 
 let zoomBehavior: ZoomBehavior<SVGSVGElement, unknown> | null = null
 let resizeObserver: ResizeObserver | null = null
 let edgeTooltipHideTimer: number | null = null
 
-const selectedSemanticBlocks = computed(() => selectedSemanticInfo.value?.member_blocks ?? [])
-const hasSemanticView = computed(() => Boolean(cfgViews.value?.semantic))
-const cfgModeBadge = computed(() => cfgMode.value === 'semantic' ? 'Semantic CFG' : 'Transaction CFG')
-const toggleButtonLabel = computed(() => cfgMode.value === 'semantic' ? 'Transaction CFG' : 'Semantic CFG')
-const hasSelection = computed(() => Boolean(selectedSemanticInfo.value || selectedBlockInfo.value))
-const selectedSemanticTitle = computed(() => {
-  if (!selectedSemanticInfo.value) return ''
-  return nodeDisplayLabelMap.value.get(selectedSemanticInfo.value.semantic_node_id) || selectedSemanticInfo.value.label
-})
+const cfgModeBadge = computed(() => cfgMode.value === 'folded' ? 'Folded CFG' : 'Plain CFG')
+const toggleButtonLabel = computed(() => cfgMode.value === 'folded' ? 'Plain CFG' : 'Folded CFG')
+const hasSelection = computed(() => Boolean(selectedBlockInfo.value))
 
 watch(() => props.txHash, (newHash) => {
   resetSelection()
@@ -74,7 +66,6 @@ watch(() => props.txHash, (newHash) => {
   } else {
     status.value = 'idle'
     cfgViews.value = null
-    semanticData.value = null
     blockInformation.value = {}
     clearFilterState()
     if (graphContainer.value) {
@@ -84,6 +75,12 @@ watch(() => props.txHash, (newHash) => {
 }, { immediate: true })
 
 watch(() => props.highlightedBlockId, (newBlockIds) => {
+  if (cfgMode.value !== 'folded') {
+    clearFilterState()
+    applyFilter()
+    return
+  }
+
   if (props.filteredEdgeIds && props.filteredEdgeIds.length > 0) return
 
   if (newBlockIds && newBlockIds.length > 0) {
@@ -122,6 +119,12 @@ watch(hasSelection, () => {
 })
 
 watch(() => props.filteredEdgeIds, (edgeIds) => {
+  if (cfgMode.value !== 'folded') {
+    clearFilterState()
+    applyFilter()
+    return
+  }
+
   if (edgeIds && edgeIds.length > 0) {
     applyEdgeFilter(edgeIds)
   } else if (!props.highlightedBlockId || props.highlightedBlockId.length === 0) {
@@ -142,7 +145,6 @@ async function loadCfgData(txHash: string) {
   errorMsg.value = ''
   activeEdgeType.value = null
   cfgViews.value = null
-  semanticData.value = null
   blockInformation.value = {}
   clearFilterState()
   resetSelection()
@@ -172,7 +174,7 @@ async function loadCfgData(txHash: string) {
 
 function getCfgView(mode: CfgMode) {
   if (!cfgViews.value) return null
-  return mode === 'semantic' ? cfgViews.value.semantic : cfgViews.value.folded
+  return mode === 'plain' ? cfgViews.value.plain : cfgViews.value.folded
 }
 
 async function switchCfgMode(mode: CfgMode) {
@@ -180,7 +182,6 @@ async function switchCfgMode(mode: CfgMode) {
   if (!nextView) return
 
   cfgMode.value = mode
-  semanticData.value = nextView.semanticData
   blockInformation.value = nextView.blockInformation
   resetSelection()
   emit('mode-change', mode)
@@ -190,7 +191,7 @@ async function switchCfgMode(mode: CfgMode) {
 }
 
 function toggleCfgMode() {
-  const nextMode: CfgMode = cfgMode.value === 'semantic' ? 'folded' : 'semantic'
+  const nextMode: CfgMode = cfgMode.value === 'folded' ? 'plain' : 'folded'
   if (!getCfgView(nextMode)) return
   void switchCfgMode(nextMode)
 }
@@ -204,15 +205,12 @@ function renderSvg(svgContent: string) {
   const svg = container.querySelector('svg')
   if (!svg) return
 
-  if (cfgMode.value !== 'folded') {
-    svg.removeAttribute('viewBox')
-    svg.removeAttribute('preserveAspectRatio')
-  }
-
   svg.removeAttribute('width')
   svg.removeAttribute('height')
+  svg.style.display = 'block'
   svg.style.width = '100%'
   svg.style.height = '100%'
+  svg.style.maxWidth = 'none'
 
   const svgSel = select(svg as SVGSVGElement)
   const origG = svg.querySelector('g')
@@ -226,6 +224,8 @@ function renderSvg(svgContent: string) {
   if (cfgMode.value === 'folded') {
     setFoldedViewBox(svg as SVGSVGElement, origG as SVGGElement)
     normalizeFoldedTextScale(svg as SVGSVGElement)
+  } else {
+    configurePlainViewport(svg as SVGSVGElement, origG as SVGGElement)
   }
 
   zoomBehavior = zoom<SVGSVGElement, unknown>()
@@ -291,6 +291,31 @@ function normalizeFoldedTextScale(svg: SVGSVGElement) {
   })
 }
 
+function configurePlainViewport(svg: SVGSVGElement, graphContent: SVGGElement) {
+  if (!graphContainer.value) return
+
+  const bounds = getGraphContentBounds(graphContent)
+  const containerWidth = graphContainer.value.clientWidth
+  const containerHeight = graphContainer.value.clientHeight
+  if (bounds.width <= 0 || bounds.height <= 0 || containerWidth <= 0 || containerHeight <= 0) return
+
+  const paddedWidth = bounds.width + PLAIN_VIEW_PADDING * 2
+  const paddedHeight = bounds.height + PLAIN_VIEW_PADDING * 2
+  svg.setAttribute(
+    'viewBox',
+    `${bounds.x - PLAIN_VIEW_PADDING} ${bounds.y - PLAIN_VIEW_PADDING} ${paddedWidth} ${paddedHeight}`,
+  )
+  svg.setAttribute('preserveAspectRatio', 'xMinYMid meet')
+
+  const widthFromHeight = containerHeight * (paddedWidth / paddedHeight)
+  const enlargedWidth = widthFromHeight * PLAIN_SCALE_MULTIPLIER
+  const minimumWidth = containerWidth * PLAIN_MIN_WIDTH_RATIO
+  const targetWidth = Math.max(enlargedWidth, minimumWidth)
+
+  svg.style.width = `${Math.ceil(targetWidth)}px`
+  svg.style.height = '100%'
+}
+
 function attachInteractivity() {
   if (!graphContainer.value) return
   const svg = graphContainer.value.querySelector('svg')
@@ -329,17 +354,11 @@ function prepareSvgMetadata(svg: SVGSVGElement) {
     edgeTypes.map(edge => [edge.color.toLowerCase(), edge.type]),
   )
 
-  nodeDisplayLabelMap.value.clear()
   svg.querySelectorAll('.node').forEach((node) => {
     const titleEl = node.querySelector('title')
     const nodeName = titleEl?.textContent?.trim() || ''
     if (nodeName) {
       ;(node as HTMLElement).dataset.nodeName = nodeName
-      const displayLabel = getNodeDisplayLabel(node)
-      if (displayLabel) {
-        ;(node as HTMLElement).dataset.nodeLabel = displayLabel
-        nodeDisplayLabelMap.value.set(nodeName, displayLabel)
-      }
     }
     titleEl?.remove()
   })
@@ -375,23 +394,6 @@ function prepareSvgMetadata(svg: SVGSVGElement) {
 
 function getNodeName(node: Element): string {
   return (node as HTMLElement).dataset.nodeName || ''
-}
-
-function getNodeDisplayLabel(node: Element): string {
-  const titleText = Array.from(node.querySelectorAll('text'))
-    .filter((textEl) => {
-      const fontWeight = textEl.getAttribute('font-weight')?.toLowerCase()
-      const fontSize = Number.parseFloat(textEl.getAttribute('font-size') || '0')
-      return fontWeight === 'bold' || fontSize >= 20
-    })
-    .map((textEl) => textEl.textContent?.trim() || '')
-    .filter(Boolean)
-
-  if (titleText.length > 0) {
-    return titleText.join(' ')
-  }
-
-  return ''
 }
 
 function getEdgeTitle(edge: Element): string {
@@ -436,6 +438,12 @@ function buildEdgeIdToTitleMap() {
 }
 
 function syncFilterStateWithProps() {
+  if (cfgMode.value !== 'folded') {
+    clearFilterState()
+    applyFilter()
+    return
+  }
+
   if (props.filteredEdgeIds && props.filteredEdgeIds.length > 0) {
     applyEdgeFilter(props.filteredEdgeIds)
     return
@@ -472,33 +480,11 @@ function handleNodeClick(nodeName: string) {
   selectedNodeName.value = nodeName
   nodeNameToEl.value.get(nodeName)?.classList.add('selected')
 
-  if (nodeName.startsWith('semantic_') && semanticData.value) {
-    selectedSemanticInfo.value = semanticData.value.nodes[nodeName] || null
-    selectedBlockInfo.value = null
-    const renderedLabel = nodeDisplayLabelMap.value.get(nodeName)
-    if (
-      selectedSemanticInfo.value &&
-      renderedLabel &&
-      normalizeWhitespace(renderedLabel) !== normalizeWhitespace(selectedSemanticInfo.value.label)
-    ) {
-      console.warn('Semantic CFG label mismatch between SVG and JSON.', {
-        nodeName,
-        svgLabel: renderedLabel,
-        jsonLabel: selectedSemanticInfo.value.label,
-      })
-    }
-  } else {
-    const blockId = extractBlockIdFromNodeName(nodeName)
-    selectedBlockInfo.value = blockId !== null ? blockInformation.value[String(blockId)] || null : null
-    selectedSemanticInfo.value = null
-  }
+  const blockId = extractBlockIdFromNodeName(nodeName)
+  selectedBlockInfo.value = blockId !== null ? blockInformation.value[String(blockId)] || null : null
 
   nextTick(() => {
-    const targetId = selectedSemanticInfo.value
-      ? `semantic-${selectedSemanticInfo.value.semantic_node_id}`
-      : selectedBlockInfo.value
-        ? `block-${selectedBlockInfo.value.block_id}`
-        : null
+    const targetId = selectedBlockInfo.value ? `block-${selectedBlockInfo.value.block_id}` : null
     if (!targetId) return
     document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   })
@@ -510,7 +496,6 @@ function resetSelection() {
   }
   selectedNodeName.value = null
   selectedBlockInfo.value = null
-  selectedSemanticInfo.value = null
 }
 
 function fitGraphToViewport(options: { animate?: boolean } = {}) {
@@ -538,30 +523,10 @@ function fitGraphToViewport(options: { animate?: boolean } = {}) {
     return
   }
 
-  const bounds = getGraphContentBounds(graphContent)
-  const containerWidth = graphContainer.value.clientWidth
-  const containerHeight = graphContainer.value.clientHeight
-  if (bounds.width <= 0 || bounds.height <= 0 || containerWidth <= 0 || containerHeight <= 0) return
-
-  const padding = 20
-  const scale = Math.min(
-    Math.max((containerWidth - padding * 2) / bounds.width, 0.005),
-    Math.max((containerHeight - padding * 2) / bounds.height, 0.005),
-  )
-  const tx = (containerWidth - bounds.width * scale) / 2 - bounds.x * scale
-  const ty = (containerHeight - bounds.height * scale) / 2 - bounds.y * scale
-  const transform = zoomIdentity.translate(tx, ty).scale(scale)
+  configurePlainViewport(svg, graphContent)
   const svgSelection = select(svg)
 
-  if (options.animate) {
-    svgSelection
-      .transition()
-      .duration(240)
-      .call(zoomBehavior.transform, transform)
-    return
-  }
-
-  svgSelection.call(zoomBehavior.transform, transform)
+  svgSelection.call(zoomBehavior.transform, zoomIdentity)
 }
 
 function getGraphContentBounds(graphContent: SVGGElement) {
@@ -647,17 +612,7 @@ function applyEdgeFilter(edgeIds: string[]) {
 
 function calculateVisibleElements(targetBlockIds: BlockId[]) {
   const targetNodeSet = new Set<string>()
-
-  if (cfgMode.value === 'semantic' && semanticData.value) {
-    targetBlockIds.forEach((id) => {
-      const semanticNodeId = semanticData.value?.raw_to_semantic[String(id)]
-      if (semanticNodeId) {
-        targetNodeSet.add(semanticNodeId)
-      }
-    })
-  } else {
-    targetBlockIds.forEach((id) => targetNodeSet.add(`node_${String(id)}`))
-  }
+  targetBlockIds.forEach((id) => targetNodeSet.add(`node_${String(id)}`))
 
   const visible = new Set<string>(targetNodeSet)
   edgeConnections.value.forEach(({ source, target }) => {
@@ -826,15 +781,6 @@ function formatPcRange(startPc: string | null | undefined, endPc: string | null 
   return `${normalizePcValue(startPc)} - ${normalizePcValue(endPc)}`
 }
 
-function formatStepRange(stepRange: { entry_step: number | null, exit_step: number | null } | null | undefined): string {
-  if (!stepRange || stepRange.entry_step === null || stepRange.exit_step === null) return 'Unknown'
-  return `${stepRange.entry_step} - ${stepRange.exit_step}`
-}
-
-function normalizeWhitespace(value: string): string {
-  return value.replace(/\s+/g, ' ').trim()
-}
-
 const edgeTypes: Array<{ type: CfgEdgeType, color: string, desc: string }> = [
   { type: 'NORMAL', color: '#939393', desc: 'Non-terminating opcodes' },
   { type: 'JUMP', color: '#242424', desc: 'JUMP, JUMPI' },
@@ -861,7 +807,6 @@ onBeforeUnmount(() => {
       (e) Control Flow Graph
       <span class="mode-badge" :class="cfgMode">{{ cfgModeBadge }}</span>
       <button
-        v-if="hasSemanticView"
         class="cfg-mode-toggle"
         @click="toggleCfgMode"
       >
@@ -924,7 +869,7 @@ onBeforeUnmount(() => {
         <div
           ref="graphContainer"
           class="graph-viewport"
-          :class="{ 'folded-viewport': cfgMode === 'folded' }"
+          :class="{ 'folded-viewport': cfgMode === 'folded', 'plain-viewport': cfgMode === 'plain' }"
         ></div>
         <button
           v-if="visibleNodes.size > 0 || activeEdgeType"
@@ -937,74 +882,7 @@ onBeforeUnmount(() => {
         <div v-if="hasSelection" class="side-panel">
           <div class="panel-section-header">information</div>
           <div class="information-content">
-            <template v-if="selectedSemanticInfo">
-              <div :id="`semantic-${selectedSemanticInfo.semantic_node_id}`" class="information-stack">
-                <div class="semantic-card">
-                  <div class="semantic-title">{{ selectedSemanticTitle }}</div>
-                  <div class="semantic-purpose">{{ selectedSemanticInfo.purpose }}</div>
-                  <div class="semantic-chip-row">
-                    <span class="semantic-chip">{{ selectedSemanticInfo.contract_name }}</span>
-                    <span class="semantic-chip">Conf {{ selectedSemanticInfo.confidence.toFixed(2) }}</span>
-                    <span class="semantic-chip">{{ selectedSemanticInfo.blocks_number }} blocks</span>
-                  </div>
-                </div>
-
-                <div class="info-row">
-                  <span class="info-label">Contract</span>
-                  <span class="info-value">{{ selectedSemanticInfo.contract_address }}</span>
-                </div>
-                <div class="info-row">
-                  <span class="info-label">Step Range</span>
-                  <span class="info-value">{{ formatStepRange(selectedSemanticInfo.trace_step_range) }}</span>
-                </div>
-                <div class="info-row">
-                  <span class="info-label">Gas</span>
-                  <span class="info-value">{{ formatGas(selectedSemanticInfo.gas) }}</span>
-                </div>
-                <div class="info-row">
-                  <span class="info-label">PC</span>
-                  <span class="info-value">{{ formatPcRange(selectedSemanticInfo.start_pc, selectedSemanticInfo.end_pc) }}</span>
-                </div>
-
-                <div v-if="selectedSemanticBlocks.length > 0" class="summary-group">
-                  <div class="info-label">Blocks</div>
-                  <div class="semantic-block-stack">
-                    <details
-                      v-for="(block, idx) in selectedSemanticBlocks"
-                      :id="`block-${block.block_id}`"
-                      :key="block.block_id"
-                      class="member-block"
-                      :open="idx === 0"
-                    >
-                      <summary class="member-block-summary">
-                        <span>Block {{ block.block_id }}</span>
-                        <span>{{ formatPcRange(block.start_pc, block.end_pc) }}</span>
-                      </summary>
-                      <div class="member-block-meta">
-                        <span>{{ block.address }}</span>
-                        <span>Gas {{ formatGas(block.gas) }}</span>
-                      </div>
-                      <div v-if="block.actions.length > 0" class="member-actions">
-                        <div v-for="(action, actionIdx) in block.actions" :key="actionIdx" class="action-line">
-                          {{ formatAction(action, actionIdx) }}
-                        </div>
-                      </div>
-                      <div class="block-instructions">
-                        <div
-                          v-for="(instr, instrIdx) in block.instructions"
-                          :key="instrIdx"
-                          class="instruction-line"
-                        >
-                          {{ formatInstruction(instr) }}
-                        </div>
-                      </div>
-                    </details>
-                  </div>
-                </div>
-              </div>
-            </template>
-
-            <template v-else-if="selectedBlockInfo">
+            <template v-if="selectedBlockInfo">
               <div :id="`block-${selectedBlockInfo.block_id}`" class="information-stack">
                 <div class="info-row">
                   <span class="info-label">ID</span>
@@ -1093,11 +971,6 @@ onBeforeUnmount(() => {
   background: #e2e8f0;
 }
 
-.mode-badge.semantic {
-  background: #d1fae5;
-  color: #065f46;
-}
-
 .cfg-mode-toggle {
   border: 1px solid rgba(148, 163, 184, 0.45);
   background: rgba(255, 255, 255, 0.94);
@@ -1143,6 +1016,20 @@ onBeforeUnmount(() => {
 .graph-viewport.folded-viewport {
   box-sizing: border-box;
   padding-top: 34px;
+}
+
+.graph-viewport.plain-viewport {
+  box-sizing: border-box;
+  padding-top: 34px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-gutter: stable both-edges;
+}
+
+.graph-viewport.plain-viewport :deep(svg) {
+  display: block;
+  min-width: 100%;
+  max-width: none;
 }
 
 .graph-viewport :deep(svg) {
@@ -1307,42 +1194,6 @@ onBeforeUnmount(() => {
   word-break: break-all;
 }
 
-.semantic-card {
-  margin-bottom: 10px;
-  padding: 10px;
-  border: 1px solid rgba(79, 70, 229, 0.18);
-  border-radius: 10px;
-  background: linear-gradient(180deg, rgba(79, 70, 229, 0.08), rgba(255, 255, 255, 0.6));
-}
-
-.semantic-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: #1f2937;
-}
-
-.semantic-purpose {
-  margin-top: 6px;
-  font-size: 11px;
-  line-height: 1.45;
-  color: #475569;
-}
-
-.semantic-chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.semantic-chip {
-  border-radius: 999px;
-  padding: 3px 8px;
-  background: rgba(15, 23, 42, 0.06);
-  color: #334155;
-  font-size: 10px;
-}
-
 .summary-group {
   margin-top: 10px;
   padding-top: 8px;
@@ -1362,7 +1213,6 @@ onBeforeUnmount(() => {
   font-family: 'Consolas', 'Monaco', monospace;
 }
 
-.semantic-block-stack,
 .block-section {
   display: flex;
   flex-direction: column;
@@ -1390,54 +1240,10 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
 }
 
-.member-block {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.88);
-  overflow: hidden;
-}
-
-.member-block-summary {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 10px 12px;
-  cursor: pointer;
-  list-style: none;
-  font-size: 10px;
-  font-weight: 700;
-  color: #334155;
-}
-
-.member-block-summary::-webkit-details-marker {
-  display: none;
-}
-
-.member-block-meta {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 0 12px 8px;
-  color: var(--muted);
-  font-size: 10px;
-  word-break: break-all;
-}
-
-.member-actions {
-  padding: 0 12px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
 .action-line {
   font-size: 9px;
   line-height: 1.35;
   color: #64748b;
-}
-
-.member-block .block-instructions {
-  padding: 0 12px 12px;
 }
 
 .information-content::-webkit-scrollbar {
