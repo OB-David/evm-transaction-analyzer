@@ -27,6 +27,8 @@ let graphvizInstance: any = null
 const isArbitrage = ref(false)
 const arbCycles = ref<number[][]>([])
 const arbOrders = ref<Set<number>>(new Set())
+// 套利边经过的节点 title 集合（用于 flash 节点）
+const arbNodeTitles = ref<Set<string>>(new Set())
 
 // 地址余额数据：地址(小写) -> { token -> 净变化量 }
 const addressBalances = ref<Record<string, Record<string, number>>>({})
@@ -61,6 +63,7 @@ async function loadAfgData(txHash: string) {
   isArbitrage.value = false
   arbCycles.value = []
   arbOrders.value = new Set()
+  arbNodeTitles.value = new Set()
   addressBalances.value = {}
   nameToAddress.value = {}   // ← 重置
 
@@ -190,6 +193,16 @@ function attachInteractivity() {
 
     if (edgeId !== null && arbOrders.value.has(edgeId)) {
       edgeEl.classList.add('arb-highlight')
+
+      // 收集套利边的源节点和目标节点 title，用于 flash 节点
+      const edgeTitleEl = edge.querySelector('title')
+      const edgeTitle = edgeTitleEl?.textContent?.trim() || ''
+      // graphviz 边 title 格式通常为 "SrcNode->TgtNode"
+      const parts = edgeTitle.split('->')
+      parts.forEach(p => {
+        const t = p.trim()
+        if (t) arbNodeTitles.value.add(t)
+      })
     }
 
     if (edgeId !== null) {
@@ -278,9 +291,21 @@ function highlightAllArb() {
   if (!graphContainer.value) return
   const svg = graphContainer.value.querySelector('svg')
   if (!svg) return
+
+  // Flash 套利边
   svg.querySelectorAll('.edge.arb-highlight').forEach(el => {
     el.classList.add('arb-flash')
     setTimeout(() => (el as SVGElement).classList.remove('arb-flash'), 900)
+  })
+
+  // Flash 套利边经过的节点
+  svg.querySelectorAll('.node').forEach(nodeEl => {
+    const titleEl = nodeEl.querySelector('title')
+    const nodeTitle = titleEl?.textContent?.trim() || ''
+    if (arbNodeTitles.value.has(nodeTitle)) {
+      nodeEl.classList.add('arb-node-flash')
+      setTimeout(() => (nodeEl as SVGElement).classList.remove('arb-node-flash'), 900)
+    }
   })
 }
 
@@ -500,6 +525,19 @@ function handleEdgeClick(edgeId: number) {
 .graph-viewport :deep(.edge.arb-flash path:not(.hit-area)),
 .graph-viewport :deep(.edge.arb-flash polygon) {
   animation: arb-flash 0.9s ease;
+}
+
+@keyframes arb-node-flash {
+  0%   { filter: brightness(1); }
+  25%  { filter: brightness(2.2) drop-shadow(0 0 6px #ff6a00cc); }
+  55%  { filter: brightness(1.6) drop-shadow(0 0 4px #ff6a0088); }
+  100% { filter: brightness(1); }
+}
+
+.graph-viewport :deep(.node.arb-node-flash ellipse),
+.graph-viewport :deep(.node.arb-node-flash polygon),
+.graph-viewport :deep(.node.arb-node-flash path:not(.hit-area)) {
+  animation: arb-node-flash 0.9s ease;
 }
 
 /* 节点余额悬浮卡片 */
