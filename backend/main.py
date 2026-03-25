@@ -9,7 +9,7 @@ from utils.cfg_transaction import CFGConstructor
 from utils.render_cfg import render_transaction
 from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_fcfg, afg_to_pcfg, edge_link_to_json, detect_arbitrage, compute_address_balances
 from utils.sequence_diagram import build_refined_hierarchical_trace, render_puml_to_svg, tree_to_puml
-
+from utils.indentify_swap import filter_to_file
 
 # 加载环境变量
 load_dotenv()
@@ -21,7 +21,7 @@ except Exception:
 def main():
     # 配置参数
     PROVIDER_URL = os.environ.get("GETH_API")
-    TX_HASH = "0x19b4fe09b86a0e68147e4a5e8b9ca7883ca1aa413a294cdc2d08ed70e73a8cb8"
+    TX_HASH = "0xe01eac5e811602c54f3fe5484d44f13a5b621aa19f670dde7139a0f6760a1916"
 
     try:
         # ========== 前置检查 ==========
@@ -131,8 +131,14 @@ def main():
         cfg_constructor.export_fcfg_blocks_information(folded_cfg, folded_blocks_path)
 
         plain_blocks_path = os.path.join(result_dir, "plain_blocks_information.json")
-        cfg_constructor.export_pcfg_blocks_information(plain_cfg, plain_blocks_path)
+        cfg_constructor.export_pcfg_blocks_information(plain_cfg, standardized_trace, plain_blocks_path)
 
+
+        swap_fcfg_path = os.path.join(result_dir, "swap_in_fcfg.json")
+        swap_pcfg_path = os.path.join(result_dir, "swap_in_pcfg.json")
+        # 提取swap模式
+        filter_to_file(folded_blocks_path, swap_fcfg_path)
+        filter_to_file(plain_blocks_path, swap_pcfg_path)
 
         print(f"blcokid-information映射数据已保存到: {folded_blocks_path}")
 
