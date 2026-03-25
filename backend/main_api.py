@@ -22,6 +22,7 @@ from utils.extract_token_changes import (
     detect_arbitrage,
     compute_address_balances,
 )
+from utils.indentify_swap import filter_to_file
 from utils.sequence_diagram import build_refined_hierarchical_trace
 from main import create_result_directory, save_graphs
 
@@ -155,6 +156,11 @@ def run(tx_hash: str):
     plain_blocks_map = _enrich_folded_blocks_information(plain_cfg, plain_blocks_map)
     with open(plain_blocks_path, "w", encoding="utf-8") as f:
         json.dump(plain_blocks_map, f, indent=2, ensure_ascii=False)
+
+    swap_fcfg_path = os.path.join(result_dir, "swap_in_fcfg.json")
+    swap_pcfg_path = os.path.join(result_dir, "swap_in_pcfg.json")
+    filter_to_file(folded_blocks_path, swap_fcfg_path)
+    filter_to_file(plain_blocks_path, swap_pcfg_path)
 
     edge_info_path = os.path.join(result_dir, "edge_id-step.json")
     edge_step_map = _build_edge_step_information_compat(folded_cfg)

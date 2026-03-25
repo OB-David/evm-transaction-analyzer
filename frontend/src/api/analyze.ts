@@ -351,6 +351,16 @@ export interface ArbitrageResult {
   arb_edge_orders: number[]
 }
 
+export interface SwapPatternBlock {
+  id: BlockId | string
+  address: string
+}
+
+export interface SwapPatternResult {
+  pattern_1: SwapPatternBlock[]
+  pattern_2: SwapPatternBlock[]
+}
+
 export async function fetchArbitrageResult(txHash: string): Promise<ArbitrageResult> {
   const res = await fetch(`${API_BASE}/api/files/${txHash}/arbitrage.json`)
   if (!res.ok) {
@@ -358,6 +368,18 @@ export async function fetchArbitrageResult(txHash: string): Promise<ArbitrageRes
       return { is_arbitrage: false, cycles: [], arb_edge_orders: [] }
     }
     throw new Error(`Failed to fetch arbitrage result: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function fetchSwapPatternResult(txHash: string, mode: CfgMode = 'folded'): Promise<SwapPatternResult> {
+  const filename = mode === 'plain' ? 'swap_in_pcfg.json' : 'swap_in_fcfg.json'
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`)
+  if (!res.ok) {
+    if (res.status === 404) {
+      return { pattern_1: [], pattern_2: [] }
+    }
+    throw new Error(`Failed to fetch ${filename}: ${res.status}`)
   }
   return res.json()
 }

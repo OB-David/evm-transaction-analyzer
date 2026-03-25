@@ -7,6 +7,7 @@ import {
   fetchCfgViewData,
   fetchLegendData,
   fetchPlainBlockLlmAnalysis,
+  fetchSwapPatternResult,
   type BlockAction,
   type BlockInformation,
   type BlockInformationMap,
@@ -14,6 +15,7 @@ import {
   type CfgViewBundle,
   type EdgeStepMap,
   type PlainBlockLlmAnalysisResponse,
+  type SwapPatternResult,
 } from '../api/analyze'
 
 const props = defineProps<{
@@ -32,6 +34,10 @@ const emit = defineEmits<{
 
 type CfgEdgeType = 'NORMAL' | 'JUMP' | 'CALL' | 'DELEGATECALL' | 'TERMINATE'
 type LlmAnalysisState = 'idle' | 'loading' | 'success' | 'error'
+type SwapHighlightGroup = {
+  key: string
+  nodes: string[]
+}
 
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
@@ -53,6 +59,10 @@ const showEdgeTypes = ref(false)
 const llmAnalysisState = ref<LlmAnalysisState>('idle')
 const llmAnalysisResponse = ref<PlainBlockLlmAnalysisResponse | null>(null)
 const llmAnalysisError = ref('')
+const swapSeedNodesByMode = ref<Record<CfgMode, Set<string>>>({
+  folded: new Set(),
+  plain: new Set(),
+})
 let llmRequestToken = 0
 const PLAIN_SCALE_MULTIPLIER = 1.35
 const PLAIN_MIN_WIDTH_RATIO = 1.15
@@ -74,6 +84,7 @@ watch(() => props.txHash, (newHash) => {
     status.value = 'idle'
     cfgViews.value = null
     blockInformation.value = {}
+    resetSwapSeedNodes()
     clearFilterState()
     if (graphContainer.value) {
       graphContainer.value.innerHTML = ''
@@ -162,12 +173,18 @@ async function loadCfgData(txHash: string) {
   resetSelection()
 
   try {
-    const [cfgViewBundle, legend] = await Promise.all([
+    const [cfgViewBundle, legend, foldedSwapPatterns, plainSwapPatterns] = await Promise.all([
       fetchCfgViewData(txHash, props.preferredMode),
       fetchLegendData(txHash),
+      fetchSwapPatternResult(txHash, 'folded'),
+      fetchSwapPatternResult(txHash, 'plain'),
     ])
 
     cfgViews.value = cfgViewBundle
+    swapSeedNodesByMode.value = {
+      folded: collectSwapSeedNodes(foldedSwapPatterns),
+      plain: collectSwapSeedNodes(plainSwapPatterns),
+    }
 
     addressNameMap.value.clear()
     for (const entry of [...legend.user_addresses, ...legend.erc20_tokens, ...legend.normal_contracts]) {
@@ -179,6 +196,7 @@ async function loadCfgData(txHash: string) {
   } catch (e: any) {
     status.value = 'error'
     errorMsg.value = e.message || 'Failed to load CFG data'
+    resetSwapSeedNodes()
   }
 }
 
@@ -357,6 +375,7 @@ function attachInteractivity() {
   })
 
   parseEdgeConnections()
+  renderSwapHighlightOverlay()
 }
 
 function prepareSvgMetadata(svg: SVGSVGElement) {
@@ -435,6 +454,175 @@ function parseEdgeConnections() {
         target: match[2]!,
       })
     }
+  })
+}
+
+function collectSwapSeedNodes(result: SwapPatternResult): Set<string> {
+  const entries = [...result.pattern_1, ...result.pattern_2]
+  const nodeNames = new Set<string>()
+  entries.forEach((entry) => {
+    const rawId = entry?.id
+    if (rawId === undefined || rawId === null || rawId === '') return
+    nodeNames.add(`node_${String(rawId)}`)
+  })
+  return nodeNames
+}
+
+function getNumericNodeId(nodeName: string): number | null {
+  const blockId = extractBlockIdFromNodeName(nodeName)
+  if (blockId === null) return null
+
+  const numericId = Number(blockId)
+  return Number.isFinite(numericId) ? numericId : null
+}
+
+function resetSwapSeedNodes() {
+  swapSeedNodesByMode.value = {
+    folded: new Set(),
+    plain: new Set(),
+  }
+}
+
+function buildSwapHighlightGroups(seedNodes: Set<string>): SwapHighlightGroup[] {
+  const groups: SwapHighlightGroup[] = []
+  const seenKeys = new Set<string>()
+
+  seedNodes.forEach((seedNode) => {
+    const nodes = new Set<string>()
+    const seedNodeId = getNumericNodeId(seedNode)
+    if (nodeNameToEl.value.has(seedNode)) {
+      nodes.add(seedNode)
+    }
+
+    edgeConnections.value.forEach(({ source, target }) => {
+      const sourceId = getNumericNodeId(source)
+      const targetId = getNumericNodeId(target)
+
+      if (
+        source === seedNode &&
+        nodeNameToEl.value.has(target) &&
+        seedNodeId !== null &&
+        targetId !== null &&
+        targetId > seedNodeId
+      ) {
+        nodes.add(target)
+      }
+      if (
+        target === seedNode &&
+        nodeNameToEl.value.has(source) &&
+        seedNodeId !== null &&
+        sourceId !== null &&
+        sourceId > seedNodeId
+      ) {
+        nodes.add(source)
+      }
+    })
+
+    if (nodes.size === 0) return
+
+    const nodeList = Array.from(nodes)
+    const key = nodeList.slice().sort().join('|')
+    if (seenKeys.has(key)) return
+    seenKeys.add(key)
+
+    groups.push({
+      key,
+      nodes: nodeList,
+    })
+  })
+
+  return groups
+}
+
+function getSwapHighlightBounds(nodes: string[]) {
+  let minX = Number.POSITIVE_INFINITY
+  let minY = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let maxY = Number.NEGATIVE_INFINITY
+
+  nodes.forEach((nodeName) => {
+    const nodeEl = nodeNameToEl.value.get(nodeName)
+    if (!(nodeEl instanceof SVGGraphicsElement)) return
+
+    const bbox = nodeEl.getBBox()
+    minX = Math.min(minX, bbox.x)
+    minY = Math.min(minY, bbox.y)
+    maxX = Math.max(maxX, bbox.x + bbox.width)
+    maxY = Math.max(maxY, bbox.y + bbox.height)
+  })
+
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+    return null
+  }
+
+  return {
+    x: minX,
+    y: minY,
+    width: maxX - minX,
+    height: maxY - minY,
+  }
+}
+
+function clearSwapHighlightOverlay() {
+  if (!graphContainer.value) return
+  const svg = graphContainer.value.querySelector('svg')
+  svg?.querySelector('#swap-highlight-layer')?.remove()
+}
+
+function renderSwapHighlightOverlay() {
+  clearSwapHighlightOverlay()
+
+  if (!graphContainer.value) return
+  const svg = graphContainer.value.querySelector('svg') as SVGSVGElement | null
+  const zoomLayer = svg?.querySelector('#zoom-layer') as SVGGElement | null
+  const graphContent = zoomLayer?.firstElementChild as SVGGElement | null
+  if (!svg || !zoomLayer || !graphContent) return
+
+  const seedNodes = swapSeedNodesByMode.value[cfgMode.value]
+  if (!seedNodes || seedNodes.size === 0) return
+
+  const groups = buildSwapHighlightGroups(seedNodes)
+  if (groups.length === 0) return
+
+  const overlayLayer = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+  overlayLayer.setAttribute('id', 'swap-highlight-layer')
+  overlayLayer.setAttribute('pointer-events', 'none')
+
+  const paddingX = 18
+  const paddingY = 16
+
+  groups.forEach((group) => {
+    const bounds = getSwapHighlightBounds(group.nodes)
+    if (!bounds) return
+
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+    rect.classList.add('swap-highlight-box')
+    rect.dataset.groupKey = group.key
+    rect.dataset.nodes = group.nodes.join('|')
+    rect.setAttribute('x', String(bounds.x - paddingX))
+    rect.setAttribute('y', String(bounds.y - paddingY))
+    rect.setAttribute('width', String(bounds.width + paddingX * 2))
+    rect.setAttribute('height', String(bounds.height + paddingY * 2))
+    rect.setAttribute('rx', '14')
+    rect.setAttribute('ry', '14')
+    overlayLayer.appendChild(rect)
+  })
+
+  if (!overlayLayer.childNodes.length) return
+
+  graphContent.appendChild(overlayLayer)
+  updateSwapHighlightOverlayVisibility()
+}
+
+function updateSwapHighlightOverlayVisibility() {
+  if (!graphContainer.value) return
+  const svg = graphContainer.value.querySelector('svg')
+  if (!svg) return
+
+  svg.querySelectorAll<SVGRectElement>('#swap-highlight-layer .swap-highlight-box').forEach((rect) => {
+    const nodes = (rect.dataset.nodes || '').split('|').filter(Boolean)
+    const shouldShow = visibleNodes.value.size === 0 || nodes.every(node => visibleNodes.value.has(node))
+    rect.classList.toggle('hidden', !shouldShow)
   })
 }
 
@@ -709,6 +897,8 @@ function applyFilter() {
       edge.classList.add('filtered-out')
     }
   })
+
+  updateSwapHighlightOverlayVisibility()
 }
 
 function resetZoom() {
@@ -777,26 +967,7 @@ function isBoundaryInstruction(instr: string): boolean {
 
 function formatBoundaryInstruction(instr: string): string | null {
   if (!isBoundaryInstruction(instr)) return null
-
-  const opcode = extractQuotedField(instr, 'opcode')
-  if (!opcode) return '[Boundary] Marker'
-
-  const fromId = extractScalarField(instr, 'from_id')
-  const sourceInfo = fromId ? ` (source block ${fromId})` : ''
-
-  const timelineMatch = opcode.match(/^TIMELINE_SEG_(\d+)$/)
-  if (timelineMatch) return `[Boundary] Timeline segment ${timelineMatch[1]}${sourceInfo}`
-
-  const branchMatch = opcode.match(/^BRANCH_SEGMENT_(\d+)$/)
-  if (branchMatch) return `[Boundary] Branch segment ${branchMatch[1]}${sourceInfo}`
-
-  if (opcode === 'DISPATCH_LOGIC_SINK') return `[Boundary] Dispatch logic sink${sourceInfo}`
-  if (opcode === 'MERGE_POINT_SEGMENT') return `[Boundary] Merge point${sourceInfo}`
-  if (opcode === 'SELF_LOOP_DETECTED') return '[Boundary] Self-loop detected'
-  if (opcode === 'FEEDBACK_LOOP_START') return `[Boundary] Feedback loop start${sourceInfo}`
-  if (opcode === 'FEEDBACK_LOOP_END') return '[Boundary] Feedback loop end'
-
-  return `[Boundary] ${opcode}${sourceInfo}`
+  return '\u00A0'
 }
 
 function formatInstruction(instr: string): string {
@@ -1011,6 +1182,13 @@ onBeforeUnmount(() => {
                   <span class="info-value">{{ formatGas(selectedBlockInfo.gas) }}</span>
                 </div>
 
+                <div v-if="(selectedBlockInfo.actions?.length ?? 0) > 0" class="summary-group">
+                  <div class="info-label">Actions</div>
+                  <div v-for="(action, idx) in selectedBlockInfo.actions || []" :key="idx" class="summary-line mono">
+                    {{ formatAction(action, idx) }}
+                  </div>
+                </div>
+
                 <div v-if="cfgMode === 'plain'" class="summary-group llm-analysis-group">
                   <div class="llm-header-row">
                     <span class="info-label">LLM Analysis</span>
@@ -1028,13 +1206,6 @@ onBeforeUnmount(() => {
                   >
                     <div class="llm-title">{{ llmAnalysisResponse.analysis.title }}</div>
                     <div class="llm-description">{{ llmAnalysisResponse.analysis.description }}</div>
-                  </div>
-                </div>
-
-                <div v-if="(selectedBlockInfo.actions?.length ?? 0) > 0" class="summary-group">
-                  <div class="info-label">Actions</div>
-                  <div v-for="(action, idx) in selectedBlockInfo.actions || []" :key="idx" class="summary-line mono">
-                    {{ formatAction(action, idx) }}
                   </div>
                 </div>
 
@@ -1208,6 +1379,18 @@ onBeforeUnmount(() => {
 .graph-viewport :deep(.node.selected rect) {
   stroke: #4f46e5;
   stroke-width: 4;
+}
+
+.graph-viewport :deep(#swap-highlight-layer .swap-highlight-box) {
+  fill: rgba(255, 59, 48, 0.12);
+  stroke: #b91c1c;
+  stroke-width: 5;
+  stroke-dasharray: 14 6;
+  filter: drop-shadow(0 0 10px rgba(220, 38, 38, 0.45));
+}
+
+.graph-viewport :deep(#swap-highlight-layer .swap-highlight-box.hidden) {
+  display: none;
 }
 
 .reset-button {
