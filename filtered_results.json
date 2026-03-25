@@ -1,0 +1,94 @@
+{
+  "pattern_1": [
+    {
+      "id": "13",
+      "address": "0xe0554a476a092703abdb3ef35c80e0d76d32939f"
+    },
+    {
+      "id": "54",
+      "address": "0x000000000004444c5dc75cb358380d2e3de08a90"
+    },
+    {
+      "id": "103",
+      "address": "0xcbff3004a20dbfe2731543aa38599a526e0fd6ee"
+    },
+    {
+      "id": "111",
+      "address": "0xcbff3004a20dbfe2731543aa38599a526e0fd6ee"
+    },
+    {
+      "id": "112",
+      "address": "0xf5f5b97624542d72a9e06f04804bf81baa15e2b4"
+    },
+    {
+      "id": "137",
+      "address": "0xcbff3004a20dbfe2731543aa38599a526e0fd6ee"
+    },
+    {
+      "id": "141",
+      "address": "0xcbff3004a20dbfe2731543aa38599a526e0fd6ee"
+    },
+    {
+      "id": "150",
+      "address": "0xf5f5b97624542d72a9e06f04804bf81baa15e2b4"
+    },
+    {
+      "id": "153",
+      "address": "0xcbff3004a20dbfe2731543aa38599a526e0fd6ee"
+    },
+    {
+      "id": "154",
+      "address": "0xf5f5b97624542d72a9e06f04804bf81baa15e2b4"
+    }
+  ],
+  "pattern_2": [
+    {
+      "id": "24",
+      "address": "0xe0554a476a092703abdb3ef35c80e0d76d32939f"
+    },
+    {
+      "id": "54",
+      "address": "0x000000000004444c5dc75cb358380d2e3de08a90"
+    },
+    {
+      "id": "101",
+      "address": "0xf5f5b97624542d72a9e06f04804bf81baa15e2b4"
+    },
+    {
+      "id": "103",
+      "address": "0xcbff3004a20dbfe2731543aa38599a526e0fd6ee"
+    },
+    {
+      "id": "111",
+      "address": "0xcbff3004a20dbfe2731543aa38599a526e0fd6ee"
+    },
+    {
+      "id": "112",
+      "address": "0xf5f5b97624542d72a9e06f04804bf81baa15e2b4"
+    },
+    {
+      "id": "134",
+      "address": "0xf5f5b97624542d72a9e06f04804bf81baa15e2b4"
+    },
+    {
+      "id": "137",
+      "address": "0xcbff3004a20dbfe2731543aa38599a526e0fd6ee"
+    },
+    {
+      "id": "141",
+      "address": "0xcbff3004a20dbfe2731543aa38599a526e0fd6ee"
+    },
+    {
+      "id": "149",
+      "address": "0xf5f5b97624542d72a9e06f04804bf81baa15e2b4"
+    },
+    {
+      "id": "150",
+      "address": "0xf5f5b97624542d72a9e06f04804bf81baa15e2b4"
+    },
+    {
+      "id": "153",
+      "address": "0xcbff3004a20dbfe2731543aa38599a526e0fd6ee"
+    }
+  ]
+}
