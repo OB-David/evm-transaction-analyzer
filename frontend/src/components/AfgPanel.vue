@@ -2,10 +2,11 @@
 import { ref, watch, nextTick } from 'vue'
 import { graphviz } from 'd3-graphviz'
 import LegendPanel from './LegendPanel.vue'
-import { fetchDotFile, fetchEdgeLink, fetchArbitrageResult, fetchAddressBalances, fetchLegendData, type BlockId, type EdgeLink } from '../api/analyze'
+import { fetchDotFile, fetchEdgeLink, fetchArbitrageResult, fetchAddressBalances, fetchLegendData, type BlockId, type CfgMode, type EdgeLink } from '../api/analyze'
 
 const props = defineProps<{
   txHash: string | null
+  cfgMode: CfgMode
   highlightedBlockId: BlockId[] | null
   isAnalyzing: boolean
 }>()
@@ -42,9 +43,9 @@ const tooltipY = ref(0)
 const tooltipName = ref('')
 const tooltipBalances = ref<Record<string, number>>({})
 
-watch(() => props.txHash, (newHash) => {
+watch([() => props.txHash, () => props.cfgMode], ([newHash, newMode]) => {
   if (newHash) {
-    loadAfgData(newHash)
+    loadAfgData(newHash, newMode)
   }
 }, { immediate: true })
 
@@ -54,7 +55,7 @@ watch(() => props.highlightedBlockId, (newBlockIds) => {
   }
 })
 
-async function loadAfgData(txHash: string) {
+async function loadAfgData(txHash: string, cfgMode: CfgMode) {
   status.value = 'loading'
   errorMsg.value = ''
   selectedEdgeId.value = null
@@ -70,7 +71,7 @@ async function loadAfgData(txHash: string) {
   try {
     const [dot, links, arb, balances, legend] = await Promise.all([
       fetchDotFile(txHash),
-      fetchEdgeLink(txHash),
+      fetchEdgeLink(txHash, cfgMode),
       fetchArbitrageResult(txHash),
       fetchAddressBalances(txHash),
       fetchLegendData(txHash),

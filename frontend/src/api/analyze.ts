@@ -55,15 +55,6 @@ async function fetchJsonFile<T>(filename: string, txHash: string): Promise<T> {
   return res.json()
 }
 
-async function fetchOptionalTextFile(filename: string, txHash: string): Promise<string | null> {
-  const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`)
-  if (res.status === 404) return null
-  if (!res.ok) {
-    throw new Error(`Failed to fetch ${filename}: ${res.status}`)
-  }
-  return res.text()
-}
-
 export async function analyzeTransaction(txHash: string): Promise<AnalyzeResult> {
   const res = await fetch(`${API_BASE}/api/analyze`, {
     method: 'POST',
@@ -83,27 +74,16 @@ export async function fetchDotFile(txHash: string): Promise<string> {
 }
 
 export async function fetchCfgDotFile(txHash: string): Promise<string> {
-  const foldedDot = await fetchOptionalTextFile('folded_cfg.dot', txHash)
-  if (foldedDot) return foldedDot
-
-  const plainDot = await fetchOptionalTextFile('plain_cfg.dot', txHash)
-  if (plainDot) return plainDot
-
-  return fetchTextFile('transaction_cfg.dot', txHash)
+  return fetchTextFile('folded_cfg.dot', txHash)
 }
 
 export async function fetchCfgSvg(txHash: string): Promise<string> {
-  const foldedSvg = await fetchOptionalTextFile('folded_cfg.svg', txHash)
-  if (foldedSvg) return foldedSvg
-
-  const plainSvg = await fetchOptionalTextFile('plain_cfg.svg', txHash)
-  if (plainSvg) return plainSvg
-
-  return fetchTextFile('transaction_cfg.svg', txHash)
+  return fetchTextFile('folded_cfg.svg', txHash)
 }
 
-export async function fetchEdgeLink(txHash: string): Promise<EdgeLink[]> {
-  return fetchJsonFile<EdgeLink[]>('edge_link.json', txHash)
+export async function fetchEdgeLink(txHash: string, mode: CfgMode = 'folded'): Promise<EdgeLink[]> {
+  const filename = mode === 'plain' ? 'TFG_link_PCFG.json' : 'TFG_link_FCFG.json'
+  return fetchJsonFile<EdgeLink[]>(filename, txHash)
 }
 
 export async function fetchBlockGasData(blockNumber: number): Promise<BlockGasData> {
@@ -184,11 +164,14 @@ export interface BlockInformation {
   block_id: BlockId
   address: string
   blocks_number: number
-  start_pc: string
-  end_pc: string
   gas: number
   actions: BlockAction[]
-  instructions: string[]
+  start_step?: number
+  end_step?: number
+  folded_blocks?: BlockId[]
+  instructions?: string[]
+  start_pc?: string
+  end_pc?: string
 }
 
 export interface BlockInformationMap {
@@ -209,6 +192,41 @@ export interface CfgViewBundle {
   plain: CfgViewData
 }
 
+export interface PlainBlockLlmAnalysisRequest {
+  tx_hash: string
+  block_id: BlockId
+  force_refresh?: boolean
+}
+
+export interface PlainBlockLlmAnalysisContent {
+  title: string
+  description: string
+}
+
+export interface PlainBlockStepRange {
+  block_id: BlockId
+  start_step: number
+  end_step: number
+}
+
+export interface PlainBlockLlmContextMeta {
+  target_block_id: BlockId
+  prev_block_id: BlockId | null
+  next_block_id: BlockId | null
+  step_ranges: {
+    prev: PlainBlockStepRange | null
+    target: PlainBlockStepRange
+    next: PlainBlockStepRange | null
+  }
+}
+
+export interface PlainBlockLlmAnalysisResponse {
+  status: 'success'
+  source: 'cache' | 'llm'
+  analysis: PlainBlockLlmAnalysisContent
+  context_meta: PlainBlockLlmContextMeta
+}
+
 export interface LegendEntry {
   name: string
   address: string
@@ -227,34 +245,20 @@ export async function fetchLegendData(txHash: string): Promise<LegendData> {
 
 export async function fetchBlockInformation(txHash: string, mode: CfgMode = 'folded'): Promise<BlockInformationMap> {
   const filename = mode === 'plain' ? 'plain_blocks_information.json' : 'folded_blocks_information.json'
-  try {
-    return await fetchJsonFile<BlockInformationMap>(filename, txHash)
-  } catch (error) {
-    if (mode === 'plain') {
-      return fetchJsonFile<BlockInformationMap>('folded_blocks_information.json', txHash)
-    }
-    throw error
-  }
+  return fetchJsonFile<BlockInformationMap>(filename, txHash)
 }
 
 async function fetchCfgSvgByMode(txHash: string, mode: CfgMode): Promise<string> {
-  const preferredFile = mode === 'plain' ? 'plain_cfg.svg' : 'folded_cfg.svg'
-  const preferredSvg = await fetchOptionalTextFile(preferredFile, txHash)
-  if (preferredSvg) return preferredSvg
-
-  const fallbackFile = mode === 'plain' ? 'folded_cfg.svg' : 'plain_cfg.svg'
-  const fallbackSvg = await fetchOptionalTextFile(fallbackFile, txHash)
-  if (fallbackSvg) return fallbackSvg
-
-  return fetchTextFile('transaction_cfg.svg', txHash)
+  const filename = mode === 'plain' ? 'plain_cfg.svg' : 'folded_cfg.svg'
+  return fetchTextFile(filename, txHash)
 }
 
 export async function fetchCfgViewData(txHash: string, preferredMode: CfgMode = 'folded'): Promise<CfgViewBundle> {
   const [foldedSvgContent, plainSvgContent, foldedBlockInformation, plainBlockInformation] = await Promise.all([
     fetchCfgSvgByMode(txHash, 'folded'),
     fetchCfgSvgByMode(txHash, 'plain'),
-    fetchBlockInformation(txHash, 'folded').catch(() => ({} as BlockInformationMap)),
-    fetchBlockInformation(txHash, 'plain').catch(() => ({} as BlockInformationMap)),
+    fetchBlockInformation(txHash, 'folded'),
+    fetchBlockInformation(txHash, 'plain'),
   ])
 
   return {
@@ -270,6 +274,38 @@ export async function fetchCfgViewData(txHash: string, preferredMode: CfgMode = 
       blockInformation: plainBlockInformation,
     },
   }
+}
+
+export async function fetchPlainBlockLlmAnalysis(
+  txHash: string,
+  blockId: BlockId,
+  forceRefresh: boolean = false,
+): Promise<PlainBlockLlmAnalysisResponse> {
+  const payload: PlainBlockLlmAnalysisRequest = {
+    tx_hash: txHash,
+    block_id: blockId,
+    force_refresh: forceRefresh,
+  }
+
+  const res = await fetch(`${API_BASE}/api/llm/plain-block-analysis`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  let body: any = null
+  try {
+    body = await res.json()
+  } catch {
+    body = null
+  }
+
+  if (!res.ok) {
+    const detail = body?.detail || `Failed to fetch plain block LLM analysis: ${res.status}`
+    throw new Error(detail)
+  }
+
+  return body as PlainBlockLlmAnalysisResponse
 }
 
 export interface EdgeStepEntry {
@@ -315,6 +351,16 @@ export interface ArbitrageResult {
   arb_edge_orders: number[]
 }
 
+export interface SwapPatternBlock {
+  id: BlockId | string
+  address: string
+}
+
+export interface SwapPatternResult {
+  pattern_1: SwapPatternBlock[]
+  pattern_2: SwapPatternBlock[]
+}
+
 export async function fetchArbitrageResult(txHash: string): Promise<ArbitrageResult> {
   const res = await fetch(`${API_BASE}/api/files/${txHash}/arbitrage.json`)
   if (!res.ok) {
@@ -322,6 +368,18 @@ export async function fetchArbitrageResult(txHash: string): Promise<ArbitrageRes
       return { is_arbitrage: false, cycles: [], arb_edge_orders: [] }
     }
     throw new Error(`Failed to fetch arbitrage result: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function fetchSwapPatternResult(txHash: string, mode: CfgMode = 'folded'): Promise<SwapPatternResult> {
+  const filename = mode === 'plain' ? 'swap_in_pcfg.json' : 'swap_in_fcfg.json'
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`)
+  if (!res.ok) {
+    if (res.status === 404) {
+      return { pattern_1: [], pattern_2: [] }
+    }
+    throw new Error(`Failed to fetch ${filename}: ${res.status}`)
   }
   return res.json()
 }

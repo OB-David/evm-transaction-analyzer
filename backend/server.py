@@ -9,9 +9,18 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
+from dotenv import load_dotenv
 from pydantic import BaseModel, field_validator
+from typing import Any, Literal
 from utils.block_exploration import fetch_block_gas_data, get_transaction_block_number, fetch_blocks_gas_summary, start_prefetch
 from utils.arbitrage_crawler import fetch_arbitrage_hashes, get_cached_hashes
+from utils.plain_cfg_llm import (
+    PlainCfgLlmServiceError,
+    analyze_plain_cfg_block,
+    clear_plain_cfg_runtime_cache,
+)
+
+load_dotenv()
 
 app = FastAPI(title="EVM Transaction Analyzer")
 
@@ -100,8 +109,42 @@ class BlocksHeatmapResponse(BaseModel):
     error: str | None = None
 
 
+class PlainBlockAnalysisRequest(BaseModel):
+    tx_hash: str
+    block_id: int | str
+    force_refresh: bool = False
+
+    @field_validator("tx_hash")
+    @classmethod
+    def validate_tx_hash(cls, v: str) -> str:
+        if not TX_HASH_RE.match(v):
+            raise ValueError("tx_hash must be 0x followed by 64 hex characters")
+        return v
+
+    @field_validator("block_id")
+    @classmethod
+    def validate_block_id(cls, v: int | str) -> int | str:
+        if isinstance(v, str) and not v.strip():
+            raise ValueError("block_id cannot be empty")
+        return v
+
+
+class LlmAnalysisResult(BaseModel):
+    title: str
+    description: str
+
+
+class PlainBlockAnalysisResponse(BaseModel):
+    status: Literal["success"]
+    source: Literal["cache", "llm"]
+    analysis: LlmAnalysisResult
+    context_meta: dict[str, Any]
+
+
 @app.post("/api/analyze", response_model=AnalyzeResponse)
 async def analyze(req: AnalyzeRequest):
+    clear_plain_cfg_runtime_cache(req.tx_hash)
+
     def run_analysis():
         """Run analysis in a thread to avoid Windows asyncio subprocess issues."""
         proc = subprocess.run(
@@ -232,3 +275,22 @@ async def get_arbitrage(tx_hash: str):
         raise HTTPException(status_code=404, detail="Not found")
     with open(path, encoding="utf-8") as f:
         return json.load(f)
+
+
+@app.post("/api/llm/plain-block-analysis", response_model=PlainBlockAnalysisResponse)
+async def plain_block_analysis(req: PlainBlockAnalysisRequest):
+    loop = asyncio.get_event_loop()
+
+    try:
+        result = await loop.run_in_executor(
+            executor,
+            lambda: analyze_plain_cfg_block(
+                tx_hash=req.tx_hash,
+                block_id=req.block_id,
+                force_refresh=req.force_refresh,
+            ),
+        )
+    except PlainCfgLlmServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    return PlainBlockAnalysisResponse(**result)

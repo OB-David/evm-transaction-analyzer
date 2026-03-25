@@ -15,13 +15,14 @@ from utils.evm_information import TraceFormatter
 from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
 from utils.extract_token_changes import (
-    pair_transactions, 
-    afg_to_fcfg, 
-    afg_to_pcfg, 
-    edge_link_to_json, 
-    detect_arbitrage, 
-    compute_address_balances
+    pair_transactions,
+    afg_to_fcfg,
+    afg_to_pcfg,
+    edge_link_to_json,
+    detect_arbitrage,
+    compute_address_balances,
 )
+from utils.indentify_swap import filter_to_file
 from utils.sequence_diagram import build_refined_hierarchical_trace
 from main import create_result_directory, save_graphs
 
@@ -65,7 +66,8 @@ def _enrich_folded_blocks_information(cfg: Any, folded_blocks_map: Dict[str, Any
     """回填缺失的 PC 信息"""
     node_by_id = {str(getattr(node, "id", "")): node for node in getattr(cfg, "nodes", [])}
     for key, info in folded_blocks_map.items():
-        if not isinstance(info, dict): continue
+        if not isinstance(info, dict):
+            continue
         block_id = info.get("block_id", key)
         node = node_by_id.get(str(block_id))
         if node is not None:
@@ -112,7 +114,7 @@ def run(tx_hash: str):
     contracts_bytecode = formatter.get_all_contracts_bytecode(all_contracts=contracts_addresses)
     all_blocks = processor.process_multiple_contracts(contracts_bytecode)
     cfg_constructor = CFGConstructor(all_blocks)
-    
+
     plain_cfg, folded_cfg, original_cfg, all_changes, folded_node_map, _ = cfg_constructor.construct_cfg(
         standardized_trace, slot_map, erc20_token_map
     )
@@ -120,13 +122,12 @@ def run(tx_hash: str):
     # 3. 资产流分析
     token_decimals_map = {addr: formatter.get_token_decimals(addr) for addr in erc20_token_map.keys()}
     original_transfer = [from_address.lower(), to_address.lower(), int(amount)]
-    
+
     pairs, annotations, pending_erc20 = pair_transactions(original_transfer, all_changes, token_decimals_map)
-    
-    # 生成两种映射：Folded 和 Plain
-    edge_link_f = afg_to_fcfg(pairs, pending_erc20, original_cfg, folded_node_map)
-    edge_link_p = afg_to_pcfg(pairs, pending_erc20, plain_cfg)
-    
+    edge_link_fcfg = afg_to_fcfg(pairs, pending_erc20, original_cfg, folded_node_map)
+    edge_link_pcfg = afg_to_pcfg(pairs, pending_erc20, plain_cfg)
+    json_output_fcfg = edge_link_to_json(edge_link_fcfg)
+    json_output_pcfg = edge_link_to_json(edge_link_pcfg)
     arb_result = detect_arbitrage(pairs, pending_erc20)
     addr_balances = compute_address_balances(pairs, pending_erc20)
 
@@ -137,22 +138,34 @@ def run(tx_hash: str):
     with open(os.path.join(result_dir, "balance_and_eth_changes.json"), "w", encoding="utf-8") as f:
         json.dump(all_changes, f, indent=2, ensure_ascii=False)
 
-    # Edge Links (更新为 main.py 的命名风格)
+    # Save edge link mappings
     with open(os.path.join(result_dir, "TFG_link_FCFG.json"), "w", encoding="utf-8") as f:
-        f.write(edge_link_to_json(edge_link_f))
+        f.write(json_output_fcfg)
     with open(os.path.join(result_dir, "TFG_link_PCFG.json"), "w", encoding="utf-8") as f:
-        f.write(edge_link_to_json(edge_link_p))
+        f.write(json_output_pcfg)
 
-    # Blocks Information
-    folded_blocks_map = cfg_constructor.build_folded_blocks_information(folded_cfg)
+    # Save folded blocks information and backfill PC range metadata.
+    folded_blocks_path = os.path.join(result_dir, "folded_blocks_information.json")
+    folded_blocks_map = cfg_constructor.build_fcfg_blocks_information(folded_cfg)
     folded_blocks_map = _enrich_folded_blocks_information(folded_cfg, folded_blocks_map)
-    with open(os.path.join(result_dir, "folded_blocks_information.json"), "w", encoding="utf-8") as f:
+    with open(folded_blocks_path, "w", encoding="utf-8") as f:
         json.dump(folded_blocks_map, f, indent=2, ensure_ascii=False)
 
-    plain_blocks_map = cfg_constructor.build_folded_blocks_information(plain_cfg)
+    plain_blocks_path = os.path.join(result_dir, "plain_blocks_information.json")
+    plain_blocks_map = cfg_constructor.build_pcfg_blocks_information(plain_cfg, standardized_trace)
     plain_blocks_map = _enrich_folded_blocks_information(plain_cfg, plain_blocks_map)
-    with open(os.path.join(result_dir, "plain_blocks_information.json"), "w", encoding="utf-8") as f:
+    with open(plain_blocks_path, "w", encoding="utf-8") as f:
         json.dump(plain_blocks_map, f, indent=2, ensure_ascii=False)
+
+    swap_fcfg_path = os.path.join(result_dir, "swap_in_fcfg.json")
+    swap_pcfg_path = os.path.join(result_dir, "swap_in_pcfg.json")
+    filter_to_file(folded_blocks_path, swap_fcfg_path)
+    filter_to_file(plain_blocks_path, swap_pcfg_path)
+
+    edge_info_path = os.path.join(result_dir, "edge_id-step.json")
+    edge_step_map = _build_edge_step_information_compat(folded_cfg)
+    with open(edge_info_path, "w", encoding="utf-8") as f:
+        json.dump(edge_step_map, f, indent=2, ensure_ascii=False)
 
     # Arbitrage & Balances
     with open(os.path.join(result_dir, "arbitrage.json"), "w", encoding="utf-8") as f:

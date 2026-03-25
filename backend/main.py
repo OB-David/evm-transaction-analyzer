@@ -226,7 +226,8 @@ def save_graphs(result_dir: str, plain_cfg: object,folded_cfg:object, full_addre
         output_path=tx_dot_path, 
         full_address_name_map = full_address_name_map, 
         erc20_token_map = erc20_token_map,
-        rankdir="LR")
+        rankdir="LR",
+        show_priority_opcode=True)
     print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
 
     # Render DOT to SVG using Graphviz CLI for frontend display
@@ -254,7 +255,8 @@ def save_graphs(result_dir: str, plain_cfg: object,folded_cfg:object, full_addre
         output_path=tx_dot_path, 
         full_address_name_map = full_address_name_map, 
         erc20_token_map = erc20_token_map,
-        rankdir="LR")
+        rankdir="LR",
+        show_priority_opcode=False)
     print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
 
     # Render DOT to SVG using Graphviz CLI for frontend display

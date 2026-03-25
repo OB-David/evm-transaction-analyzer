@@ -6,12 +6,16 @@ import {
   type BlockId,
   fetchCfgViewData,
   fetchLegendData,
+  fetchPlainBlockLlmAnalysis,
+  fetchSwapPatternResult,
   type BlockAction,
   type BlockInformation,
   type BlockInformationMap,
   type CfgMode,
   type CfgViewBundle,
   type EdgeStepMap,
+  type PlainBlockLlmAnalysisResponse,
+  type SwapPatternResult,
 } from '../api/analyze'
 
 const props = defineProps<{
@@ -29,6 +33,11 @@ const emit = defineEmits<{
 }>()
 
 type CfgEdgeType = 'NORMAL' | 'JUMP' | 'CALL' | 'DELEGATECALL' | 'TERMINATE'
+type LlmAnalysisState = 'idle' | 'loading' | 'success' | 'error'
+type SwapHighlightGroup = {
+  key: string
+  nodes: string[]
+}
 
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
@@ -47,6 +56,14 @@ const nodeNameToEl = ref<Map<string, Element>>(new Map())
 const edgeIdToSvgTitle = ref<Map<string, string>>(new Map())
 const activeEdgeType = ref<CfgEdgeType | null>(null)
 const showEdgeTypes = ref(false)
+const llmAnalysisState = ref<LlmAnalysisState>('idle')
+const llmAnalysisResponse = ref<PlainBlockLlmAnalysisResponse | null>(null)
+const llmAnalysisError = ref('')
+const swapSeedNodesByMode = ref<Record<CfgMode, Set<string>>>({
+  folded: new Set(),
+  plain: new Set(),
+})
+let llmRequestToken = 0
 const PLAIN_SCALE_MULTIPLIER = 1.35
 const PLAIN_MIN_WIDTH_RATIO = 1.15
 const PLAIN_VIEW_PADDING = 20
@@ -67,6 +84,7 @@ watch(() => props.txHash, (newHash) => {
     status.value = 'idle'
     cfgViews.value = null
     blockInformation.value = {}
+    resetSwapSeedNodes()
     clearFilterState()
     if (graphContainer.value) {
       graphContainer.value.innerHTML = ''
@@ -75,13 +93,7 @@ watch(() => props.txHash, (newHash) => {
 }, { immediate: true })
 
 watch(() => props.highlightedBlockId, (newBlockIds) => {
-  if (cfgMode.value !== 'folded') {
-    clearFilterState()
-    applyFilter()
-    return
-  }
-
-  if (props.filteredEdgeIds && props.filteredEdgeIds.length > 0) return
+  if (cfgMode.value === 'folded' && props.filteredEdgeIds && props.filteredEdgeIds.length > 0) return
 
   if (newBlockIds && newBlockIds.length > 0) {
     calculateVisibleElements(newBlockIds)
@@ -140,6 +152,17 @@ watch(() => props.preferredMode, (mode) => {
   void switchCfgMode(mode)
 })
 
+watch(
+  [() => props.txHash, () => cfgMode.value, () => selectedBlockInfo.value?.block_id],
+  ([txHash, mode, selectedBlockId]) => {
+    if (!txHash || mode !== 'plain' || selectedBlockId === undefined || selectedBlockId === null) {
+      resetLlmAnalysis()
+      return
+    }
+    void loadLlmAnalysis(txHash, selectedBlockId)
+  },
+)
+
 async function loadCfgData(txHash: string) {
   status.value = 'loading'
   errorMsg.value = ''
@@ -150,18 +173,22 @@ async function loadCfgData(txHash: string) {
   resetSelection()
 
   try {
-    const [cfgViewBundle, legend] = await Promise.all([
+    const [cfgViewBundle, legend, foldedSwapPatterns, plainSwapPatterns] = await Promise.all([
       fetchCfgViewData(txHash, props.preferredMode),
-      fetchLegendData(txHash).catch(() => null),
+      fetchLegendData(txHash),
+      fetchSwapPatternResult(txHash, 'folded'),
+      fetchSwapPatternResult(txHash, 'plain'),
     ])
 
     cfgViews.value = cfgViewBundle
+    swapSeedNodesByMode.value = {
+      folded: collectSwapSeedNodes(foldedSwapPatterns),
+      plain: collectSwapSeedNodes(plainSwapPatterns),
+    }
 
     addressNameMap.value.clear()
-    if (legend) {
-      for (const entry of [...legend.user_addresses, ...legend.erc20_tokens, ...legend.normal_contracts]) {
-        addressNameMap.value.set(entry.address.toLowerCase(), entry.name)
-      }
+    for (const entry of [...legend.user_addresses, ...legend.erc20_tokens, ...legend.normal_contracts]) {
+      addressNameMap.value.set(entry.address.toLowerCase(), entry.name)
     }
 
     status.value = 'success'
@@ -169,6 +196,7 @@ async function loadCfgData(txHash: string) {
   } catch (e: any) {
     status.value = 'error'
     errorMsg.value = e.message || 'Failed to load CFG data'
+    resetSwapSeedNodes()
   }
 }
 
@@ -347,6 +375,7 @@ function attachInteractivity() {
   })
 
   parseEdgeConnections()
+  renderSwapHighlightOverlay()
 }
 
 function prepareSvgMetadata(svg: SVGSVGElement) {
@@ -428,6 +457,175 @@ function parseEdgeConnections() {
   })
 }
 
+function collectSwapSeedNodes(result: SwapPatternResult): Set<string> {
+  const entries = [...result.pattern_1, ...result.pattern_2]
+  const nodeNames = new Set<string>()
+  entries.forEach((entry) => {
+    const rawId = entry?.id
+    if (rawId === undefined || rawId === null || rawId === '') return
+    nodeNames.add(`node_${String(rawId)}`)
+  })
+  return nodeNames
+}
+
+function getNumericNodeId(nodeName: string): number | null {
+  const blockId = extractBlockIdFromNodeName(nodeName)
+  if (blockId === null) return null
+
+  const numericId = Number(blockId)
+  return Number.isFinite(numericId) ? numericId : null
+}
+
+function resetSwapSeedNodes() {
+  swapSeedNodesByMode.value = {
+    folded: new Set(),
+    plain: new Set(),
+  }
+}
+
+function buildSwapHighlightGroups(seedNodes: Set<string>): SwapHighlightGroup[] {
+  const groups: SwapHighlightGroup[] = []
+  const seenKeys = new Set<string>()
+
+  seedNodes.forEach((seedNode) => {
+    const nodes = new Set<string>()
+    const seedNodeId = getNumericNodeId(seedNode)
+    if (nodeNameToEl.value.has(seedNode)) {
+      nodes.add(seedNode)
+    }
+
+    edgeConnections.value.forEach(({ source, target }) => {
+      const sourceId = getNumericNodeId(source)
+      const targetId = getNumericNodeId(target)
+
+      if (
+        source === seedNode &&
+        nodeNameToEl.value.has(target) &&
+        seedNodeId !== null &&
+        targetId !== null &&
+        targetId > seedNodeId
+      ) {
+        nodes.add(target)
+      }
+      if (
+        target === seedNode &&
+        nodeNameToEl.value.has(source) &&
+        seedNodeId !== null &&
+        sourceId !== null &&
+        sourceId > seedNodeId
+      ) {
+        nodes.add(source)
+      }
+    })
+
+    if (nodes.size === 0) return
+
+    const nodeList = Array.from(nodes)
+    const key = nodeList.slice().sort().join('|')
+    if (seenKeys.has(key)) return
+    seenKeys.add(key)
+
+    groups.push({
+      key,
+      nodes: nodeList,
+    })
+  })
+
+  return groups
+}
+
+function getSwapHighlightBounds(nodes: string[]) {
+  let minX = Number.POSITIVE_INFINITY
+  let minY = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let maxY = Number.NEGATIVE_INFINITY
+
+  nodes.forEach((nodeName) => {
+    const nodeEl = nodeNameToEl.value.get(nodeName)
+    if (!(nodeEl instanceof SVGGraphicsElement)) return
+
+    const bbox = nodeEl.getBBox()
+    minX = Math.min(minX, bbox.x)
+    minY = Math.min(minY, bbox.y)
+    maxX = Math.max(maxX, bbox.x + bbox.width)
+    maxY = Math.max(maxY, bbox.y + bbox.height)
+  })
+
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+    return null
+  }
+
+  return {
+    x: minX,
+    y: minY,
+    width: maxX - minX,
+    height: maxY - minY,
+  }
+}
+
+function clearSwapHighlightOverlay() {
+  if (!graphContainer.value) return
+  const svg = graphContainer.value.querySelector('svg')
+  svg?.querySelector('#swap-highlight-layer')?.remove()
+}
+
+function renderSwapHighlightOverlay() {
+  clearSwapHighlightOverlay()
+
+  if (!graphContainer.value) return
+  const svg = graphContainer.value.querySelector('svg') as SVGSVGElement | null
+  const zoomLayer = svg?.querySelector('#zoom-layer') as SVGGElement | null
+  const graphContent = zoomLayer?.firstElementChild as SVGGElement | null
+  if (!svg || !zoomLayer || !graphContent) return
+
+  const seedNodes = swapSeedNodesByMode.value[cfgMode.value]
+  if (!seedNodes || seedNodes.size === 0) return
+
+  const groups = buildSwapHighlightGroups(seedNodes)
+  if (groups.length === 0) return
+
+  const overlayLayer = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+  overlayLayer.setAttribute('id', 'swap-highlight-layer')
+  overlayLayer.setAttribute('pointer-events', 'none')
+
+  const paddingX = 18
+  const paddingY = 16
+
+  groups.forEach((group) => {
+    const bounds = getSwapHighlightBounds(group.nodes)
+    if (!bounds) return
+
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+    rect.classList.add('swap-highlight-box')
+    rect.dataset.groupKey = group.key
+    rect.dataset.nodes = group.nodes.join('|')
+    rect.setAttribute('x', String(bounds.x - paddingX))
+    rect.setAttribute('y', String(bounds.y - paddingY))
+    rect.setAttribute('width', String(bounds.width + paddingX * 2))
+    rect.setAttribute('height', String(bounds.height + paddingY * 2))
+    rect.setAttribute('rx', '14')
+    rect.setAttribute('ry', '14')
+    overlayLayer.appendChild(rect)
+  })
+
+  if (!overlayLayer.childNodes.length) return
+
+  graphContent.appendChild(overlayLayer)
+  updateSwapHighlightOverlayVisibility()
+}
+
+function updateSwapHighlightOverlayVisibility() {
+  if (!graphContainer.value) return
+  const svg = graphContainer.value.querySelector('svg')
+  if (!svg) return
+
+  svg.querySelectorAll<SVGRectElement>('#swap-highlight-layer .swap-highlight-box').forEach((rect) => {
+    const nodes = (rect.dataset.nodes || '').split('|').filter(Boolean)
+    const shouldShow = visibleNodes.value.size === 0 || nodes.every(node => visibleNodes.value.has(node))
+    rect.classList.toggle('hidden', !shouldShow)
+  })
+}
+
 function buildEdgeIdToTitleMap() {
   edgeIdToSvgTitle.value.clear()
   if (!props.edgeStepMap) return
@@ -438,13 +636,7 @@ function buildEdgeIdToTitleMap() {
 }
 
 function syncFilterStateWithProps() {
-  if (cfgMode.value !== 'folded') {
-    clearFilterState()
-    applyFilter()
-    return
-  }
-
-  if (props.filteredEdgeIds && props.filteredEdgeIds.length > 0) {
+  if (cfgMode.value === 'folded' && props.filteredEdgeIds && props.filteredEdgeIds.length > 0) {
     applyEdgeFilter(props.filteredEdgeIds)
     return
   }
@@ -496,6 +688,36 @@ function resetSelection() {
   }
   selectedNodeName.value = null
   selectedBlockInfo.value = null
+  resetLlmAnalysis()
+}
+
+function resetLlmAnalysis() {
+  llmRequestToken += 1
+  llmAnalysisState.value = 'idle'
+  llmAnalysisResponse.value = null
+  llmAnalysisError.value = ''
+}
+
+async function loadLlmAnalysis(txHash: string, blockId: BlockId) {
+  const requestToken = ++llmRequestToken
+  llmAnalysisState.value = 'loading'
+  llmAnalysisResponse.value = null
+  llmAnalysisError.value = ''
+
+  try {
+    const response = await fetchPlainBlockLlmAnalysis(txHash, blockId)
+    if (requestToken !== llmRequestToken) return
+    llmAnalysisResponse.value = response
+    llmAnalysisState.value = 'success'
+  } catch (e: any) {
+    if (requestToken !== llmRequestToken) return
+    llmAnalysisState.value = 'error'
+    llmAnalysisResponse.value = null
+    const message = e?.message || 'Failed to generate LLM analysis'
+    llmAnalysisError.value = message.includes('exceeds limit')
+      ? 'Context too large. Strict context mode is enabled, so this block cannot be analyzed.'
+      : message
+  }
 }
 
 function fitGraphToViewport(options: { animate?: boolean } = {}) {
@@ -675,6 +897,8 @@ function applyFilter() {
       edge.classList.add('filtered-out')
     }
   })
+
+  updateSwapHighlightOverlayVisibility()
 }
 
 function resetZoom() {
@@ -719,11 +943,47 @@ function queueCloseEdgeTypesTooltip() {
   }, 180)
 }
 
+function extractQuotedField(instr: string, field: string): string | null {
+  const single = instr.match(new RegExp(`'${field}'\\s*:\\s*'([^']*)'`))
+  if (single?.[1] !== undefined) return single[1]
+  const double = instr.match(new RegExp(`"${field}"\\s*:\\s*"([^"]*)"`))
+  if (double?.[1] !== undefined) return double[1]
+  return null
+}
+
+function extractScalarField(instr: string, field: string): string | null {
+  const quoted = extractQuotedField(instr, field)
+  if (quoted !== null) return quoted
+  const single = instr.match(new RegExp(`'${field}'\\s*:\\s*([^,}\\s]+)`))
+  if (single?.[1] !== undefined) return single[1]
+  const double = instr.match(new RegExp(`"${field}"\\s*:\\s*([^,}\\s]+)`))
+  if (double?.[1] !== undefined) return double[1]
+  return null
+}
+
+function isBoundaryInstruction(instr: string): boolean {
+  return /['"]is_boundary['"]\s*:\s*(True|true)/.test(instr)
+}
+
+function formatBoundaryInstruction(instr: string): string | null {
+  if (!isBoundaryInstruction(instr)) return null
+  return '\u00A0'
+}
+
 function formatInstruction(instr: string): string {
-  const match = instr.match(/\('([^']+)',\s*'([^']+)'\)/)
-  if (match) {
-    return `${match[1]}  ${match[2]}`
+  const boundaryText = formatBoundaryInstruction(instr)
+  if (boundaryText) return boundaryText
+
+  const tupleMatch = instr.match(/^\(\s*([^,]+)\s*,\s*'([^']+)'\s*\)$/)
+  if (tupleMatch) {
+    const pc = tupleMatch[1].trim().replace(/^['"]|['"]$/g, '')
+    return `${pc}  ${tupleMatch[2]}`
   }
+
+  const dictOpcode = extractQuotedField(instr, 'opcode')
+  const dictPc = extractScalarField(instr, 'pc')
+  if (dictOpcode && dictPc) return `${dictPc}  ${dictOpcode}`
+
   return instr
 }
 
@@ -779,6 +1039,23 @@ function normalizePcValue(pc: string | null | undefined): string {
 
 function formatPcRange(startPc: string | null | undefined, endPc: string | null | undefined): string {
   return `${normalizePcValue(startPc)} - ${normalizePcValue(endPc)}`
+}
+
+function hasPcRange(block: BlockInformation): boolean {
+  return Boolean(block.start_pc || block.end_pc)
+}
+
+function hasStepRange(block: BlockInformation): boolean {
+  return block.start_step !== undefined || block.end_step !== undefined
+}
+
+function formatStepValue(step: number | null | undefined): string {
+  if (step === null || step === undefined || Number.isNaN(Number(step))) return 'Unknown'
+  return String(step)
+}
+
+function formatStepRange(startStep: number | null | undefined, endStep: number | null | undefined): string {
+  return `${formatStepValue(startStep)} - ${formatStepValue(endStep)}`
 }
 
 const edgeTypes: Array<{ type: CfgEdgeType, color: string, desc: string }> = [
@@ -892,34 +1169,54 @@ onBeforeUnmount(() => {
                   <span class="info-label">Contract</span>
                   <span class="info-value">{{ selectedBlockInfo.address }}</span>
                 </div>
-                <div class="info-row">
-                  <span class="info-label">Blocks</span>
-                  <span class="info-value">{{ selectedBlockInfo.blocks_number }}</span>
-                </div>
-                <div class="info-row">
+                <div v-if="cfgMode === 'folded' && hasPcRange(selectedBlockInfo)" class="info-row">
                   <span class="info-label">PC</span>
                   <span class="info-value">{{ formatPcRange(selectedBlockInfo.start_pc, selectedBlockInfo.end_pc) }}</span>
+                </div>
+                <div v-if="cfgMode === 'plain' && hasStepRange(selectedBlockInfo)" class="info-row">
+                  <span class="info-label">Step</span>
+                  <span class="info-value">{{ formatStepRange(selectedBlockInfo.start_step, selectedBlockInfo.end_step) }}</span>
                 </div>
                 <div class="info-row">
                   <span class="info-label">Gas</span>
                   <span class="info-value">{{ formatGas(selectedBlockInfo.gas) }}</span>
                 </div>
 
-                <div v-if="selectedBlockInfo.actions.length > 0" class="summary-group">
+                <div v-if="(selectedBlockInfo.actions?.length ?? 0) > 0" class="summary-group">
                   <div class="info-label">Actions</div>
-                  <div v-for="(action, idx) in selectedBlockInfo.actions" :key="idx" class="summary-line mono">
+                  <div v-for="(action, idx) in selectedBlockInfo.actions || []" :key="idx" class="summary-line mono">
                     {{ formatAction(action, idx) }}
                   </div>
                 </div>
 
-                <div class="summary-group">
+                <div v-if="cfgMode === 'plain'" class="summary-group llm-analysis-group">
+                  <div class="llm-header-row">
+                    <span class="info-label">LLM Analysis</span>
+                    <span v-if="llmAnalysisResponse?.source === 'cache'" class="llm-cache-badge">cached</span>
+                  </div>
+                  <div v-if="llmAnalysisState === 'loading'" class="llm-status">
+                    Analyzing block intent...
+                  </div>
+                  <div v-else-if="llmAnalysisState === 'error'" class="llm-status error">
+                    {{ llmAnalysisError }}
+                  </div>
+                  <div
+                    v-else-if="llmAnalysisState === 'success' && llmAnalysisResponse"
+                    class="llm-analysis-content"
+                  >
+                    <div class="llm-title">{{ llmAnalysisResponse.analysis.title }}</div>
+                    <div class="llm-description">{{ llmAnalysisResponse.analysis.description }}</div>
+                  </div>
+                </div>
+
+                <div v-if="(selectedBlockInfo.instructions?.length ?? 0) > 0" class="summary-group">
                   <div class="info-label">Instructions</div>
                   <div class="block-section selected">
                     <div class="block-instructions">
                       <div
-                        v-for="(instr, idx) in selectedBlockInfo.instructions"
+                        v-for="(instr, idx) in selectedBlockInfo.instructions || []"
                         :key="idx"
-                        class="instruction-line"
+                        :class="['instruction-line', { 'instruction-boundary': isBoundaryInstruction(instr) }]"
                       >
                         {{ formatInstruction(instr) }}
                       </div>
@@ -1084,6 +1381,18 @@ onBeforeUnmount(() => {
   stroke-width: 4;
 }
 
+.graph-viewport :deep(#swap-highlight-layer .swap-highlight-box) {
+  fill: rgba(255, 59, 48, 0.12);
+  stroke: #b91c1c;
+  stroke-width: 5;
+  stroke-dasharray: 14 6;
+  filter: drop-shadow(0 0 10px rgba(220, 38, 38, 0.45));
+}
+
+.graph-viewport :deep(#swap-highlight-layer .swap-highlight-box.hidden) {
+  display: none;
+}
+
 .reset-button {
   position: absolute;
   top: 32px;
@@ -1200,6 +1509,60 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--border);
 }
 
+.llm-analysis-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.llm-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.llm-cache-badge {
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.15);
+  color: #166534;
+  font-size: 9px;
+  line-height: 1;
+  padding: 2px 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.llm-status {
+  font-size: 10px;
+  color: #64748b;
+  line-height: 1.45;
+}
+
+.llm-status.error {
+  color: #b91c1c;
+}
+
+.llm-analysis-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.llm-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #1e293b;
+  line-height: 1.35;
+}
+
+.llm-description {
+  font-size: 10px;
+  color: #475569;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
 .summary-line {
   margin-top: 4px;
   font-size: 10px;
@@ -1238,6 +1601,11 @@ onBeforeUnmount(() => {
   font-size: 10px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.instruction-line.instruction-boundary {
+  color: #7c3aed;
+  font-weight: 600;
 }
 
 .action-line {
