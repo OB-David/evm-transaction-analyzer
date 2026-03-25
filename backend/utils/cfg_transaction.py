@@ -962,6 +962,10 @@ class CFGConstructor:
             return merged_node
 
     def _mode_fold(self, current_cfg: Any, mode: str = "plain") -> Any:
+        # --- 修改点 1: 非 plain 模式下重置 ID 计数器 ---
+        if mode != "plain":
+            self._plain_node_counter = 1
+
         fixed_node_ids = self._get_fixed_node_ids(current_cfg)
         sorted_edges = sorted(current_cfg.edges, key=lambda x: x.edge_step)
 
@@ -969,7 +973,6 @@ class CFGConstructor:
         new_cfg.nodes = []
         new_cfg.edges = []
 
-        # 继承历史折叠映射，不重置（关键修复）
         if not hasattr(self, 'folded_node_map') or self.folded_node_map is None:
             self.folded_node_map = {n.id: [n.id] for n in current_cfg.nodes}
 
@@ -995,11 +998,11 @@ class CFGConstructor:
         # 处理起点
         u_start = sorted_edges[0].source
         if u_start.id in fixed_node_ids:
-            if mode == "plain":
-                last_node_in_new_graph = self._create_and_add_node_instance(u_start, 0, is_isolated=True)
-            else:
-                last_node_in_new_graph = copy.deepcopy(u_start)
+            # --- 修改点 2: 统一使用实例创建方法以保证 ID 递增 ---
+            last_node_in_new_graph = self._create_and_add_node_instance(u_start, 0, is_isolated=True)
+            if mode != "plain":
                 fixed_instances[u_start.id] = last_node_in_new_graph
+            # --------------------------------------------------
 
             _ensure_fold_info(last_node_in_new_graph)
             last_node_in_new_graph.fold_info["start_step"] = 0
@@ -1018,7 +1021,6 @@ class CFGConstructor:
                     pending_entry_edge = edge
                 mergestack.append(v_old)
             else:
-                # 合并折叠块
                 if mergestack:
                     if pending_entry_edge:
                         start_step = pending_entry_edge.edge_step + 1
@@ -1043,14 +1045,14 @@ class CFGConstructor:
                     pending_entry_edge = None
 
                 # 固定节点
-                if mode == "plain":
+                # --- 修改点 3: 无论什么模式，新节点都通过实例创建方法分配新 ID ---
+                if v_old.id not in fixed_instances:
                     v_inst = self._create_and_add_node_instance(v_old, edge_step + 1, is_isolated=True)
-                else:
-                    if v_old.id not in fixed_instances:
-                        v_inst = copy.deepcopy(v_old)
+                    if mode != "plain":
                         fixed_instances[v_old.id] = v_inst
-                    else:
-                        v_inst = fixed_instances[v_old.id]
+                else:
+                    v_inst = fixed_instances[v_old.id]
+                # ------------------------------------------------------------
 
                 _ensure_fold_info(v_inst)
                 v_inst.fold_info["start_step"] = edge_step + 1
@@ -1065,7 +1067,6 @@ class CFGConstructor:
 
                 last_node_in_new_graph = v_inst
 
-        # 最终去重（和你所有折叠逻辑一致）
         for rid in self.folded_node_map:
             self.folded_node_map[rid] = list(dict.fromkeys(self.folded_node_map[rid]))
 
