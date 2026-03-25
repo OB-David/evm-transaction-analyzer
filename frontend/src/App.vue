@@ -150,6 +150,7 @@ function handleSequenceSelect(stepRange: { entryStep: number; exitStep: number }
 
 function handleCfgModeChange(mode: CfgMode) {
   currentCfgMode.value = mode
+  highlightedBlockId.value = null
 }
 </script>
 
@@ -179,6 +180,7 @@ function handleCfgModeChange(mode: CfgMode) {
         <AfgPanel
           class="afg-panel"
           :tx-hash="currentTxHash"
+          :cfg-mode="currentCfgMode"
           :highlighted-block-id="highlightedBlockId"
           :is-analyzing="isAnalyzing"
           @cfg-navigate="handleCfgNavigate"

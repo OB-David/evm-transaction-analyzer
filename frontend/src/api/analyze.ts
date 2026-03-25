@@ -81,8 +81,9 @@ export async function fetchCfgSvg(txHash: string): Promise<string> {
   return fetchTextFile('folded_cfg.svg', txHash)
 }
 
-export async function fetchEdgeLink(txHash: string): Promise<EdgeLink[]> {
-  return fetchJsonFile<EdgeLink[]>('edge_link.json', txHash)
+export async function fetchEdgeLink(txHash: string, mode: CfgMode = 'folded'): Promise<EdgeLink[]> {
+  const filename = mode === 'plain' ? 'TFG_link_PCFG.json' : 'TFG_link_FCFG.json'
+  return fetchJsonFile<EdgeLink[]>(filename, txHash)
 }
 
 export async function fetchBlockGasData(blockNumber: number): Promise<BlockGasData> {
@@ -163,11 +164,14 @@ export interface BlockInformation {
   block_id: BlockId
   address: string
   blocks_number: number
-  start_pc: string
-  end_pc: string
   gas: number
   actions: BlockAction[]
-  instructions: string[]
+  start_step?: number
+  end_step?: number
+  folded_blocks?: BlockId[]
+  instructions?: string[]
+  start_pc?: string
+  end_pc?: string
 }
 
 export interface BlockInformationMap {
@@ -186,6 +190,41 @@ export interface CfgViewBundle {
   initialMode: CfgMode
   folded: CfgViewData
   plain: CfgViewData
+}
+
+export interface PlainBlockLlmAnalysisRequest {
+  tx_hash: string
+  block_id: BlockId
+  force_refresh?: boolean
+}
+
+export interface PlainBlockLlmAnalysisContent {
+  title: string
+  description: string
+}
+
+export interface PlainBlockStepRange {
+  block_id: BlockId
+  start_step: number
+  end_step: number
+}
+
+export interface PlainBlockLlmContextMeta {
+  target_block_id: BlockId
+  prev_block_id: BlockId | null
+  next_block_id: BlockId | null
+  step_ranges: {
+    prev: PlainBlockStepRange | null
+    target: PlainBlockStepRange
+    next: PlainBlockStepRange | null
+  }
+}
+
+export interface PlainBlockLlmAnalysisResponse {
+  status: 'success'
+  source: 'cache' | 'llm'
+  analysis: PlainBlockLlmAnalysisContent
+  context_meta: PlainBlockLlmContextMeta
 }
 
 export interface LegendEntry {
@@ -235,6 +274,38 @@ export async function fetchCfgViewData(txHash: string, preferredMode: CfgMode = 
       blockInformation: plainBlockInformation,
     },
   }
+}
+
+export async function fetchPlainBlockLlmAnalysis(
+  txHash: string,
+  blockId: BlockId,
+  forceRefresh: boolean = false,
+): Promise<PlainBlockLlmAnalysisResponse> {
+  const payload: PlainBlockLlmAnalysisRequest = {
+    tx_hash: txHash,
+    block_id: blockId,
+    force_refresh: forceRefresh,
+  }
+
+  const res = await fetch(`${API_BASE}/api/llm/plain-block-analysis`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  let body: any = null
+  try {
+    body = await res.json()
+  } catch {
+    body = null
+  }
+
+  if (!res.ok) {
+    const detail = body?.detail || `Failed to fetch plain block LLM analysis: ${res.status}`
+    throw new Error(detail)
+  }
+
+  return body as PlainBlockLlmAnalysisResponse
 }
 
 export interface EdgeStepEntry {

@@ -6,12 +6,14 @@ import {
   type BlockId,
   fetchCfgViewData,
   fetchLegendData,
+  fetchPlainBlockLlmAnalysis,
   type BlockAction,
   type BlockInformation,
   type BlockInformationMap,
   type CfgMode,
   type CfgViewBundle,
   type EdgeStepMap,
+  type PlainBlockLlmAnalysisResponse,
 } from '../api/analyze'
 
 const props = defineProps<{
@@ -29,6 +31,7 @@ const emit = defineEmits<{
 }>()
 
 type CfgEdgeType = 'NORMAL' | 'JUMP' | 'CALL' | 'DELEGATECALL' | 'TERMINATE'
+type LlmAnalysisState = 'idle' | 'loading' | 'success' | 'error'
 
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
@@ -47,6 +50,10 @@ const nodeNameToEl = ref<Map<string, Element>>(new Map())
 const edgeIdToSvgTitle = ref<Map<string, string>>(new Map())
 const activeEdgeType = ref<CfgEdgeType | null>(null)
 const showEdgeTypes = ref(false)
+const llmAnalysisState = ref<LlmAnalysisState>('idle')
+const llmAnalysisResponse = ref<PlainBlockLlmAnalysisResponse | null>(null)
+const llmAnalysisError = ref('')
+let llmRequestToken = 0
 const PLAIN_SCALE_MULTIPLIER = 1.35
 const PLAIN_MIN_WIDTH_RATIO = 1.15
 const PLAIN_VIEW_PADDING = 20
@@ -75,13 +82,7 @@ watch(() => props.txHash, (newHash) => {
 }, { immediate: true })
 
 watch(() => props.highlightedBlockId, (newBlockIds) => {
-  if (cfgMode.value !== 'folded') {
-    clearFilterState()
-    applyFilter()
-    return
-  }
-
-  if (props.filteredEdgeIds && props.filteredEdgeIds.length > 0) return
+  if (cfgMode.value === 'folded' && props.filteredEdgeIds && props.filteredEdgeIds.length > 0) return
 
   if (newBlockIds && newBlockIds.length > 0) {
     calculateVisibleElements(newBlockIds)
@@ -139,6 +140,17 @@ watch(() => props.preferredMode, (mode) => {
   if (!getCfgView(mode)) return
   void switchCfgMode(mode)
 })
+
+watch(
+  [() => props.txHash, () => cfgMode.value, () => selectedBlockInfo.value?.block_id],
+  ([txHash, mode, selectedBlockId]) => {
+    if (!txHash || mode !== 'plain' || selectedBlockId === undefined || selectedBlockId === null) {
+      resetLlmAnalysis()
+      return
+    }
+    void loadLlmAnalysis(txHash, selectedBlockId)
+  },
+)
 
 async function loadCfgData(txHash: string) {
   status.value = 'loading'
@@ -436,13 +448,7 @@ function buildEdgeIdToTitleMap() {
 }
 
 function syncFilterStateWithProps() {
-  if (cfgMode.value !== 'folded') {
-    clearFilterState()
-    applyFilter()
-    return
-  }
-
-  if (props.filteredEdgeIds && props.filteredEdgeIds.length > 0) {
+  if (cfgMode.value === 'folded' && props.filteredEdgeIds && props.filteredEdgeIds.length > 0) {
     applyEdgeFilter(props.filteredEdgeIds)
     return
   }
@@ -494,6 +500,36 @@ function resetSelection() {
   }
   selectedNodeName.value = null
   selectedBlockInfo.value = null
+  resetLlmAnalysis()
+}
+
+function resetLlmAnalysis() {
+  llmRequestToken += 1
+  llmAnalysisState.value = 'idle'
+  llmAnalysisResponse.value = null
+  llmAnalysisError.value = ''
+}
+
+async function loadLlmAnalysis(txHash: string, blockId: BlockId) {
+  const requestToken = ++llmRequestToken
+  llmAnalysisState.value = 'loading'
+  llmAnalysisResponse.value = null
+  llmAnalysisError.value = ''
+
+  try {
+    const response = await fetchPlainBlockLlmAnalysis(txHash, blockId)
+    if (requestToken !== llmRequestToken) return
+    llmAnalysisResponse.value = response
+    llmAnalysisState.value = 'success'
+  } catch (e: any) {
+    if (requestToken !== llmRequestToken) return
+    llmAnalysisState.value = 'error'
+    llmAnalysisResponse.value = null
+    const message = e?.message || 'Failed to generate LLM analysis'
+    llmAnalysisError.value = message.includes('exceeds limit')
+      ? 'Context too large. Strict context mode is enabled, so this block cannot be analyzed.'
+      : message
+  }
 }
 
 function fitGraphToViewport(options: { animate?: boolean } = {}) {
@@ -717,11 +753,66 @@ function queueCloseEdgeTypesTooltip() {
   }, 180)
 }
 
+function extractQuotedField(instr: string, field: string): string | null {
+  const single = instr.match(new RegExp(`'${field}'\\s*:\\s*'([^']*)'`))
+  if (single?.[1] !== undefined) return single[1]
+  const double = instr.match(new RegExp(`"${field}"\\s*:\\s*"([^"]*)"`))
+  if (double?.[1] !== undefined) return double[1]
+  return null
+}
+
+function extractScalarField(instr: string, field: string): string | null {
+  const quoted = extractQuotedField(instr, field)
+  if (quoted !== null) return quoted
+  const single = instr.match(new RegExp(`'${field}'\\s*:\\s*([^,}\\s]+)`))
+  if (single?.[1] !== undefined) return single[1]
+  const double = instr.match(new RegExp(`"${field}"\\s*:\\s*([^,}\\s]+)`))
+  if (double?.[1] !== undefined) return double[1]
+  return null
+}
+
+function isBoundaryInstruction(instr: string): boolean {
+  return /['"]is_boundary['"]\s*:\s*(True|true)/.test(instr)
+}
+
+function formatBoundaryInstruction(instr: string): string | null {
+  if (!isBoundaryInstruction(instr)) return null
+
+  const opcode = extractQuotedField(instr, 'opcode')
+  if (!opcode) return '[Boundary] Marker'
+
+  const fromId = extractScalarField(instr, 'from_id')
+  const sourceInfo = fromId ? ` (source block ${fromId})` : ''
+
+  const timelineMatch = opcode.match(/^TIMELINE_SEG_(\d+)$/)
+  if (timelineMatch) return `[Boundary] Timeline segment ${timelineMatch[1]}${sourceInfo}`
+
+  const branchMatch = opcode.match(/^BRANCH_SEGMENT_(\d+)$/)
+  if (branchMatch) return `[Boundary] Branch segment ${branchMatch[1]}${sourceInfo}`
+
+  if (opcode === 'DISPATCH_LOGIC_SINK') return `[Boundary] Dispatch logic sink${sourceInfo}`
+  if (opcode === 'MERGE_POINT_SEGMENT') return `[Boundary] Merge point${sourceInfo}`
+  if (opcode === 'SELF_LOOP_DETECTED') return '[Boundary] Self-loop detected'
+  if (opcode === 'FEEDBACK_LOOP_START') return `[Boundary] Feedback loop start${sourceInfo}`
+  if (opcode === 'FEEDBACK_LOOP_END') return '[Boundary] Feedback loop end'
+
+  return `[Boundary] ${opcode}${sourceInfo}`
+}
+
 function formatInstruction(instr: string): string {
-  const match = instr.match(/\('([^']+)',\s*'([^']+)'\)/)
-  if (match) {
-    return `${match[1]}  ${match[2]}`
+  const boundaryText = formatBoundaryInstruction(instr)
+  if (boundaryText) return boundaryText
+
+  const tupleMatch = instr.match(/^\(\s*([^,]+)\s*,\s*'([^']+)'\s*\)$/)
+  if (tupleMatch) {
+    const pc = tupleMatch[1].trim().replace(/^['"]|['"]$/g, '')
+    return `${pc}  ${tupleMatch[2]}`
   }
+
+  const dictOpcode = extractQuotedField(instr, 'opcode')
+  const dictPc = extractScalarField(instr, 'pc')
+  if (dictOpcode && dictPc) return `${dictPc}  ${dictOpcode}`
+
   return instr
 }
 
@@ -777,6 +868,23 @@ function normalizePcValue(pc: string | null | undefined): string {
 
 function formatPcRange(startPc: string | null | undefined, endPc: string | null | undefined): string {
   return `${normalizePcValue(startPc)} - ${normalizePcValue(endPc)}`
+}
+
+function hasPcRange(block: BlockInformation): boolean {
+  return Boolean(block.start_pc || block.end_pc)
+}
+
+function hasStepRange(block: BlockInformation): boolean {
+  return block.start_step !== undefined || block.end_step !== undefined
+}
+
+function formatStepValue(step: number | null | undefined): string {
+  if (step === null || step === undefined || Number.isNaN(Number(step))) return 'Unknown'
+  return String(step)
+}
+
+function formatStepRange(startStep: number | null | undefined, endStep: number | null | undefined): string {
+  return `${formatStepValue(startStep)} - ${formatStepValue(endStep)}`
 }
 
 const edgeTypes: Array<{ type: CfgEdgeType, color: string, desc: string }> = [
@@ -890,34 +998,54 @@ onBeforeUnmount(() => {
                   <span class="info-label">Contract</span>
                   <span class="info-value">{{ selectedBlockInfo.address }}</span>
                 </div>
-                <div class="info-row">
-                  <span class="info-label">Blocks</span>
-                  <span class="info-value">{{ selectedBlockInfo.blocks_number }}</span>
-                </div>
-                <div class="info-row">
+                <div v-if="cfgMode === 'folded' && hasPcRange(selectedBlockInfo)" class="info-row">
                   <span class="info-label">PC</span>
                   <span class="info-value">{{ formatPcRange(selectedBlockInfo.start_pc, selectedBlockInfo.end_pc) }}</span>
+                </div>
+                <div v-if="cfgMode === 'plain' && hasStepRange(selectedBlockInfo)" class="info-row">
+                  <span class="info-label">Step</span>
+                  <span class="info-value">{{ formatStepRange(selectedBlockInfo.start_step, selectedBlockInfo.end_step) }}</span>
                 </div>
                 <div class="info-row">
                   <span class="info-label">Gas</span>
                   <span class="info-value">{{ formatGas(selectedBlockInfo.gas) }}</span>
                 </div>
 
-                <div v-if="selectedBlockInfo.actions.length > 0" class="summary-group">
+                <div v-if="cfgMode === 'plain'" class="summary-group llm-analysis-group">
+                  <div class="llm-header-row">
+                    <span class="info-label">LLM Analysis</span>
+                    <span v-if="llmAnalysisResponse?.source === 'cache'" class="llm-cache-badge">cached</span>
+                  </div>
+                  <div v-if="llmAnalysisState === 'loading'" class="llm-status">
+                    Analyzing block intent...
+                  </div>
+                  <div v-else-if="llmAnalysisState === 'error'" class="llm-status error">
+                    {{ llmAnalysisError }}
+                  </div>
+                  <div
+                    v-else-if="llmAnalysisState === 'success' && llmAnalysisResponse"
+                    class="llm-analysis-content"
+                  >
+                    <div class="llm-title">{{ llmAnalysisResponse.analysis.title }}</div>
+                    <div class="llm-description">{{ llmAnalysisResponse.analysis.description }}</div>
+                  </div>
+                </div>
+
+                <div v-if="(selectedBlockInfo.actions?.length ?? 0) > 0" class="summary-group">
                   <div class="info-label">Actions</div>
-                  <div v-for="(action, idx) in selectedBlockInfo.actions" :key="idx" class="summary-line mono">
+                  <div v-for="(action, idx) in selectedBlockInfo.actions || []" :key="idx" class="summary-line mono">
                     {{ formatAction(action, idx) }}
                   </div>
                 </div>
 
-                <div class="summary-group">
+                <div v-if="(selectedBlockInfo.instructions?.length ?? 0) > 0" class="summary-group">
                   <div class="info-label">Instructions</div>
                   <div class="block-section selected">
                     <div class="block-instructions">
                       <div
-                        v-for="(instr, idx) in selectedBlockInfo.instructions"
+                        v-for="(instr, idx) in selectedBlockInfo.instructions || []"
                         :key="idx"
-                        class="instruction-line"
+                        :class="['instruction-line', { 'instruction-boundary': isBoundaryInstruction(instr) }]"
                       >
                         {{ formatInstruction(instr) }}
                       </div>
@@ -1198,6 +1326,60 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--border);
 }
 
+.llm-analysis-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.llm-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.llm-cache-badge {
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.15);
+  color: #166534;
+  font-size: 9px;
+  line-height: 1;
+  padding: 2px 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.llm-status {
+  font-size: 10px;
+  color: #64748b;
+  line-height: 1.45;
+}
+
+.llm-status.error {
+  color: #b91c1c;
+}
+
+.llm-analysis-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.llm-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #1e293b;
+  line-height: 1.35;
+}
+
+.llm-description {
+  font-size: 10px;
+  color: #475569;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
 .summary-line {
   margin-top: 4px;
   font-size: 10px;
@@ -1236,6 +1418,11 @@ onBeforeUnmount(() => {
   font-size: 10px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.instruction-line.instruction-boundary {
+  color: #7c3aed;
+  font-weight: 600;
 }
 
 .action-line {

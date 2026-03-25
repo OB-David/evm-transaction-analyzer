@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from utils.evm_information import TraceFormatter
 from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
-from utils.extract_token_changes import pair_transactions, afg_to_cfg, edge_link_to_json, detect_arbitrage, compute_address_balances
+from utils.extract_token_changes import pair_transactions, afg_to_fcfg, afg_to_pcfg, edge_link_to_json, detect_arbitrage, compute_address_balances
 from utils.sequence_diagram import build_refined_hierarchical_trace
 from main import create_result_directory, save_graphs
 
@@ -62,40 +62,6 @@ def _build_edge_step_information_compat(cfg: Any) -> Dict[str, Dict[str, Any]]:
     return edge_step_map
 
 
-def _enrich_folded_blocks_information(cfg: Any, folded_blocks_map: Dict[str, Any]) -> Dict[str, Any]:
-    """Backfill missing start_pc/end_pc fields for mixed-id folded blocks."""
-    node_by_id = {str(getattr(node, "id", "")): node for node in getattr(cfg, "nodes", [])}
-
-    for key, info in folded_blocks_map.items():
-        if not isinstance(info, dict):
-            continue
-
-        block_id = info.get("block_id", key)
-        node = node_by_id.get(str(block_id))
-
-        start_pc = info.get("start_pc")
-        end_pc = info.get("end_pc")
-
-        if node is not None:
-            if start_pc in (None, ""):
-                node_start_pc = getattr(node, "start_pc", None)
-                if node_start_pc not in (None, ""):
-                    info["start_pc"] = str(node_start_pc)
-
-            if end_pc in (None, ""):
-                fold_info = getattr(node, "fold_info", {})
-                fold_end_pc = fold_info.get("end_pc") if isinstance(fold_info, dict) else None
-                node_end_pc = fold_end_pc if fold_end_pc not in (None, "") else getattr(node, "end_pc", None)
-                if node_end_pc not in (None, ""):
-                    info["end_pc"] = str(node_end_pc)
-
-        if info.get("start_pc") in (None, ""):
-            info["start_pc"] = "Unknown"
-        if info.get("end_pc") in (None, ""):
-            info["end_pc"] = "Unknown"
-
-    return folded_blocks_map
-
 def run(tx_hash: str):
     PROVIDER_URL = os.environ.get("GETH_API")
     result_dir = create_result_directory(tx_hash)
@@ -145,8 +111,10 @@ def run(tx_hash: str):
 
     original_transfer = [from_address.lower(),to_address.lower(), int(amount)]
     pairs, annotations, pending_erc20 = pair_transactions(original_transfer, all_changes, token_decimals_map)
-    edge_link = afg_to_cfg(pairs, pending_erc20, original_cfg, folded_node_map)
-    json_output = edge_link_to_json(edge_link)
+    edge_link_fcfg = afg_to_fcfg(pairs, pending_erc20, original_cfg, folded_node_map)
+    edge_link_pcfg = afg_to_pcfg(pairs, pending_erc20, plain_cfg)
+    json_output_fcfg = edge_link_to_json(edge_link_fcfg)
+    json_output_pcfg = edge_link_to_json(edge_link_pcfg)
     arb_result = detect_arbitrage(pairs, pending_erc20)
     addr_balances = compute_address_balances(pairs, pending_erc20)
 
@@ -158,22 +126,18 @@ def run(tx_hash: str):
     with open(os.path.join(result_dir, "balance_and_eth_changes.json"), "w", encoding="utf-8") as f:
         json.dump(all_changes, f, indent=2, ensure_ascii=False)
 
-    # Save edge link
-    with open(os.path.join(result_dir, "edge_link.json"), "w", encoding="utf-8") as f:
-        f.write(json_output)
+    # Save edge link mappings
+    with open(os.path.join(result_dir, "TFG_link_FCFG.json"), "w", encoding="utf-8") as f:
+        f.write(json_output_fcfg)
+    with open(os.path.join(result_dir, "TFG_link_PCFG.json"), "w", encoding="utf-8") as f:
+        f.write(json_output_pcfg)
 
     # Save folded blocks information
     folded_blocks_path = os.path.join(result_dir, "folded_blocks_information.json")
-    folded_blocks_map = cfg_constructor.build_folded_blocks_information(folded_cfg)
-    folded_blocks_map = _enrich_folded_blocks_information(folded_cfg, folded_blocks_map)
-    with open(folded_blocks_path, "w", encoding="utf-8") as f:
-        json.dump(folded_blocks_map, f, indent=2, ensure_ascii=False)
+    cfg_constructor.export_fcfg_blocks_information(folded_cfg, folded_blocks_path)
 
     plain_blocks_path = os.path.join(result_dir, "plain_blocks_information.json")
-    plain_blocks_map = cfg_constructor.build_folded_blocks_information(plain_cfg)
-    plain_blocks_map = _enrich_folded_blocks_information(plain_cfg, plain_blocks_map)
-    with open(plain_blocks_path, "w", encoding="utf-8") as f:
-        json.dump(plain_blocks_map, f, indent=2, ensure_ascii=False)
+    cfg_constructor.export_pcfg_blocks_information(plain_cfg, plain_blocks_path)
 
     # Save edge step mapping
     edge_info_path = os.path.join(result_dir, "edge_id-step.json")
