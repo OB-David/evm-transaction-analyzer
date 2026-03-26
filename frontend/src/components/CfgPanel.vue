@@ -569,7 +569,7 @@ function getEdgeLabelPlacement(edgeEl: SVGGElement, fallbackBox: DOMRect | SVGRe
         const norm = Math.hypot(tx, ty) || 1
         const nx = -ty / norm
         const ny = tx / norm
-        const offset = 44
+        const offset = 16
 
         return {
           x: pMid.x + nx * offset,
@@ -1786,7 +1786,7 @@ onBeforeUnmount(() => {
 }
 
 .graph-viewport :deep(.call-signature-label) {
-  fill: #1e3a8a;
+  fill: #000000;
   font-size: 28px;
   font-family: 'Consolas', 'Monaco', monospace;
   font-weight: 800;
