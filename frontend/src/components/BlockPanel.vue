@@ -26,6 +26,12 @@ const emit = defineEmits<{
 // Shared state
 const plotlyReady = ref(false)
 const viewMode = ref<ViewMode>('blocks')
+const BLOCKS_HEATMAP_COUNT = 180
+const BLOCKS_COLOR_P_LOW = 0.05
+const BLOCKS_COLOR_P_HIGH = 0.95
+const BLOCKS_COLOR_TAIL_SPAN = 0.12
+const TX_COLOR_RANGE_MIN = 0.08
+const TX_COLOR_RANGE_MAX = 0.86
 
 // Auto-refresh
 let refreshTimer: ReturnType<typeof setInterval> | null = null
@@ -137,7 +143,7 @@ async function loadBlocksHeatmap(): Promise<void> {
   blocksError.value = ''
 
   try {
-    const data = await fetchBlocksHeatmap(blocksOffset.value, 200)
+    const data = await fetchBlocksHeatmap(blocksOffset.value, BLOCKS_HEATMAP_COUNT)
     if (data.status === 'error') {
       blocksError.value = data.error || 'Failed to fetch blocks'
       blocksLoading.value = false
@@ -164,11 +170,12 @@ function renderBlocksPlotly(data: BlocksHeatmapData) {
   const Plotly = (window as any).Plotly
   if (!Plotly) return
 
-  const blocks = data.blocks
+  const blocks = data.blocks.slice(0, BLOCKS_HEATMAP_COUNT)
+  if (blocks.length === 0) return
   const avgGasValues = blocks.map(b => b.avg_gas)
-
-  gasMin.value = Math.round(Math.min(...avgGasValues)).toLocaleString()
-  gasMax.value = Math.round(Math.max(...avgGasValues)).toLocaleString()
+  const colorMapping = mapGasValuesForColor(avgGasValues)
+  gasMin.value = Math.round(colorMapping.actualMin).toLocaleString()
+  gasMax.value = Math.round(colorMapping.actualMax).toLocaleString()
 
   const hoverTexts = blocks.map(b =>
     `Block: ${b.block_number}<br>` +
@@ -186,11 +193,15 @@ function renderBlocksPlotly(data: BlocksHeatmapData) {
     marker: {
       symbol: 'square',
       size: 30,
-      color: avgGasValues,
+      color: colorMapping.scaledValues,
+      cmin: 0,
+      cmax: 1,
       colorscale: [
-        [0, '#EEF0F7'],
-        [0.5, '#B6CDF3'],
-        [1, '#7B8FAD'],
+        [0, '#F2F4F8'],
+        [0.25, '#E3E9F0'],
+        [0.5, '#CAD5E4'],
+        [0.75, '#A8B9D0'],
+        [1, '#7F97B8'],
       ],
       showscale: false,
       line: { width: 1, color: 'white' },
@@ -316,9 +327,12 @@ function renderPlotly(data: BlockGasData) {
 
   const txs = data.transactions
   const logGasValues = txs.map(tx => tx.log_gas)
-  let vMin = Math.min(...logGasValues)
-  let vMax = Math.max(...logGasValues)
-  if (vMin === vMax) { vMin -= 0.1; vMax += 0.1 }
+  const txColorMapping = mapGasValuesForColor(logGasValues)
+  const txHeatColors = remapScaledRange(
+    txColorMapping.scaledValues,
+    TX_COLOR_RANGE_MIN,
+    TX_COLOR_RANGE_MAX
+  )
 
   const gasValues = txs.map(tx => tx.gas)
   gasMin.value = Math.min(...gasValues).toLocaleString()
@@ -345,11 +359,15 @@ function renderPlotly(data: BlockGasData) {
     marker: {
       symbol: 'square',
       size: 30,
-      color: logGasValues,
+      color: txHeatColors,
+      cmin: 0,
+      cmax: 1,
       colorscale: [
-        [0, '#EDF4F6'],
-        [0.5, '#B9DCE3'],
-        [1, '#8AABAF'],
+        [0, '#F2F6F6'],
+        [0.25, '#E5EFEC'],
+        [0.5, '#D2E3DE'],
+        [0.75, '#B7CCC4'],
+        [1, '#93A89F'],
       ],
       showscale: false,
       line: { width: 1, color: 'white' },
@@ -450,6 +468,59 @@ function truncateHash(hash: string): string {
   return hash.substring(0, 10) + '...' + hash.substring(hash.length - 10)
 }
 
+function clamp(value: number, lower: number, upper: number): number {
+  return Math.min(upper, Math.max(lower, value))
+}
+
+function quantile(values: number[], p: number): number {
+  if (values.length === 0) return NaN
+  const sorted = [...values].sort((a, b) => a - b)
+  const pos = (sorted.length - 1) * p
+  const base = Math.floor(pos)
+  const rest = pos - base
+  const lower = sorted[base]
+  const upper = sorted[Math.min(base + 1, sorted.length - 1)]
+  return lower + (upper - lower) * rest
+}
+
+function mapGasValuesForColor(values: number[]): { scaledValues: number[], actualMin: number, actualMax: number } {
+  const actualMin = Math.min(...values)
+  const actualMax = Math.max(...values)
+  if (!Number.isFinite(actualMin) || !Number.isFinite(actualMax)) {
+    return { scaledValues: values.map(() => 0.5), actualMin: 0, actualMax: 0 }
+  }
+  if (actualMax <= actualMin) {
+    return { scaledValues: values.map(() => 0.5), actualMin, actualMax }
+  }
+
+  const qLow = clamp(quantile(values, BLOCKS_COLOR_P_LOW), actualMin, actualMax)
+  const qHigh = clamp(quantile(values, BLOCKS_COLOR_P_HIGH), qLow, actualMax)
+  const midStart = BLOCKS_COLOR_TAIL_SPAN
+  const midEnd = 1 - BLOCKS_COLOR_TAIL_SPAN
+  const eps = 1e-9
+
+  const scaledValues = values.map((v) => {
+    if (v <= qLow) {
+      if (qLow - actualMin < eps) return midStart * 0.5
+      return ((v - actualMin) / (qLow - actualMin)) * midStart
+    }
+    if (v >= qHigh) {
+      if (actualMax - qHigh < eps) return midEnd + (1 - midEnd) * 0.5
+      return midEnd + ((v - qHigh) / (actualMax - qHigh)) * (1 - midEnd)
+    }
+    if (qHigh - qLow < eps) return 0.5
+    return midStart + ((v - qLow) / (qHigh - qLow)) * (midEnd - midStart)
+  })
+
+  return { scaledValues, actualMin, actualMax }
+}
+
+function remapScaledRange(values: number[], minTarget: number, maxTarget: number): number[] {
+  if (maxTarget <= minTarget) return values
+  const span = maxTarget - minTarget
+  return values.map(v => clamp(minTarget + v * span, 0, 1))
+}
+
 async function copyToClipboard(text: string) {
   try {
     await navigator.clipboard.writeText(text)
@@ -467,12 +538,11 @@ async function copyToClipboard(text: string) {
 
 <template>
   <div class="block-panel">
+    <button v-if="viewMode === 'transactions'" class="nav-btn back-btn-top" @click="backToBlocks">← Back</button>
+
     <div class="top-row">
       <label class="panel-label">(B) Block Exploration</label>
-      <div class="top-row-right">
-        <button v-if="viewMode === 'transactions'" class="nav-btn back-btn-inline" @click="backToBlocks">← Back</button>
-        <span class="view-label">{{ viewMode === 'blocks' ? 'Block View' : 'Transaction View' }}</span>
-      </div>
+      <span class="view-mode-pill">{{ viewMode === 'blocks' ? 'Block View' : 'Transaction View' }}</span>
     </div>
 
     <div v-if="gasMin && gasMax" class="gas-legend">
@@ -567,8 +637,9 @@ async function copyToClipboard(text: string) {
 
 .top-row {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 6px;
+  min-width: 0;
   flex-shrink: 0;
 }
 
@@ -577,23 +648,29 @@ async function copyToClipboard(text: string) {
   color: #000000;
   font-weight: 700;
   letter-spacing: 0.5px;
+  white-space: nowrap;
 }
 
-.top-row-right {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.view-label {
-  font-size: 11px;
-  color: #000000;
-  letter-spacing: 0.3px;
-}
-
-.back-btn-inline {
+.view-mode-pill {
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  background: rgba(255, 255, 255, 0.94);
+  color: #334155;
+  border-radius: 999px;
   padding: 2px 8px;
-  font-size: 10px;
+  font-size: 9px;
+  letter-spacing: 0.3px;
+  line-height: 1.2;
+}
+
+.back-btn-top {
+  position: absolute;
+  top: 6px;
+  right: clamp(8px, 1.2vw, 12px);
+  z-index: 2;
+  padding: 1px 6px;
+  font-size: 9px;
+  line-height: 1.1;
+  border-radius: 999px;
 }
 
 .header-area {
@@ -742,6 +819,7 @@ async function copyToClipboard(text: string) {
   align-items: center;
   justify-content: center;
   gap: 6px;
+  margin-top: 6px;
   padding: 2px 0;
   flex-shrink: 0;
 }
@@ -766,11 +844,11 @@ async function copyToClipboard(text: string) {
 }
 
 .gas-bar.blocks {
-  background: linear-gradient(to right, #EEF0F7, #B6CDF3, #7B8FAD);
+  background: linear-gradient(to right, #F2F4F8, #CAD5E4, #7F97B8);
 }
 
 .gas-bar.transactions {
-  background: linear-gradient(to right, #EDF4F6, #B9DCE3, #8AABAF);
+  background: linear-gradient(to right, #F2F6F6, #D2E3DE, #93A89F);
 }
 
 .heatmap-container {

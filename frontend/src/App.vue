@@ -217,9 +217,10 @@ function handleCfgModeChange(mode: CfgMode) {
 <style scoped>
 .app-grid {
   height: 100vh;
-  min-width: 900px;
+  width: 100%;
+  min-width: 0;
   display: grid;
-  grid-template-columns: 20% 80%;
+  grid-template-columns: minmax(220px, 1fr) minmax(0, 4fr);
   grid-template-rows: 36px 1fr;
   gap: 6px;
   background: var(--bg);
@@ -270,7 +271,7 @@ function handleCfgModeChange(mode: CfgMode) {
 
 .top-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.04fr) minmax(0, 1.22fr) 196px;
+  grid-template-columns: minmax(0, 1.04fr) minmax(0, 1.22fr) minmax(160px, 196px);
   min-height: 0;
   gap: 6px;
 }
@@ -305,5 +306,15 @@ function handleCfgModeChange(mode: CfgMode) {
   overflow: hidden;
   border-radius: 3px;
   box-shadow: 0 1px 4px rgba(0,0,0,0.07), 0 0 0 1px rgba(0,0,0,0.05);
+}
+
+@media (max-width: 1180px) {
+  .app-grid {
+    grid-template-columns: minmax(190px, 1fr) minmax(0, 3.8fr);
+  }
+
+  .top-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(140px, 170px);
+  }
 }
 </style>
