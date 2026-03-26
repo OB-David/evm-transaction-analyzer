@@ -44,7 +44,7 @@ except Exception:
 def main():
     # 配置参数
     PROVIDER_URL = os.environ.get("GETH_API")
-    TX_HASH = "0xe01eac5e811602c54f3fe5484d44f13a5b621aa19f670dde7139a0f6760a1916"
+    TX_HASH = "0x61b884b93a37ef14f92ccb40dbcdc8dc066b227433db02118ce546c061eb1310"
 
     try:
         # ========== 前置检查 ==========
