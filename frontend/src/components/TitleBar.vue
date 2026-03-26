@@ -1,20 +1,19 @@
 <template>
   <div class="title-bar">
-    Arbitrage Visual Analytics System
+    TraceWeaver: Visual Analytics of Ethereum Execution Traces for Arbitrage Identification
   </div>
 </template>
 
 <style scoped>
 .title-bar {
-  background: var(--accent);
+  background: #7B8FAD;
   font-family: Georgia, 'Times New Roman', serif;
-  font-size: 15px;
+  font-size: 13px;
   display: flex;
   align-items: center;
   justify-content: flex-start;
   padding-left: 14px;
-  border-bottom: 1px solid var(--border);
   color: #FFFFFF;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.4px;
 }
 </style>

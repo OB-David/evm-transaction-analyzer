@@ -113,14 +113,14 @@ def run(tx_hash: str):
     # 2. 生成 CFG
     contracts_bytecode = formatter.get_all_contracts_bytecode(all_contracts=contracts_addresses)
     all_blocks = processor.process_multiple_contracts(contracts_bytecode)
-    cfg_constructor = CFGConstructor(all_blocks)
+    token_decimals_map = {addr: formatter.get_token_decimals(addr) for addr in erc20_token_map.keys()}
+    cfg_constructor = CFGConstructor(all_blocks, token_decimals_map)
 
     plain_cfg, folded_cfg, original_cfg, all_changes, folded_node_map, _ = cfg_constructor.construct_cfg(
         standardized_trace, slot_map, erc20_token_map
     )
 
     # 3. 资产流分析
-    token_decimals_map = {addr: formatter.get_token_decimals(addr) for addr in erc20_token_map.keys()}
     original_transfer = [from_address.lower(), to_address.lower(), int(amount)]
 
     pairs, annotations, pending_erc20 = pair_transactions(original_transfer, all_changes, token_decimals_map)

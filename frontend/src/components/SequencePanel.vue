@@ -210,10 +210,8 @@ function harmonizeSequenceSvg() {
 
     const name = (text.textContent || '').trim().toLowerCase()
     const entry = entryByName.get(name)
-    if (!entry) return
-
-    const fill = getFillColorForColor(entry.color)
-    const stroke = getDarkAccentForColor(entry.color)
+    const fill = entry ? getFillColorForColor(entry.color) : '#E2E2E2'
+    const stroke = entry ? getDarkAccentForColor(entry.color) : '#B6B6B6'
 
     if (tokenNames.has(name) && rect) {
       const x = Number.parseFloat(rect.getAttribute('x') || '0')
@@ -450,7 +448,7 @@ function normalizeSequenceTextScale() {
 
 <template>
   <div class="sequence-panel">
-    <span class="panel-label">(d) Sequence Diagram</span>
+    <span class="panel-label">(D) Sequence Diagram</span>
 
     <div v-if="isAnalyzing || status === 'loading'" class="status-overlay">
       Loading sequence diagram...
@@ -502,7 +500,8 @@ function normalizeSequenceTextScale() {
   top: 8px;
   left: 12px;
   font-size: 11px;
-  color: var(--muted);
+  color: #000000;
+  font-weight: 700;
   letter-spacing: 0.5px;
   z-index: 10;
 }

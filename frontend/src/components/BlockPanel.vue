@@ -188,9 +188,9 @@ function renderBlocksPlotly(data: BlocksHeatmapData) {
       size: 30,
       color: avgGasValues,
       colorscale: [
-        [0, '#D5D9E8'],
-        [0.5, '#7B88B8'],
-        [1, '#3D4A6E'],
+        [0, '#EEF0F7'],
+        [0.5, '#B6CDF3'],
+        [1, '#7B8FAD'],
       ],
       showscale: false,
       line: { width: 1, color: 'white' },
@@ -347,9 +347,9 @@ function renderPlotly(data: BlockGasData) {
       size: 30,
       color: logGasValues,
       colorscale: [
-        [0, '#D6E4E8'],
-        [0.5, '#7BA8B8'],
-        [1, '#3D5E6E'],
+        [0, '#EDF4F6'],
+        [0.5, '#B9DCE3'],
+        [1, '#8AABAF'],
       ],
       showscale: false,
       line: { width: 1, color: 'white' },
@@ -468,7 +468,7 @@ async function copyToClipboard(text: string) {
 <template>
   <div class="block-panel">
     <div class="top-row">
-      <label class="panel-label">(b) Block Exploration</label>
+      <label class="panel-label">(B) Block Exploration</label>
       <div class="top-row-right">
         <button v-if="viewMode === 'transactions'" class="nav-btn back-btn-inline" @click="backToBlocks">← Back</button>
         <span class="view-label">{{ viewMode === 'blocks' ? 'Block View' : 'Transaction View' }}</span>
@@ -574,7 +574,8 @@ async function copyToClipboard(text: string) {
 
 .panel-label {
   font-size: 11px;
-  color: var(--muted);
+  color: #000000;
+  font-weight: 700;
   letter-spacing: 0.5px;
 }
 
@@ -765,11 +766,11 @@ async function copyToClipboard(text: string) {
 }
 
 .gas-bar.blocks {
-  background: linear-gradient(to right, #D5D9E8, #7B88B8, #3D4A6E);
+  background: linear-gradient(to right, #EEF0F7, #B6CDF3, #7B8FAD);
 }
 
 .gas-bar.transactions {
-  background: linear-gradient(to right, #D6E4E8, #7BA8B8, #3D5E6E);
+  background: linear-gradient(to right, #EDF4F6, #B9DCE3, #8AABAF);
 }
 
 .heatmap-container {

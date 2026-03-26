@@ -106,7 +106,7 @@ async function onBlockSubmit() {
 
 <template>
   <div class="input-panel">
-    <label class="panel-label">(a) Input</label>
+    <label class="panel-label">(A) Input</label>
 
     <!-- Block Number Input -->
     <div class="field-label-row">
@@ -173,8 +173,8 @@ async function onBlockSubmit() {
 
 .panel-label {
   font-size: 11px;
-  color: var(--muted);
-
+  color: #000000;
+  font-weight: 700;
   letter-spacing: 0.5px;
 }
 

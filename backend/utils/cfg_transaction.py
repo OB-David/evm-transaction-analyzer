@@ -62,7 +62,7 @@ class FoldableBlockNode(BlockNode):
         self.fold_info["total_gas"] = merged_total_gas
 
 class CFGConstructor:
-    def __init__(self, all_base_blocks: List[Block]):
+    def __init__(self, all_base_blocks: List[Block], token_decimals_map: Optional[Dict[str, int]] = None):
         self.base_block_map: Dict[Tuple[str, str], Block] = {}
         for block in all_base_blocks:
             self.base_block_map[(block.address, block.start_pc)] = block
@@ -73,6 +73,10 @@ class CFGConstructor:
         }
         self.jump_opcodes = {"JUMP", "JUMPI"}
         self.table = []  # 唯一语义数据来源
+        self.token_decimals_map = {
+            normalize_address(addr): int(decimals)
+            for addr, decimals in (token_decimals_map or {}).items()
+        }
 
     # ========== 核心工具函数（修复进制转换） ==========
     def _safe_hex_to_int(self, value: Any) -> int:
@@ -137,6 +141,14 @@ class CFGConstructor:
             return "0x0"
         val_str = str(val).lower()
         return f"0x{val_str}" if not val_str.startswith("0x") else val_str
+
+    def _get_token_decimals(self, token_address: str) -> int:
+        normalized = normalize_address(token_address)
+        decimals = self.token_decimals_map.get(normalized, 18)
+        try:
+            return int(decimals)
+        except (TypeError, ValueError):
+            return 18
     
     def _hex_to_int_safe(self, hex_str: str) -> Optional[int]:
         """安全将十六进制字符串转为整数（失败返回None）"""
@@ -242,8 +254,11 @@ class CFGConstructor:
                 for item in erc20_table_items:
                     op = item.get("op")
                     action_type = "read" if op == "SLOAD" else "write"
+                    token_address = item.get("token_address", "")
                     erc20_event = {
                         "tokenname": item.get("token_name", ""),
+                        "token_address": token_address,
+                        "decimals": self._get_token_decimals(token_address),
                         "type": action_type,
                         "user": item.get("from") if action_type == "read" else item.get("to"),
                         "balance": self._normalize_hex_value(item.get("balance/amount", ""))

@@ -429,7 +429,7 @@ function handleEdgeClick(edgeId: number) {
 
 <template>
   <div class="afg-panel">
-    <span class="panel-label">(c) Asset Flow Graph</span>
+    <span class="panel-label">(C) Asset Flow Graph</span>
 
     <!-- 套利 badge -->
     <div v-if="status === 'success' && isArbitrage" class="arb-badge">
@@ -491,7 +491,8 @@ function handleEdgeClick(edgeId: number) {
   top: 8px;
   left: 12px;
   font-size: 11px;
-  color: var(--muted);
+  color: #000000;
+  font-weight: 700;
   letter-spacing: 0.5px;
   z-index: 10;
 }
@@ -500,8 +501,7 @@ function handleEdgeClick(edgeId: number) {
 .arb-badge {
   position: absolute;
   top: 6px;
-  left: 50%;
-  transform: translateX(-50%);
+  right: 12px;
   z-index: 20;
   display: flex;
   align-items: center;

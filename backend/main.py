@@ -110,9 +110,14 @@ def main():
         all_blocks = processor.process_multiple_contracts(contracts_bytecode)
         print(f"成功生成 {len(all_blocks)} 个基本块\n")
 
+        token_decimals_map = {}
+        for token_addr in erc20_token_map.keys():
+            decimals = formatter.get_token_decimals(token_addr)
+            token_decimals_map[token_addr] = decimals
+
         # 6. 构建交易级控制流图(CFG)
         print("正在构建交易级控制流图...")
-        cfg_constructor = CFGConstructor(all_blocks)
+        cfg_constructor = CFGConstructor(all_blocks, token_decimals_map)
         # 返回基本块连接的原始original_cfg，折叠后的tx_cfg
         # 查询关联都基于original_cfg
         # original_cfg基于pc，tx_cfg基于original_cfg的blockid
@@ -123,12 +128,6 @@ def main():
 
         # 7. 构建代币交易流，生成边与基本块的映射
         print("正在提取代币交易流...")
-        # 先构建代币精度映射
-        token_decimals_map = {}
-        for token_addr in erc20_token_map.keys():
-            decimals = formatter.get_token_decimals(token_addr)
-            token_decimals_map[token_addr] = decimals
-            
         # 调用 pair_transactions 时传入精度映射
         original_transfer = [from_address.lower(),to_address.lower(), int(amount)]
         print(int(amount))

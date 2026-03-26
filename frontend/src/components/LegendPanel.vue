@@ -39,7 +39,7 @@ function strokeColor(color?: string) {
 
 <template>
   <div class="legend-panel">
-    <span class="panel-label">(f) Legend</span>
+    <span class="panel-label">(F) Legend</span>
 
     <div v-if="props.isAnalyzing" class="status-overlay">
       Loading legend...
@@ -212,7 +212,8 @@ function strokeColor(color?: string) {
   top: 8px;
   left: 12px;
   font-size: 11px;
-  color: var(--muted);
+  color: #000000;
+  font-weight: 700;
   letter-spacing: 0.5px;
   z-index: 2;
 }

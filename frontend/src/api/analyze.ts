@@ -141,6 +141,8 @@ export async function fetchBlocksHeatmap(offset: number = 0, count: number = 160
 
 export interface Erc20Event {
   tokenname: string
+  token_address?: string
+  decimals?: number
   type: string
   user: string
   balance: string

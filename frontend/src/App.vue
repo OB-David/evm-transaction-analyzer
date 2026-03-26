@@ -221,48 +221,58 @@ function handleCfgModeChange(mode: CfgMode) {
   display: grid;
   grid-template-columns: 20% 80%;
   grid-template-rows: 36px 1fr;
-  gap: 1px;
-  background: var(--border);
+  gap: 6px;
+  background: var(--bg);
   overflow: hidden;
+  padding: 6px;
+  box-sizing: border-box;
 }
 
 .title-bar {
   grid-column: 1 / -1;
+  border-radius: 3px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.10), 0 0 0 1px rgba(0,0,0,0.06);
 }
 
 .left-col {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  background: var(--border);
-  overflow: hidden;
+  gap: 6px;
+  background: var(--bg);
+  overflow: visible;
   min-height: 0;
   min-width: 180px;
 }
 
 .input-panel {
   flex-shrink: 0;
+  border-radius: 3px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.07), 0 0 0 1px rgba(0,0,0,0.05);
+  overflow: hidden;
 }
 
 .block-panel {
   flex: 1;
   min-height: 0;
+  border-radius: 3px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.07), 0 0 0 1px rgba(0,0,0,0.05);
+  overflow: hidden;
 }
 
 .right-col {
   display: grid;
   grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 1px;
-  background: var(--border);
+  gap: 6px;
+  background: var(--bg);
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .top-row {
   display: grid;
   grid-template-columns: minmax(0, 1.04fr) minmax(0, 1.22fr) 196px;
   min-height: 0;
-  gap: 1px;
+  gap: 6px;
 }
 
 .afg-panel {
@@ -270,22 +280,30 @@ function handleCfgModeChange(mode: CfgMode) {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  border-radius: 3px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.07), 0 0 0 1px rgba(0,0,0,0.05);
 }
 
 .sequence-panel {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  border-radius: 3px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.07), 0 0 0 1px rgba(0,0,0,0.05);
 }
 
 .legend-panel {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  border-radius: 3px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.07), 0 0 0 1px rgba(0,0,0,0.05);
 }
 
 .cfg-panel {
   min-height: 0;
   overflow: hidden;
+  border-radius: 3px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.07), 0 0 0 1px rgba(0,0,0,0.05);
 }
 </style>
