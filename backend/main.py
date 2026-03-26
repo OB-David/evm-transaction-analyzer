@@ -21,7 +21,7 @@ except Exception:
 def main():
     # 配置参数
     PROVIDER_URL = os.environ.get("GETH_API")
-    TX_HASH = "0xe01eac5e811602c54f3fe5484d44f13a5b621aa19f670dde7139a0f6760a1916"
+    TX_HASH = "0x61b884b93a37ef14f92ccb40dbcdc8dc066b227433db02118ce546c061eb1310"
 
     try:
         # ========== 前置检查 ==========
@@ -198,16 +198,18 @@ def save_graphs(result_dir: str, plain_cfg: object,folded_cfg:object, full_addre
 
     # 定义Tx_CFG,Asset_Flow和图例的共用颜色规则
     CONTRACT_COLORS = [
-    "#FD6767E6", # 1. 纯火焰红 (起始核心)
-    "#FF956EE6", # 2. 猩红色
-    "#FFA500E6", # 3. 鲜橙色
-    "#80A700BC", # 4
-    "#21D22DBB", # 5
-    "#065700CA", # 6
-    "#B36EF985", # 7. 深天蓝 (蓝焰区开始)
-    "#1B87F3BB", # 8. 亮蓝
-    "#87CEFAE6", # 9. 浅蓝
-    "#ADD8E6E6", # 10. 淡蓝色
+        "#F4B9B9E6",
+        "#F3DAB5E6",
+        "#F2EBB5E6",
+        "#D2F3B4E6",
+        "#B4F3BAE6",
+        "#B5F2D3E6",
+        "#B5EBF4E6",
+        "#B6CDF3E6",
+        "#C3B5F2E6",
+        "#EBB8F4E6",
+        "#F3B4DBE6",
+        "#E2E2E2E6"
     ]
     EDGE_COLOR_MAP = {
         "NORMAL": "#939393",

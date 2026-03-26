@@ -154,57 +154,94 @@ class TraceFormatter:
     # 识别ERC20 token合约，包括逻辑合约识别
     def identify_erc20_contracts(self, initial_contracts: Set[str], steps: List[StandardizedStep]) -> Tuple[Dict[str, str], Set[str]]:
         """
-        参数:
-            initial_contracts: 初始识别的合约地址集合
-            steps: 标准化的trace步骤列表
-        返回:
-            erc20_token_map: 所有ERC20地址(代理+逻辑)->代币名称的映射
-            all_contracts: 更新后的完整合约地址集合（含逻辑合约）
+        最终通用版：识别真实ERC20代币，自动排除所有 DEX 流动性池（V2/V3/通用）
+        无黑名单、全链兼容、不会误伤任何代币
         """
         erc20_token_map = {}
-        all_contracts = set(initial_contracts)  # 复制初始集合避免遍历异常
-        
-        # 1. 遍历初始合约，识别ERC20代理合约
+        all_contracts = set(initial_contracts)
+
+        # 标准 ERC20 最小 ABI
+        ERC20_MINI_ABI = [
+            {"constant":True,"inputs":[],"name":"name","outputs":[{"name":"","type":"string"}],"stateMutability":"view","type":"function"},
+            {"constant":True,"inputs":[],"name":"decimals","outputs":[{"name":"","type":"uint8"}],"stateMutability":"view","type":"function"},
+        ]
+
+        # 【通用】所有 AMM DEX 池一定会有的方法（普通代币绝对没有）
+        AMM_POOL_DETECT_ABI = [
+            {"constant":True,"inputs":[],"name":"factory","outputs":[{"type":"address"}],"stateMutability":"view","type":"function"},
+            {"constant":True,"inputs":[],"name":"token0","outputs":[{"type":"address"}],"stateMutability":"view","type":"function"},
+        ]
+
         for contract_addr in all_contracts:
             norm_addr = self._normalize_address(contract_addr)
             if not norm_addr:
                 continue
 
             try:
-                # 检查字节码
                 bytecode = self._get_code_cached(norm_addr)
-                if not bytecode:
+                if not bytecode or len(bytecode) < 20:
                     continue
 
-                # 调用name()方法判断是否为ERC20
-                ONLY_NAME_ABI = [{"constant":True,"inputs":[],"name":"name","outputs":[{"name":"","type":"string"}],"payable":False,"stateMutability":"view","type":"function"}]
-                name_contract = self.web3.eth.contract(address=Web3.to_checksum_address(norm_addr), abi=ONLY_NAME_ABI)
-                raw_token_name = name_contract.functions.name().call()
-                token_name = str(raw_token_name).strip()
-                existing_name = str(erc20_token_map.get(norm_addr, "")).strip()
+                checksum_addr = Web3.to_checksum_address(norm_addr)
+                token_contract = self.web3.eth.contract(address=checksum_addr, abi=ERC20_MINI_ABI)
+
+                # --------------------------
+                # 1. 基础 ERC20 检查
+                # --------------------------
+                raw_name = token_contract.functions.name().call()
+                decimals = token_contract.functions.decimals().call()
+
+                # 必须是合法小数位
+                if not isinstance(decimals, int) or not (0 <= decimals <= 18):
+                    continue
+
+                # 【修复空名称问题】严格过滤：名称为空/空白 → 不识别为代币
+                token_name = str(raw_name).strip()
                 if not token_name:
-                    if existing_name:
-                        token_name = existing_name
-                    else:
-                        token_name = f"ERC20_{norm_addr[2:10]}"
-                        logger.info(f"[{norm_addr}] ERC20名称为空，使用兜底名称: {token_name}")
+                    logger.debug(f"[{norm_addr}] 代币名称为空，跳过")
+                    continue
 
-                # 2. 识别成功：添加代理合约到映射
+                # --------------------------
+                # 2. 【核心】通用排除所有 AMM 流动性池（V2/V3/所有DEX）
+                # --------------------------
+                pool_contract = self.web3.eth.contract(address=checksum_addr, abi=AMM_POOL_DETECT_ABI)
+                is_amm_pool = False
+
+                # 测试 factory()
+                try:
+                    pool_contract.functions.factory().call()
+                    is_amm_pool = True
+                except:
+                    pass
+
+                # 测试 token0()
+                if not is_amm_pool:
+                    try:
+                        pool_contract.functions.token0().call()
+                        is_amm_pool = True
+                    except:
+                        pass
+
+                if is_amm_pool:
+                    logger.debug(f"[{norm_addr}] 识别为 AMM 流动性池，排除")
+                    continue
+
+                # --------------------------
+                # 3. 真正的 ERC20 代币
+                # --------------------------
                 erc20_token_map[norm_addr] = token_name
-                logger.info(f"[{norm_addr}] 识别为ERC20代理合约: {token_name}")
+                logger.info(f"[{norm_addr}] 识别为 ERC20 代币: {token_name}")
 
-                # 3. 查找该代理合约的DELEGATECALL目标（逻辑合约）
+                # 原有 DELEGATECALL 逻辑
                 for step in steps:
                     if step["opcode"] == "DELEGATECALL" and step["address"] == norm_addr and len(step["stack"]) >= 7:
                         logic_addr = self._normalize_address(step["stack"][-2])
-                        existing_logic_name = str(erc20_token_map.get(logic_addr, "")).strip() if logic_addr else ""
-                        if logic_addr and not existing_logic_name:
+                        if logic_addr and logic_addr not in erc20_token_map:
                             erc20_token_map[logic_addr] = f"{token_name}_logic"
-                            all_contracts.add(logic_addr)  # 逻辑合约加入总合约集合
-                            logger.info(f"[{norm_addr}] 关联逻辑合约: {logic_addr} (名称: {token_name})")
+                            all_contracts.add(logic_addr)
 
             except Exception as e:
-                logger.debug(f"[{contract_addr}] ERC20检查失败: {str(e)}")
+                logger.debug(f"[{contract_addr}] 不是标准ERC20: {str(e)}")
                 continue
 
         return erc20_token_map, all_contracts
@@ -720,7 +757,7 @@ class TraceFormatter:
         contracts_addresses: Set[str],
         erc20_token_map: Dict[str, str],
         users_addresses: Set[str],
-        tx_sender_address: str = "",    #交易发起者地址
+        tx_sender_address: str = "",    # 交易发起者地址
         initial_address: str = "", # 根合约地址
         miner_address: str = ""  # 矿工地址
     ) -> Dict[str, str]:
@@ -729,7 +766,7 @@ class TraceFormatter:
         - 交易发起者：优先命名为 User_From
         - 根合约： 优先命名为 contract_to
         - ERC20合约：使用token名称
-        - 非ERC20合约：contract_a、contract_b...
+        - 非ERC20合约：优先尝试获取 name()，获取不到再用 contract_a、contract_b...
         - 用户地址：User_A、User_B...
         """
         full_name_map = {}
@@ -742,33 +779,58 @@ class TraceFormatter:
                 short = addr_text[2:10] if addr_text.startswith("0x") else addr_text[:8]
                 cleaned_name = f"ERC20_{short}"
             full_name_map[addr] = cleaned_name
-        
-        # 2. 处理非ERC20合约
+
+        # 非 ERC20 合约：先尝试获取 name()
         non_erc20_contracts = [addr for addr in contracts_addresses if addr not in full_name_map]
+
+        # 用于获取合约名称的极简 ABI
+        ONLY_NAME_ABI = [
+            {"constant":True,"inputs":[],"name":"name","outputs":[{"name":"","type":"string"}],"payable":False,"stateMutability":"view","type":"function"}
+        ]
+
         for idx, addr in enumerate(non_erc20_contracts):
-            if addr == initial_address: # 优先处理根合约
-                full_name_map[addr] = "contract_to"
-            else: # 生成contract_a、contract_b...
+            try:
+                # 根合约固定命名
+                if addr == initial_address:
+                    full_name_map[addr] = "contract_to"
+                    continue
+
+                # 尝试获取合约名称（Uniswap / BUSD / 各种协议都能识别）
+                contract = self.web3.eth.contract(
+                    address=Web3.to_checksum_address(addr),
+                    abi=ONLY_NAME_ABI
+                )
+                contract_name = contract.functions.name().call()
+                contract_name = str(contract_name).strip()
+
+                # 能拿到合法名字 → 直接用
+                if contract_name:
+                    full_name_map[addr] = contract_name
+                else:
+                    # 拿不到 → 用 contract_a, contract_b...
+                    contract_suffix = chr(ord('a') + idx)
+                    full_name_map[addr] = f"contract_{contract_suffix}"
+
+            except:
+                # 调用 name() 失败 → 用默认命名
                 contract_suffix = chr(ord('a') + idx)
                 full_name_map[addr] = f"contract_{contract_suffix}"
-        
+
         # 3. 处理用户地址
         sorted_users = sorted(list(users_addresses))
         
-        # 3.1 先处理交易发起者，命名为 User_From
+        # 3.1 先处理交易发起者
         if tx_sender_address and tx_sender_address in sorted_users:
             full_name_map[tx_sender_address] = "User_From"
-            # 从排序后的列表中移除，避免重复命名
             sorted_users.remove(tx_sender_address)
 
-        # 3.2 处理矿工地址，命名为 Miner
+        # 3.2 处理矿工地址
         if miner_address and miner_address in sorted_users:
             full_name_map[miner_address] = "Miner"
             sorted_users.remove(miner_address)
 
-        # 3.2 处理剩余用户地址：User_A、User_B...
+        # 3.3 剩余用户
         for idx, addr in enumerate(sorted_users):
-            # 生成User_A、User_B...（A=0, B=1...）
             user_suffix = chr(ord('A') + idx)
             full_name_map[addr] = f"User_{user_suffix}"
         
