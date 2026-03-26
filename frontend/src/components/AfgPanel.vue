@@ -28,7 +28,8 @@ let graphvizInstance: any = null
 const isArbitrage = ref(false)
 const arbCycles = ref<number[][]>([])
 const arbOrders = ref<Set<number>>(new Set())
-// 套利边经过的节点 title 集合（用于 flash 节点）
+const arbShowOnly = ref(false)
+// 套利边经过的节点 title 集合
 const arbNodeTitles = ref<Set<string>>(new Set())
 
 // 地址余额数据：地址(小写) -> { token -> 净变化量 }
@@ -65,6 +66,7 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
   isArbitrage.value = false
   arbCycles.value = []
   arbOrders.value = new Set()
+  arbShowOnly.value = false
   arbNodeTitles.value = new Set()
   addressBalances.value = {}
   nameToAddress.value = {}   // ← 重置
@@ -248,6 +250,8 @@ function attachInteractivity() {
       })
     }
   })
+
+  applyArbShowFilter()
 }
 
 function harmonizeNodeAppearance(nodeEl: SVGElement) {
@@ -369,25 +373,28 @@ function formatAmount(val: number): string {
   return sign + val.toExponential(3)
 }
 
-function highlightAllArb() {
+function toggleArbShowOnly() {
+  arbShowOnly.value = !arbShowOnly.value
+  applyArbShowFilter()
+}
+
+function applyArbShowFilter() {
   if (!graphContainer.value) return
   const svg = graphContainer.value.querySelector('svg')
   if (!svg) return
 
-  // Flash 套利边
-  svg.querySelectorAll('.edge.arb-highlight').forEach(el => {
-    el.classList.add('arb-flash')
-    setTimeout(() => (el as SVGElement).classList.remove('arb-flash'), 900)
+  const showOnly = arbShowOnly.value && isArbitrage.value
+
+  svg.querySelectorAll('.edge').forEach((edgeEl) => {
+    const keep = edgeEl.classList.contains('arb-highlight')
+    edgeEl.classList.toggle('arb-muted', showOnly && !keep)
   })
 
-  // Flash 套利边经过的节点
   svg.querySelectorAll('.node').forEach(nodeEl => {
     const titleEl = nodeEl.querySelector('title')
     const nodeTitle = titleEl?.textContent?.trim() || ''
-    if (arbNodeTitles.value.has(nodeTitle)) {
-      nodeEl.classList.add('arb-node-flash')
-      setTimeout(() => (nodeEl as SVGElement).classList.remove('arb-node-flash'), 900)
-    }
+    const keep = arbNodeTitles.value.has(nodeTitle)
+    nodeEl.classList.toggle('arb-muted', showOnly && !keep)
   })
 }
 
@@ -435,7 +442,7 @@ function handleEdgeClick(edgeId: number) {
     <div v-if="status === 'success' && isArbitrage" class="arb-badge">
       <span class="arb-icon">⚠</span>
       Arbitrage detected — {{ arbCycles.length }} cycle(s)
-      <button class="arb-btn" @click="highlightAllArb">Flash edges</button>
+      <button class="arb-btn" :class="{ active: arbShowOnly }" @click="toggleArbShowOnly">show</button>
     </div>
 
     <div v-if="isAnalyzing || status === 'loading'" class="status-overlay">
@@ -534,6 +541,11 @@ function handleEdgeClick(edgeId: number) {
   background: rgba(220, 80, 30, 0.28);
 }
 
+.arb-btn.active {
+  background: rgba(220, 80, 30, 0.4);
+  border-color: rgba(220, 80, 30, 0.65);
+}
+
 .afg-container {
   position: relative;
   flex: 1;
@@ -596,27 +608,15 @@ function handleEdgeClick(edgeId: number) {
   stroke-width: 2.8px;
 }
 
-@keyframes arb-flash {
-  0%, 100% { opacity: 1; }
-  40%       { opacity: 0.15; }
+.graph-viewport :deep(.edge.arb-muted),
+.graph-viewport :deep(.node.arb-muted) {
+  opacity: 0.15;
 }
 
-.graph-viewport :deep(.edge.arb-flash path:not(.hit-area)),
-.graph-viewport :deep(.edge.arb-flash polygon) {
-  animation: arb-flash 0.9s ease;
-}
-
-@keyframes arb-node-flash {
-  0%   { filter: brightness(1); }
-  25%  { filter: brightness(2.2) drop-shadow(0 0 6px #ff6a00cc); }
-  55%  { filter: brightness(1.6) drop-shadow(0 0 4px #ff6a0088); }
-  100% { filter: brightness(1); }
-}
-
-.graph-viewport :deep(.node.arb-node-flash ellipse),
-.graph-viewport :deep(.node.arb-node-flash polygon),
-.graph-viewport :deep(.node.arb-node-flash path:not(.hit-area)) {
-  animation: arb-node-flash 0.9s ease;
+.graph-viewport :deep(.edge.arb-muted .hit-area),
+.graph-viewport :deep(.edge.arb-muted polygon),
+.graph-viewport :deep(.node.arb-muted) {
+  pointer-events: none;
 }
 
 /* 节点余额悬浮卡片 */

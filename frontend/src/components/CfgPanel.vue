@@ -498,6 +498,7 @@ function harmonizeEdgeAppearance(edge: SVGGElement, edgeType: CfgEdgeType | null
   const edgeColor = edgeTypes.find(item => item.type === edgeType)?.color || CFG_EDGE_COLORS.NORMAL
   const width = edgeType === 'JUMP' ? '1.5' : edgeType === 'NORMAL' ? '0.56' : '1.62'
   const opacity = edgeType === 'JUMP' ? '0.82' : edgeType === 'NORMAL' ? '0.88' : '0.90'
+  const arrowScale = edgeType === 'NORMAL' ? 1.5 : edgeType === 'JUMP' ? 2 : 3
 
   edge.querySelectorAll<SVGPathElement>('path').forEach((path) => {
     if (path.getAttribute('fill') === 'none') {
@@ -517,11 +518,11 @@ function harmonizeEdgeAppearance(edge: SVGGElement, edgeType: CfgEdgeType | null
     polygon.setAttribute('stroke-width', width)
     polygon.style.strokeWidth = width
     polygon.style.opacity = opacity
-    shrinkPolygon(polygon, edgeType === 'JUMP' ? 0.68 : 0.42)
+    scalePolygon(polygon, arrowScale)
   })
 }
 
-function shrinkPolygon(polygon: SVGPolygonElement, scale: number) {
+function scalePolygon(polygon: SVGPolygonElement, scale: number) {
   const rawPoints = (polygon.getAttribute('points') || '')
     .trim()
     .split(/\s+/)
