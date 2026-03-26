@@ -5,11 +5,10 @@ def filter_to_file(input_path, output_path):
     with open(input_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
-    # 你的模式
+    # 模式
     p1 = ["MUL", "LT", "JUMPI", "GT", "JUMPI", "DIV"]
     p2 = ["ISZERO", "MUL", "DIV","EQ"]
 
-    # 输出结构 100% 保持原样
     res = {"pattern_1": [], "pattern_2": []}
 
 
@@ -22,11 +21,9 @@ def filter_to_file(input_path, output_path):
             if ptr >= pat_len:
                 break
 
-            # 如果已经匹配到第 ptr 个关键词
             if op == pattern[ptr]:
                 ptr += 1
             else:
-                # 关键：中间如果出现模式里的任何关键词 = 直接失败
                 if op in forbidden:
                     return False
         return ptr == pat_len
