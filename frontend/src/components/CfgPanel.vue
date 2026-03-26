@@ -17,6 +17,7 @@ import {
   type PlainBlockLlmAnalysisResponse,
   type SwapPatternResult,
 } from '../api/analyze'
+import { CFG_EDGE_COLORS, getDarkAccentForColor, getFillColorForColor } from '../visualTheme'
 
 const props = defineProps<{
   txHash: string | null
@@ -38,6 +39,11 @@ type SwapHighlightGroup = {
   key: string
   nodes: string[]
 }
+
+const ACTION_NODE_STROKE = '#DC2626'
+const ACTION_NODE_GLOW = 'rgba(239, 68, 68, 0.82)'
+const ACTION_NODE_GLOW_SOFT = 'rgba(248, 113, 113, 0.48)'
+const ACTION_NODE_GLOW_WIDE = 'rgba(252, 165, 165, 0.28)'
 
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
@@ -252,6 +258,7 @@ function renderSvg(svgContent: string) {
   if (cfgMode.value === 'folded') {
     setFoldedViewBox(svg as SVGSVGElement, origG as SVGGElement)
     normalizeFoldedTextScale(svg as SVGSVGElement)
+    applyNonScalingStrokes(origG as SVGGElement)
   } else {
     configurePlainViewport(svg as SVGSVGElement, origG as SVGGElement)
   }
@@ -278,7 +285,7 @@ function setFoldedViewBox(svg: SVGSVGElement, graphContent: SVGGElement) {
   const bounds = getGraphContentBounds(graphContent)
   if (bounds.width <= 0 || bounds.height <= 0) return
 
-  const padding = 20
+  const padding = 16
   svg.setAttribute(
     'viewBox',
     `${bounds.x - padding} ${bounds.y - padding} ${bounds.width + padding * 2} ${bounds.height + padding * 2}`,
@@ -316,6 +323,12 @@ function normalizeFoldedTextScale(svg: SVGSVGElement) {
 
     const compensation = `translate(${x} ${y}) scale(${correctionX} 1) translate(${-x} ${-y})`
     textEl.setAttribute('transform', originalTransform ? `${originalTransform} ${compensation}` : compensation)
+  })
+}
+
+function applyNonScalingStrokes(graphContent: SVGGElement) {
+  graphContent.querySelectorAll<SVGElement>('line, path, rect, ellipse, polygon').forEach((el) => {
+    el.setAttribute('vector-effect', 'non-scaling-stroke')
   })
 }
 
@@ -380,7 +393,7 @@ function attachInteractivity() {
 
 function prepareSvgMetadata(svg: SVGSVGElement) {
   const edgeColorMap = new Map<string, CfgEdgeType>(
-    edgeTypes.map(edge => [edge.color.toLowerCase(), edge.type]),
+    edgeTypes.flatMap(edge => edge.aliases.map(color => [color.toLowerCase(), edge.type] as const)),
   )
 
   svg.querySelectorAll('.node').forEach((node) => {
@@ -394,6 +407,7 @@ function prepareSvgMetadata(svg: SVGSVGElement) {
 
   svg.querySelectorAll('.cluster').forEach((cluster) => {
     cluster.querySelector('title')?.remove()
+    cluster.querySelectorAll('text').forEach((textEl) => textEl.remove())
   })
 
   svg.querySelectorAll('.edge').forEach((edge) => {
@@ -416,9 +430,109 @@ function prepareSvgMetadata(svg: SVGSVGElement) {
     if (matchedType) {
       ;(edge as HTMLElement).dataset.edgeType = matchedType
     }
+
+    harmonizeEdgeAppearance(edge as SVGGElement, matchedType)
+  })
+
+  svg.querySelectorAll('.node').forEach((node) => {
+    harmonizeNodeAppearance(node as SVGGElement)
   })
 
   svg.querySelectorAll('title').forEach((titleEl) => titleEl.remove())
+}
+
+function harmonizeNodeAppearance(node: SVGGElement) {
+  const shape = node.querySelector<SVGElement>('ellipse, polygon, rect, path')
+  if (!shape) return
+
+  const originalFill = shape.getAttribute('fill')
+  const fill = getFillColorForColor(originalFill)
+  const dark = getDarkAccentForColor(originalFill)
+  const sourceStroke = normalizeColor(shape.getAttribute('stroke'))
+  const strokeWidth = Number.parseFloat(shape.getAttribute('stroke-width') || '0')
+  const isActionNode =
+    sourceStroke === normalizeColor(ACTION_NODE_STROKE) ||
+    sourceStroke === '#d06a54' ||
+    sourceStroke === '#ff0000' ||
+    strokeWidth >= 4
+
+  node.classList.toggle('action-node', isActionNode)
+  ;(node as HTMLElement).dataset.themeDark = dark
+
+  if (isActionNode) {
+    shape.setAttribute('fill', fill)
+    shape.style.fill = fill
+    shape.setAttribute('stroke', ACTION_NODE_STROKE)
+    shape.style.stroke = ACTION_NODE_STROKE
+    shape.setAttribute('stroke-width', '1.8')
+    shape.style.filter = `drop-shadow(0 0 12px ${ACTION_NODE_GLOW}) drop-shadow(0 0 28px ${ACTION_NODE_GLOW_SOFT}) drop-shadow(0 0 52px ${ACTION_NODE_GLOW_WIDE})`
+  } else {
+    shape.setAttribute('fill', fill)
+    shape.style.fill = fill
+    shape.setAttribute('stroke', dark)
+    shape.style.stroke = dark
+    shape.setAttribute('stroke-width', '1.8')
+    shape.style.filter = ''
+  }
+
+  node.querySelectorAll<SVGTextElement>('text').forEach((textEl) => {
+    textEl.setAttribute('fill', '#000000')
+    textEl.style.fill = '#000000'
+  })
+}
+
+function harmonizeEdgeAppearance(edge: SVGGElement, edgeType: CfgEdgeType | null) {
+  if (!edgeType) return
+
+  const edgeColor = edgeTypes.find(item => item.type === edgeType)?.color || CFG_EDGE_COLORS.NORMAL
+  const width = edgeType === 'JUMP' ? '1.5' : edgeType === 'NORMAL' ? '0.56' : '1.62'
+  const opacity = edgeType === 'JUMP' ? '0.82' : edgeType === 'NORMAL' ? '0.88' : '0.90'
+
+  edge.querySelectorAll<SVGPathElement>('path').forEach((path) => {
+    if (path.getAttribute('fill') === 'none') {
+      path.setAttribute('stroke', edgeColor)
+      path.style.stroke = edgeColor
+      path.setAttribute('stroke-width', width)
+      path.style.strokeWidth = width
+      path.style.opacity = opacity
+    }
+  })
+
+  edge.querySelectorAll<SVGPolygonElement>('polygon').forEach((polygon) => {
+    polygon.setAttribute('stroke', edgeColor)
+    polygon.style.stroke = edgeColor
+    polygon.setAttribute('fill', edgeColor)
+    polygon.style.fill = edgeColor
+    polygon.setAttribute('stroke-width', width)
+    polygon.style.strokeWidth = width
+    polygon.style.opacity = opacity
+    shrinkPolygon(polygon, edgeType === 'JUMP' ? 0.68 : 0.42)
+  })
+}
+
+function shrinkPolygon(polygon: SVGPolygonElement, scale: number) {
+  const rawPoints = (polygon.getAttribute('points') || '')
+    .trim()
+    .split(/\s+/)
+    .map((pair) => pair.split(',').map(Number))
+    .filter((pair) => pair.length === 2 && pair.every(Number.isFinite))
+
+  if (rawPoints.length === 0) return
+
+  const center = rawPoints.reduce((acc, [x, y]) => ({
+    x: acc.x + x / rawPoints.length,
+    y: acc.y + y / rawPoints.length,
+  }), { x: 0, y: 0 })
+
+  const scaled = rawPoints
+    .map(([x, y]) => {
+      const nextX = center.x + (x - center.x) * scale
+      const nextY = center.y + (y - center.y) * scale
+      return `${nextX.toFixed(2)},${nextY.toFixed(2)}`
+    })
+    .join(' ')
+
+  polygon.setAttribute('points', scaled)
 }
 
 function getNodeName(node: Element): string {
@@ -588,8 +702,8 @@ function renderSwapHighlightOverlay() {
   overlayLayer.setAttribute('id', 'swap-highlight-layer')
   overlayLayer.setAttribute('pointer-events', 'none')
 
-  const paddingX = 18
-  const paddingY = 16
+  const paddingX = 38
+  const paddingY = 32
 
   groups.forEach((group) => {
     const bounds = getSwapHighlightBounds(group.nodes)
@@ -731,6 +845,7 @@ function fitGraphToViewport(options: { animate?: boolean } = {}) {
   if (cfgMode.value === 'folded') {
     setFoldedViewBox(svg, graphContent)
     normalizeFoldedTextScale(svg)
+    applyNonScalingStrokes(graphContent)
     const svgSelection = select(svg)
 
     if (options.animate) {
@@ -1058,12 +1173,12 @@ function formatStepRange(startStep: number | null | undefined, endStep: number |
   return `${formatStepValue(startStep)} - ${formatStepValue(endStep)}`
 }
 
-const edgeTypes: Array<{ type: CfgEdgeType, color: string, desc: string }> = [
-  { type: 'NORMAL', color: '#939393', desc: 'Non-terminating opcodes' },
-  { type: 'JUMP', color: '#242424', desc: 'JUMP, JUMPI' },
-  { type: 'CALL', color: '#1F6800', desc: 'CALL, CALLCODE, STATICCALL' },
-  { type: 'DELEGATECALL', color: '#009DFF', desc: 'DELEGATECALL' },
-  { type: 'TERMINATE', color: '#C14A00', desc: 'RETURN, STOP, REVERT, INVALID, SELFDESTRUCT' },
+const edgeTypes: Array<{ type: CfgEdgeType, color: string, desc: string, aliases: string[] }> = [
+  { type: 'NORMAL', color: CFG_EDGE_COLORS.NORMAL, desc: 'Non-terminating opcodes', aliases: [CFG_EDGE_COLORS.NORMAL, '#939393', '#607d8b', '#c2cad7'] },
+  { type: 'JUMP', color: CFG_EDGE_COLORS.JUMP, desc: 'JUMP, JUMPI', aliases: [CFG_EDGE_COLORS.JUMP, '#242424', '#5b4747', '#d8d2ca'] },
+  { type: 'CALL', color: CFG_EDGE_COLORS.CALL, desc: 'CALL, CALLCODE, STATICCALL', aliases: [CFG_EDGE_COLORS.CALL, '#1f6800', '#a9c7ae'] },
+  { type: 'DELEGATECALL', color: CFG_EDGE_COLORS.DELEGATECALL, desc: 'DELEGATECALL', aliases: [CFG_EDGE_COLORS.DELEGATECALL, '#009dff', '#abc0d9'] },
+  { type: 'TERMINATE', color: CFG_EDGE_COLORS.TERMINATE, desc: 'RETURN, STOP, REVERT, INVALID, SELFDESTRUCT', aliases: [CFG_EDGE_COLORS.TERMINATE, '#c14a00', '#dabaae'] },
 ]
 
 onBeforeUnmount(() => {
@@ -1097,7 +1212,7 @@ onBeforeUnmount(() => {
       >
         <svg width="14" height="14" viewBox="0 0 14 14">
           <circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" stroke-width="1.2" />
-          <text x="7" y="10.5" text-anchor="middle" font-size="9" font-weight="600" fill="currentColor">?</text>
+          <text x="7" y="11.1" text-anchor="middle" font-size="9" font-weight="600" fill="currentColor">?</text>
         </svg>
         <div
           v-show="showEdgeTypes"
@@ -1351,6 +1466,13 @@ onBeforeUnmount(() => {
   filter: brightness(1.05);
 }
 
+.graph-viewport :deep(.node.action-node ellipse),
+.graph-viewport :deep(.node.action-node polygon),
+.graph-viewport :deep(.node.action-node path),
+.graph-viewport :deep(.node.action-node rect) {
+  filter: drop-shadow(0 0 12px rgba(239, 68, 68, 0.82)) drop-shadow(0 0 28px rgba(248, 113, 113, 0.48)) drop-shadow(0 0 52px rgba(252, 165, 165, 0.28));
+}
+
 .graph-viewport :deep(.node.filtered-out),
 .graph-viewport :deep(.edge.filtered-out) {
   opacity: 0.08;
@@ -1358,35 +1480,34 @@ onBeforeUnmount(() => {
 }
 
 .graph-viewport :deep(.node.highlighted) {
-  filter: drop-shadow(0 0 8px rgba(255, 0, 0, 0.55));
+  filter: drop-shadow(0 0 9px rgba(121, 136, 160, 0.38));
 }
 
 .graph-viewport :deep(.node.highlighted ellipse),
 .graph-viewport :deep(.node.highlighted polygon),
 .graph-viewport :deep(.node.highlighted path),
 .graph-viewport :deep(.node.highlighted rect) {
-  stroke: #ef4444;
   stroke-width: 3;
+  filter: brightness(0.96);
 }
 
 .graph-viewport :deep(.node.selected) {
-  filter: drop-shadow(0 0 12px rgba(99, 102, 241, 0.9));
+  filter: drop-shadow(0 0 12px rgba(145, 164, 194, 0.55));
 }
 
 .graph-viewport :deep(.node.selected ellipse),
 .graph-viewport :deep(.node.selected polygon),
 .graph-viewport :deep(.node.selected path),
 .graph-viewport :deep(.node.selected rect) {
-  stroke: #4f46e5;
-  stroke-width: 4;
+  stroke: #91A4C2;
+  stroke-width: 3.4;
 }
 
 .graph-viewport :deep(#swap-highlight-layer .swap-highlight-box) {
   fill: rgba(255, 59, 48, 0.12);
   stroke: #b91c1c;
-  stroke-width: 5;
-  stroke-dasharray: 14 6;
-  filter: drop-shadow(0 0 10px rgba(220, 38, 38, 0.45));
+  stroke-width: 2.8;
+  filter: drop-shadow(0 0 5px rgba(220, 38, 38, 0.22));
 }
 
 .graph-viewport :deep(#swap-highlight-layer .swap-highlight-box.hidden) {
@@ -1632,6 +1753,7 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   padding-bottom: 6px;
+  transform: translateY(3px);
   cursor: pointer;
   color: var(--muted);
 }

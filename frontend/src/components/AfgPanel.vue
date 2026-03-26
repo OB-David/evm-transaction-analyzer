@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
 import { graphviz } from 'd3-graphviz'
-import LegendPanel from './LegendPanel.vue'
 import { fetchDotFile, fetchEdgeLink, fetchArbitrageResult, fetchAddressBalances, fetchLegendData, type BlockId, type CfgMode, type EdgeLink } from '../api/analyze'
+import { THEME_DARK_COLORS, getDarkAccentForColor, getFillColorForColor } from '../visualTheme'
 
 const props = defineProps<{
   txHash: string | null
@@ -35,6 +35,7 @@ const arbNodeTitles = ref<Set<string>>(new Set())
 const addressBalances = ref<Record<string, Record<string, number>>>({})
 // display name(小写) -> 地址(小写) 的反向映射，用于节点名匹配
 const nameToAddress = ref<Record<string, string>>({})
+const nameToColor = ref<Record<string, string>>({})
 
 // tooltip 状态
 const tooltipVisible = ref(false)
@@ -67,6 +68,7 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
   arbNodeTitles.value = new Set()
   addressBalances.value = {}
   nameToAddress.value = {}   // ← 重置
+  nameToColor.value = {}
 
   try {
     const [dot, links, arb, balances, legend] = await Promise.all([
@@ -91,6 +93,7 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
 
     // ← 建立 displayName -> address 反向映射
     const nameMap: Record<string, string> = {}
+    const colorMap: Record<string, string> = {}
     const allEntries = [
       ...legend.user_addresses,
       ...legend.erc20_tokens,
@@ -99,9 +102,13 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
     for (const entry of allEntries) {
       if (entry.name && entry.address) {
         nameMap[entry.name.toLowerCase()] = entry.address.toLowerCase()
+        if (entry.color) {
+          colorMap[entry.name.toLowerCase()] = entry.color
+        }
       }
     }
     nameToAddress.value = nameMap
+    nameToColor.value = colorMap
 
     status.value = 'success'
 
@@ -155,6 +162,7 @@ function attachInteractivity() {
   const nodes = svg.querySelectorAll('.node')
   nodes.forEach((node) => {
     const nodeEl = node as SVGElement
+    harmonizeNodeAppearance(nodeEl)
 
     nodeEl.addEventListener('mouseenter', () => nodeEl.classList.add('hovered'))
     nodeEl.addEventListener('mouseleave', () => nodeEl.classList.remove('hovered'))
@@ -183,6 +191,7 @@ function attachInteractivity() {
   const edges = svg.querySelectorAll('.edge')
   edges.forEach((edge) => {
     const edgeEl = edge as SVGElement
+    harmonizeEdgeAppearance(edgeEl)
 
     const textEls = edge.querySelectorAll('text')
     let edgeId: number | null = null
@@ -239,6 +248,78 @@ function attachInteractivity() {
       })
     }
   })
+}
+
+function harmonizeNodeAppearance(nodeEl: SVGElement) {
+  const shape = nodeEl.querySelector<SVGElement>('ellipse, polygon, rect, path')
+  if (!shape) return
+
+  const fill = getFillColorForColor(shape.getAttribute('fill'))
+  const stroke = getDarkAccentForColor(shape.getAttribute('fill'))
+
+  shape.setAttribute('fill', fill)
+  shape.setAttribute('stroke', stroke)
+  shape.setAttribute('stroke-width', '1.6')
+
+  nodeEl.querySelectorAll<SVGTextElement>('text').forEach((textEl) => {
+    textEl.setAttribute('fill', '#000000')
+    textEl.style.fill = '#000000'
+  })
+}
+
+function harmonizeEdgeAppearance(edgeEl: SVGElement) {
+  const edgeText = Array.from(edgeEl.querySelectorAll<SVGTextElement>('text'))
+  const label = edgeText.map(el => el.textContent || '').join(' ').trim()
+  const tokenName = inferTokenNameFromLabel(label)
+  const accent = getDarkAccentForName(tokenName)
+  const textColor = getThemeDarkTextColor(tokenName)
+
+  edgeEl.querySelectorAll<SVGPathElement>('path:not(.hit-area)').forEach((path) => {
+    if (path.getAttribute('fill') === 'none') {
+      path.setAttribute('stroke', accent)
+      path.style.stroke = accent
+      path.style.strokeWidth = '1.8px'
+    }
+  })
+
+  edgeEl.querySelectorAll<SVGPolygonElement>('polygon').forEach((polygon) => {
+    polygon.setAttribute('stroke', accent)
+    polygon.setAttribute('fill', accent)
+    polygon.style.stroke = accent
+    polygon.style.fill = accent
+  })
+
+  edgeText.forEach((textEl) => {
+    textEl.setAttribute('fill', textColor)
+    textEl.style.fill = textColor
+  })
+}
+
+function inferTokenNameFromLabel(label: string): string | null {
+  const match = label.match(/\)\s+(.+?)(?:\(|:)/)
+  return match?.[1]?.trim() || null
+}
+
+function getDarkAccentForName(name: string | null) {
+  if (!name) return '#6B7280'
+  const lower = name.toLowerCase()
+  return getDarkAccentForColor(nameToColor.value[lower], '#6B7280')
+}
+
+function getThemeDarkTextColor(name: string | null) {
+  if (!name) return THEME_DARK_COLORS[THEME_DARK_COLORS.length - 1]
+
+  const lower = name.toLowerCase()
+  const mappedColor = nameToColor.value[lower]
+  const resolved = getDarkAccentForColor(mappedColor, '')
+  if (resolved) return resolved
+
+  let hash = 0
+  for (let i = 0; i < lower.length; i += 1) {
+    hash = ((hash << 5) - hash + lower.charCodeAt(i)) | 0
+  }
+
+  return THEME_DARK_COLORS[Math.abs(hash) % THEME_DARK_COLORS.length]
 }
 
 // 根据节点 DOT 名查找余额
@@ -367,7 +448,6 @@ function handleEdgeClick(edgeId: number) {
 
     <div v-else-if="status === 'success'" class="afg-container">
       <div ref="graphContainer" class="graph-viewport"></div>
-      <LegendPanel :tx-hash="props.txHash" />
 
       <!-- 节点余额悬浮卡片 -->
       <div
@@ -459,8 +539,6 @@ function handleEdgeClick(edgeId: number) {
   flex: 1;
   min-height: 0;
   padding-top: 28px;
-  display: flex;
-  flex-direction: row;
   overflow: hidden;
 }
 
@@ -490,7 +568,8 @@ function handleEdgeClick(edgeId: number) {
 
 .graph-viewport :deep(.node.hovered ellipse),
 .graph-viewport :deep(.node.hovered polygon),
-.graph-viewport :deep(.node.hovered path) {
+.graph-viewport :deep(.node.hovered path),
+.graph-viewport :deep(.node.hovered rect) {
   stroke-width: 2;
   filter: brightness(1.05);
 }
@@ -509,13 +588,12 @@ function handleEdgeClick(edgeId: number) {
 
 .graph-viewport :deep(.edge.hovered path:not(.hit-area)),
 .graph-viewport :deep(.edge.hovered polygon) {
-  stroke-width: 3;
+  stroke-width: 2.6;
   filter: brightness(1.2);
 }
 
-/* 套利边加粗，不改色 */
 .graph-viewport :deep(.edge.arb-highlight path:not(.hit-area)) {
-  stroke-width: 4px;
+  stroke-width: 2.8px;
 }
 
 @keyframes arb-flash {

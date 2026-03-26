@@ -111,6 +111,29 @@ IGNORED_OP_PREFIXES = ("PUSH", "DUP", "SWAP", "TIMELINE_SEG_", "BRANCH_SEGMENT_"
 INSTRUCTION_TUPLE_RE = re.compile(r"\(\s*'[^']+'\s*,\s*'([^']+)'\s*\)")
 INSTRUCTION_DICT_RE = re.compile(r"'opcode'\s*:\s*'([^']+)'")
 
+THEME_DARKS = {
+    "#f4b9b9": "#C79696",
+    "#f3dab5": "#C9B495",
+    "#f2ebb5": "#C3BD90",
+    "#d2f3b4": "#ADC893",
+    "#b4f3ba": "#8EC293",
+    "#b5f2d3": "#89BAA2",
+    "#b5ebf4": "#8EBBC1",
+    "#b6cdf3": "#91A4C2",
+    "#c3b5f2": "#968CBE",
+    "#ebb8f4": "#B289B9",
+    "#f3b4db": "#BA85A6",
+    "#e2e2e2": "#B6B6B6",
+}
+
+EDGE_STYLE_MAP = {
+    "NORMAL": {"color": "#C2CAD7", "penwidth": "3.6", "arrowsize": "0.52"},
+    "JUMP": {"color": "#D8D2CA", "penwidth": "2.2", "arrowsize": "0.44"},
+    "CALL": {"color": "#A9C7AE", "penwidth": "3.1", "arrowsize": "0.5"},
+    "DELEGATECALL": {"color": "#ABC0D9", "penwidth": "3.0", "arrowsize": "0.5"},
+    "TERMINATE": {"color": "#DABAAE", "penwidth": "2.8", "arrowsize": "0.46"},
+}
+
 def escape_dot(s: Any) -> str:
     """转义DOT特殊字符"""
     if s is None or s == "" or str(s) == "Unknown":
@@ -210,6 +233,18 @@ def addr_short(s: Any) -> str:
     s = str(s)
     return s[:8] + "..." + s[-4:] if s.startswith("0x") and len(s) > 8 else s
 
+def get_dark_accent(color: str | None, fallback: str = "#6B7280") -> str:
+    if not color:
+        return fallback
+    normalized = str(color).strip().lower()[:7]
+    return THEME_DARKS.get(normalized, fallback)
+
+def get_action_border_color() -> str:
+    return "#DC2626"
+
+def get_action_text_color(color: str) -> str:
+    return get_dark_accent(color, "#4B5563")
+
 def get_valid_nodes_and_colors(cfg: object, contract_colors: List[str]) -> Tuple[List[object], List[str], Dict[str, str]]:
     """
     按合约第一次出现顺序依次分配颜色
@@ -279,11 +314,11 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
             "digraph CFG {",
             f"  rankdir={rankdir};",
             # 全局设置：spline曲线边、compound支持跨cluster边、newrank改善排列
-            '  graph [nodesep=0.62, ranksep=1.05, pad=0.18, charset="utf-8", splines=spline, compound=true, newrank=true, overlap=false];',
+            '  graph [nodesep=0.68, ranksep=1.12, pad=0.22, charset="utf-8", splines=spline, compound=true, newrank=true, overlap=false];',
             # 节点设置：plain模式启用自适应尺寸，避免opcode文字溢出
             node_style_line,
             # 边设置：简化箭头
-            '  edge [fontname="Arial", fontsize=100, arrowsize=1, penwidth=15];',
+            '  edge [fontname="Arial", fontsize=72, arrowsize=0.52, penwidth=3.2];',
         ]
 
     rendered_node_ids = set()
@@ -303,29 +338,27 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
         contract_addr_lower = contract_addr.lower()
 
         # 获取合约名称
-        contract_name = full_name_map_lower.get(contract_addr_lower, addr_short(contract_addr))
-        contract_name = escape_dot(contract_name)
-
         # 获取合约颜色（从第一个节点的颜色取）
         first_idx = nodes_in_contract[0][0]
         cluster_color = node_colors[first_idx]
+        cluster_accent = get_dark_accent(cluster_color, "#A8A8A8")
 
         # cluster 背景色：在原色基础上降低透明度
-        bg_color = cluster_color[:7] + "20" if len(cluster_color) >= 7 else cluster_color
+        bg_color = cluster_color[:7] + "16" if len(cluster_color) >= 7 else cluster_color
 
         dot_lines.append(f'  subgraph cluster_{cluster_idx} {{')
-        dot_lines.append(f'    label="{contract_name}";')
-        dot_lines.append(f'    fontname="Arial";')
-        dot_lines.append(f'    fontsize=80;')
+        dot_lines.append('    label="";')
         dot_lines.append(f'    style=filled;')
-        dot_lines.append(f'    color="{cluster_color[:7]}80";')
+        dot_lines.append(f'    color="{cluster_accent}66";')
         dot_lines.append(f'    fillcolor="{bg_color}";')
-        dot_lines.append(f'    margin=26;')
+        dot_lines.append(f'    penwidth=1.2;')
+        dot_lines.append(f'    margin=20;')
 
         for idx, node in nodes_in_contract:
             node_id = f"node_{node.id}"
             rendered_node_ids.add(node_id)
             color = node_colors[idx]
+            dark_accent = get_dark_accent(color)
 
             # 判断节点形状（椭圆=ERC20，矩形=普通合约）
             node_shape = "ellipse" if contract_addr_lower in erc20_addrs else "rect"
@@ -336,16 +369,20 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
             actions = node.fold_info.get("actions", []) if (is_fold_root or (not is_folded) and hasattr(node, "fold_info")) else []
             has_action = len(actions) > 0
 
-            style_str = "filled" + (", bold" if has_action else "")
-            current_penwidth = 40 if has_action else 10
+            node_fill = color
+            node_border = get_action_border_color() if has_action else dark_accent
+            node_fontcolor = get_action_text_color(color) if has_action else dark_accent
+            style_str = "filled"
+            current_penwidth = 1.8
             opcode_label = get_priority_opcode_label(node) if show_priority_opcode else ""
             escaped_label = escape_dot_label(opcode_label) if opcode_label else ""
             node_attrs = [
                 f'shape="{node_shape}"',
                 f'label="{escaped_label}"',
                 f'style="{style_str}"',
-                f'fillcolor="{color}"',
-                f'color="{"red" if has_action else "black"}"',
+                f'fillcolor="{node_fill}"',
+                f'color="{node_border}"',
+                f'fontcolor="{node_fontcolor}"',
                 f'penwidth={current_penwidth}',
             ]
             if opcode_label:
@@ -355,7 +392,7 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
         dot_lines.append("  }")
 
     # 生成边（去重：同向相同边合并为一条，无标签）
-    edge_dedup = {}  # key: (src_id, tgt_id), value: edge_color
+    edge_dedup = {}  # key: (src_id, tgt_id), value: edge style
     for edge in getattr(cfg, 'edges', []):
         if not (hasattr(edge, 'source') and hasattr(edge, 'target')):
             continue
@@ -367,11 +404,17 @@ def render_transaction(contract_colors: List[str], edge_color_map: Dict[str, str
         pair_key = (src_id, tgt_id)
         if pair_key not in edge_dedup:
             edge_type = escape_dot(getattr(edge, 'edge_type', 'UNKNOWN'))
-            edge_color = edge_color_map.get(edge_type, "#607D8B")
-            edge_dedup[pair_key] = edge_color
+            edge_style = EDGE_STYLE_MAP.get(edge_type, {
+                "color": edge_color_map.get(edge_type, "#C2CAD7"),
+                "penwidth": "3.2",
+                "arrowsize": "0.5",
+            })
+            edge_dedup[pair_key] = edge_style
 
-    for (src_id, tgt_id), edge_color in edge_dedup.items():
-        dot_lines.append(f'  {src_id} -> {tgt_id} [color="{edge_color}", style="solid", minlen=1]')
+    for (src_id, tgt_id), edge_style in edge_dedup.items():
+        dot_lines.append(
+            f'  {src_id} -> {tgt_id} [color="{edge_style["color"]}", style="solid", minlen=1, penwidth={edge_style["penwidth"]}, arrowsize={edge_style["arrowsize"]}]'
+        )
     dot_lines.append("}")
 
     # 写入DOT文件

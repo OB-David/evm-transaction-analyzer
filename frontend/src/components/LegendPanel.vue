@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { fetchLegendData, type LegendData } from '../api/analyze'
+import { getDarkAccentForColor, getFillColorForColor } from '../visualTheme'
 
 const props = defineProps<{
   txHash: string | null
+  isAnalyzing?: boolean
 }>()
 
 const legendData = ref<LegendData | null>(null)
@@ -25,11 +27,25 @@ function truncateAddr(addr: string): string {
   if (addr.length <= 14) return addr
   return addr.substring(0, 8) + '...' + addr.substring(addr.length - 4)
 }
+
+function fillColor(color?: string) {
+  return getFillColorForColor(color)
+}
+
+function strokeColor(color?: string) {
+  return getDarkAccentForColor(color, '#2C2C2C')
+}
 </script>
 
 <template>
-  <div v-if="legendData" class="legend-panel">
-    <div class="legend-scroll">
+  <div class="legend-panel">
+    <span class="panel-label">(f) Legend</span>
+
+    <div v-if="props.isAnalyzing" class="status-overlay">
+      Loading legend...
+    </div>
+
+    <div v-else-if="legendData" class="legend-scroll">
       <!-- User Addresses -->
       <template v-if="legendData.user_addresses.length > 0">
         <div class="legend-title">User Addresses</div>
@@ -67,8 +83,8 @@ function truncateAddr(addr: string): string {
               cy="10"
               rx="10"
               ry="6"
-              :fill="item.color || '#4DD0E1'"
-              stroke="#2C2C2C"
+              :fill="fillColor(item.color)"
+              :stroke="strokeColor(item.color)"
               stroke-width="1.2"
             />
           </svg>
@@ -94,8 +110,8 @@ function truncateAddr(addr: string): string {
               width="18"
               height="10"
               rx="1"
-              :fill="item.color || '#FF9E9E'"
-              stroke="#2C2C2C"
+              :fill="fillColor(item.color)"
+              :stroke="strokeColor(item.color)"
               stroke-width="1.2"
             />
           </svg>
@@ -106,26 +122,28 @@ function truncateAddr(addr: string): string {
         </div>
       </template>
     </div>
+
+    <div v-else class="placeholder">
+      <span class="placeholder-text">Run an analysis to view the legend</span>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .legend-panel {
-  width: 133px;
-  flex-shrink: 0;
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+  position: relative;
+  background: var(--panel-bg);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  margin: 8px 10px 10px 0;
+  min-height: 0;
 }
 
 .legend-scroll {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 8px 8px;
+  padding: 34px 10px 10px;
 }
 
 .legend-scroll::-webkit-scrollbar {
@@ -187,6 +205,37 @@ function truncateAddr(addr: string): string {
   color: var(--muted);
   font-family: 'Consolas', 'Monaco', monospace;
   line-height: 1.2;
+}
+
+.panel-label {
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.5px;
+  z-index: 2;
+}
+
+.status-overlay,
+.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 0;
+  padding: 16px;
+}
+
+.status-overlay {
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.placeholder-text {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
 }
 
 svg {

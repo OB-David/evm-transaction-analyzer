@@ -476,7 +476,7 @@ async function copyToClipboard(text: string) {
     </div>
 
     <div v-if="gasMin && gasMax" class="gas-legend">
-      <span class="gas-unit">Gas</span>
+      <span class="gas-unit">{{ viewMode === 'blocks' ? 'Average Gas' : 'Gas' }}</span>
       <span class="gas-label">{{ gasMin }}</span>
       <div class="gas-bar" :class="viewMode"></div>
       <span class="gas-label">{{ gasMax }}</span>
@@ -586,7 +586,7 @@ async function copyToClipboard(text: string) {
 
 .view-label {
   font-size: 11px;
-  color: var(--muted);
+  color: #000000;
   letter-spacing: 0.3px;
 }
 
@@ -747,13 +747,13 @@ async function copyToClipboard(text: string) {
 
 .gas-unit {
   font-size: 9px;
-  color: var(--muted);
+  color: #000000;
   white-space: nowrap;
 }
 
 .gas-label {
   font-size: 9px;
-  color: var(--muted);
+  color: #000000;
   white-space: nowrap;
 }
 

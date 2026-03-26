@@ -11,6 +11,29 @@ from utils.extract_token_changes import pair_transactions, render_asset_flow, af
 from utils.sequence_diagram import build_refined_hierarchical_trace, render_puml_to_svg, tree_to_puml
 from utils.indentify_swap import filter_to_file
 
+CONTRACT_COLORS = [
+    "#F4B9B9",
+    "#F3DAB5",
+    "#F2EBB5",
+    "#D2F3B4",
+    "#B4F3BA",
+    "#B5F2D3",
+    "#B5EBF4",
+    "#B6CDF3",
+    "#C3B5F2",
+    "#EBB8F4",
+    "#F3B4DB",
+    "#E2E2E2",
+]
+
+EDGE_COLOR_MAP = {
+    "NORMAL": "#C2CAD7",
+    "JUMP": "#D8D2CA",
+    "CALL": "#A9C7AE",
+    "DELEGATECALL": "#ABC0D9",
+    "TERMINATE": "#DABAAE",
+}
+
 # 加载环境变量
 load_dotenv()
 try:
@@ -195,27 +218,6 @@ def create_result_directory(tx_hash: str) -> str:
 
 def save_graphs(result_dir: str, plain_cfg: object,folded_cfg:object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]], tree_data, arb_result):
     '''渲染并保存所有图：交易级CFG图、CFG图例、代币交易流图'''
-
-    # 定义Tx_CFG,Asset_Flow和图例的共用颜色规则
-    CONTRACT_COLORS = [
-    "#FD6767E6", # 1. 纯火焰红 (起始核心)
-    "#FF956EE6", # 2. 猩红色
-    "#FFA500E6", # 3. 鲜橙色
-    "#80A700BC", # 4
-    "#21D22DBB", # 5
-    "#065700CA", # 6
-    "#B36EF985", # 7. 深天蓝 (蓝焰区开始)
-    "#1B87F3BB", # 8. 亮蓝
-    "#87CEFAE6", # 9. 浅蓝
-    "#ADD8E6E6", # 10. 淡蓝色
-    ]
-    EDGE_COLOR_MAP = {
-        "NORMAL": "#939393",
-        "JUMP": "#5B4747",
-        "CALL": "#1F6800",
-        "DELEGATECALL": "#009DFF",
-        "TERMINATE": "#C14A00",
-    }
 
     # 保存交易级CFG的DOT文件
     tx_dot_path = os.path.join(result_dir, "plain_cfg")

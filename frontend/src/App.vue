@@ -6,6 +6,7 @@ import CfgPanel from './components/CfgPanel.vue'
 import AfgPanel from './components/AfgPanel.vue'
 import SequencePanel from './components/SequencePanel.vue'
 import BlockPanel from './components/BlockPanel.vue'
+import LegendPanel from './components/LegendPanel.vue'
 import {
   analyzeTransaction,
   fetchEdgeStepMap,
@@ -192,6 +193,11 @@ function handleCfgModeChange(mode: CfgMode) {
           :selected-step-range="sequenceStepRange"
           @sequence-select="handleSequenceSelect"
         />
+        <LegendPanel
+          class="legend-panel"
+          :tx-hash="currentTxHash"
+          :is-analyzing="isAnalyzing"
+        />
       </div>
       <CfgPanel
         class="cfg-panel"
@@ -244,8 +250,8 @@ function handleCfgModeChange(mode: CfgMode) {
 }
 
 .right-col {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   gap: 1px;
   background: var(--border);
   min-height: 0;
@@ -253,9 +259,8 @@ function handleCfgModeChange(mode: CfgMode) {
 }
 
 .top-row {
-  display: flex;
-  flex-direction: row;
-  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1.04fr) minmax(0, 1.22fr) 196px;
   min-height: 0;
   gap: 1px;
 }
@@ -268,14 +273,18 @@ function handleCfgModeChange(mode: CfgMode) {
 }
 
 .sequence-panel {
-  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.legend-panel {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
 
 .cfg-panel {
-  flex: 1;
   min-height: 0;
   overflow: hidden;
 }

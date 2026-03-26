@@ -7,6 +7,44 @@ from utils.cfg_structure import CFG
 from typing import List, Dict
 import json
 
+THEME_FILLS = [
+    "#F4B9B9",
+    "#F3DAB5",
+    "#F2EBB5",
+    "#D2F3B4",
+    "#B4F3BA",
+    "#B5F2D3",
+    "#B5EBF4",
+    "#B6CDF3",
+    "#C3B5F2",
+    "#EBB8F4",
+    "#F3B4DB",
+    "#E2E2E2",
+]
+
+THEME_DARKS = [
+    "#C79696",
+    "#C9B495",
+    "#C3BD90",
+    "#ADC893",
+    "#8EC293",
+    "#89BAA2",
+    "#8EBBC1",
+    "#91A4C2",
+    "#968CBE",
+    "#B289B9",
+    "#BA85A6",
+    "#B6B6B6",
+]
+
+FILL_TO_DARK = {fill.lower(): dark for fill, dark in zip(THEME_FILLS, THEME_DARKS)}
+
+def dark_accent(color: str | None, fallback: str = "#6B7280") -> str:
+    if not color:
+        return fallback
+    normalized = color.strip().lower()[:7]
+    return FILL_TO_DARK.get(normalized, fallback)
+
 def hex_to_int_safe(x: str) -> int:
     try:
         return int(x, 16)
@@ -255,7 +293,26 @@ def render_asset_flow(paired, node_annotations, users_addresses,
                       output_file="asset_flow.dot",
                       arb_edge_orders: set = None):
     dot = Digraph(engine="dot")
-    dot.graph_attr['rankdir'] = 'LR'
+    dot.graph_attr.update({
+        'rankdir': 'TB',
+        'pad': '0.25',
+        'nodesep': '0.46',
+        'ranksep': '0.88',
+        'splines': 'spline',
+        'overlap': 'false',
+        'outputorder': 'edgesfirst',
+    })
+    dot.node_attr.update({
+        'fontname': 'Arial',
+        'fontsize': '18',
+        'margin': '0.18,0.12',
+    })
+    dot.edge_attr.update({
+        'fontname': 'Arial',
+        'fontsize': '14',
+        'penwidth': '1.8',
+        'arrowsize': '0.82',
+    })
 
     users_set = set(users_addresses)
     user_alias_map = {addr: full_address_name_map.get(addr) for addr in users_set}
@@ -296,11 +353,22 @@ def render_asset_flow(paired, node_annotations, users_addresses,
             shape = "ellipse" # 代币合约通常呈现为椭圆
         else:
             shape = "record"
-        
+
         display_name = user_alias_map.get(main_addr, unique_key) if is_user else unique_key
         label = f"<{display_name}>"
-        
-        dot.node(unique_key, label=label, shape=shape, fillcolor=name_to_merged_color[unique_key], style="filled")
+        fill_color = name_to_merged_color[unique_key]
+        stroke_color = dark_accent(fill_color, "#2C2C2C")
+
+        dot.node(
+            unique_key,
+            label=label,
+            shape=shape,
+            fillcolor=fill_color,
+            color=stroke_color,
+            fontcolor=stroke_color,
+            penwidth="1.6",
+            style="filled",
+        )
 
     def get_merged_node_id(addr):
         if addr in users_set: return addr
@@ -311,12 +379,13 @@ def render_asset_flow(paired, node_annotations, users_addresses,
     for p in sorted(paired, key=lambda x: x["order"]):
         src_id = get_merged_node_id(p["from"])
         tgt_id = get_merged_node_id(p["to"])
-        edge_color = addr_color_map.get(p["token_addr"] if p["token"] != "ETH" else p["from"], "#000000")
+        edge_fill = addr_color_map.get(p["token_addr"] if p["token"] != "ETH" else p["from"], "#E2E2E2")
+        edge_color = dark_accent(edge_fill, "#6B7280")
         amount_str = format_scientific_html(p["amount"])
         edge_label = f"({p['order']}) {p['token']}: {amount_str}"
         is_arb = arb_edge_orders and p["order"] in arb_edge_orders
-        penwidth = "4.0" if is_arb else "1.0"
-        arrowsize = "1.5" if is_arb else "0.8"
+        penwidth = "3.1" if is_arb else "1.8"
+        arrowsize = "1.02" if is_arb else "0.82"
         extra_style = ", bold" if is_arb else ""
         dot.edge(src_id, tgt_id,
                  label="<" + edge_label + ">",
@@ -330,7 +399,8 @@ def render_asset_flow(paired, node_annotations, users_addresses,
         token_id = get_merged_node_id(v["token_addr"])
         amount = abs(v["value"]) / (10 ** v["decimals"])
         amount_str = format_scientific_html(amount)
-        edge_color = addr_color_map.get(v["token_addr"], "#FFFFFF")
+        edge_fill = addr_color_map.get(v["token_addr"], "#E2E2E2")
+        edge_color = dark_accent(edge_fill, "#6B7280")
         
         if v["value"] > 0:
             # 铸造 (Mint): 合约 -> 用户
@@ -342,7 +412,16 @@ def render_asset_flow(paired, node_annotations, users_addresses,
             action = "burn"
         
         edge_label = f"({v['order']}) {v['token']}({action}): {amount_str}"
-        dot.edge(src, tgt, label="<" + edge_label + ">", color=edge_color, fontcolor=edge_color, style="dashed")
+        dot.edge(
+            src,
+            tgt,
+            label="<" + edge_label + ">",
+            color=edge_color,
+            fontcolor=edge_color,
+            style="dashed",
+            penwidth="1.5",
+            arrowsize="0.78",
+        )
 
     dot.save(output_file)
     return dot

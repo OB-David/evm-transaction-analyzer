@@ -6,11 +6,13 @@ import re
 import threading
 from typing import Any
 
-from openai import OpenAI
+from openai import APITimeoutError, OpenAI
 
 PROMPT_VERSION = "plain_cfg_opcode_objective_v4"
 DEFAULT_MODEL = "gpt-5.4-nano"
 DEFAULT_MAX_INPUT_CHARS = 400000
+DEFAULT_LLM_TIMEOUT_SECONDS = 90.0
+DEFAULT_LLM_MAX_RETRIES = 1
 STACK_TOP_LIMIT = 10
 MEMORY_WINDOW_MAX_BYTES = 192
 CHANGED_WORD_VALUE_LIMIT = 24
@@ -366,8 +368,15 @@ def _generate_analysis(context_json: str) -> dict[str, str]:
 
     base_url = os.environ.get("OPENAI_BASE_URL", "").strip() or None
     model_name = os.environ.get("OPENAI_SEMANTIC_CFG_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    timeout_seconds = _get_timeout_seconds()
+    max_retries = _get_max_retries()
 
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    client = OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=timeout_seconds,
+        max_retries=max_retries,
+    )
     system_prompt = (
         "You are an EVM opcode domain expert and transaction-semantics analyst. "
         "Interpret opcode behavior using opcode context plus stack and memory state transitions."
@@ -410,6 +419,14 @@ def _generate_analysis(context_json: str) -> dict[str, str]:
                     {"role": "user", "content": f"{base_user_prompt}{strict_note}\n\nContext JSON:\n{context_json}"},
                 ],
             )
+        except APITimeoutError as exc:
+            raise PlainCfgLlmServiceError(
+                504,
+                (
+                    f"LLM request timed out after {timeout_seconds:g}s. "
+                    "Check the upstream LLM gateway or increase OPENAI_SEMANTIC_CFG_TIMEOUT_SECONDS."
+                ),
+            ) from exc
         except Exception as exc:
             raise PlainCfgLlmServiceError(502, f"LLM request failed: {exc}") from exc
 
@@ -488,6 +505,24 @@ def _count_sentences(text: str) -> int:
         return 0
     sentences = re.split(r"(?<=[.!?])\s+", normalized)
     return len([s for s in sentences if s.strip()])
+
+
+def _get_timeout_seconds() -> float:
+    raw_timeout = os.environ.get("OPENAI_SEMANTIC_CFG_TIMEOUT_SECONDS", "").strip()
+    try:
+        timeout = float(raw_timeout) if raw_timeout else DEFAULT_LLM_TIMEOUT_SECONDS
+    except ValueError:
+        timeout = DEFAULT_LLM_TIMEOUT_SECONDS
+    return timeout if timeout > 0 else DEFAULT_LLM_TIMEOUT_SECONDS
+
+
+def _get_max_retries() -> int:
+    raw_retries = os.environ.get("OPENAI_SEMANTIC_CFG_MAX_RETRIES", "").strip()
+    try:
+        retries = int(raw_retries) if raw_retries else DEFAULT_LLM_MAX_RETRIES
+    except ValueError:
+        retries = DEFAULT_LLM_MAX_RETRIES
+    return max(retries, 0)
 
 
 def _build_opcode_step_context(steps: list[Any], idx: int) -> dict[str, Any]:
