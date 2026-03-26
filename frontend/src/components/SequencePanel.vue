@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { zoom, zoomIdentity } from 'd3-zoom'
 import { select } from 'd3-selection'
 import {
@@ -40,10 +40,6 @@ let wrapperGroup: SVGGElement | null = null
 let zoomBehavior: any = null
 let svgSelection: any = null
 let currentTransform = zoomIdentity
-
-const selectedCallJson = computed(() => (
-  selectedCall.value ? JSON.stringify(selectedCall.value, null, 2) : ''
-))
 
 watch(() => props.txHash, (newHash) => {
   resetPanelState()
@@ -476,7 +472,56 @@ function normalizeSequenceTextScale() {
           <span>{{ selectedCall.entry_op }} / {{ selectedCall.exit_op }}</span>
           <span>{{ selectedCall.entry_step }} - {{ selectedCall.exit_step }}</span>
         </div>
-        <pre class="popup-json">{{ selectedCallJson }}</pre>
+        <div class="popup-content">
+          <div
+            v-if="selectedCall.probable_text_signatures && selectedCall.probable_text_signatures.length > 0"
+            class="popup-row"
+          >
+            <div class="popup-key">Probable Text Signature</div>
+            <div class="popup-value">{{ selectedCall.probable_text_signatures.join('/') }}</div>
+          </div>
+          <div class="popup-row">
+            <div class="popup-key">Call ID</div>
+            <div class="popup-value">{{ selectedCall.call_id }}</div>
+          </div>
+          <div class="popup-row">
+            <div class="popup-key">Entry Step</div>
+            <div class="popup-value">{{ selectedCall.entry_step }}</div>
+          </div>
+          <div class="popup-row">
+            <div class="popup-key">Exit Step</div>
+            <div class="popup-value">{{ selectedCall.exit_step }}</div>
+          </div>
+          <div class="popup-row">
+            <div class="popup-key">Entry Op</div>
+            <div class="popup-value popup-mono">{{ selectedCall.entry_op }}</div>
+          </div>
+          <div class="popup-row">
+            <div class="popup-key">Exit Op</div>
+            <div class="popup-value popup-mono">{{ selectedCall.exit_op }}</div>
+          </div>
+          <div class="popup-row">
+            <div class="popup-key">From</div>
+            <div class="popup-value">{{ selectedCall.from_name }}</div>
+          </div>
+          <div class="popup-row">
+            <div class="popup-key">To</div>
+            <div class="popup-value">{{ selectedCall.to_name }}</div>
+          </div>
+          <div class="popup-row popup-row-calldata">
+            <div class="popup-key">Calldata</div>
+            <div class="popup-calldata-list">
+              <span v-if="selectedCall.calldata.length === 0" class="popup-empty">-</span>
+              <code
+                v-for="(item, index) in selectedCall.calldata"
+                :key="`${selectedCall.call_id}-${index}`"
+                class="popup-calldata-item"
+              >
+                {{ item }}
+              </code>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -618,28 +663,89 @@ function normalizeSequenceTextScale() {
   font-family: 'Consolas', 'Monaco', monospace;
 }
 
-.popup-json {
-  margin: 0;
+.popup-content {
   padding: 10px;
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
   min-height: 0;
   overflow: auto;
   border-radius: 10px;
   background: #f8fafc;
-  color: #0f172a;
-  font-size: 10px;
-  line-height: 1.45;
-  font-family: 'Consolas', 'Monaco', monospace;
 }
 
-.popup-json::-webkit-scrollbar {
+.popup-content::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
-.popup-json::-webkit-scrollbar-thumb {
+.popup-content::-webkit-scrollbar-thumb {
   background: rgba(148, 163, 184, 0.7);
   border-radius: 999px;
+}
+
+.popup-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.popup-row-calldata {
+  align-items: stretch;
+}
+
+.popup-key {
+  display: block;
+  flex: 0 0 120px;
+  width: 120px;
+  font-size: 10px;
+  color: #475569;
+  font-weight: 700;
+  font-family: 'Consolas', 'Monaco', monospace;
+  line-height: 1.35;
+  padding-top: 1px;
+}
+
+.popup-value {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: #0f172a;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.popup-mono {
+  font-family: 'Consolas', 'Monaco', monospace;
+}
+
+.popup-row-calldata .popup-key {
+  padding-top: 4px;
+}
+
+.popup-calldata-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.popup-calldata-item {
+  display: block;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: #eef2ff;
+  color: #1e293b;
+  font-size: 10px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  line-height: 1.35;
+  word-break: break-all;
+}
+
+.popup-empty {
+  font-size: 11px;
+  color: #64748b;
 }
 
 .status-overlay {

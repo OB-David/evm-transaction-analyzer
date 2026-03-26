@@ -328,6 +328,7 @@ export interface SequenceCallEntry {
   from_name: string
   to_name: string
   calldata: string[]
+  probable_text_signatures?: string[]
 }
 
 export interface SequenceCalldataMapping {

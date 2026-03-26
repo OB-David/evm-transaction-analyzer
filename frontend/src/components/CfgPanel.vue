@@ -7,6 +7,7 @@ import {
   fetchCfgViewData,
   fetchLegendData,
   fetchPlainBlockLlmAnalysis,
+  fetchSequenceCalldataMapping,
   fetchSwapPatternResult,
   type BlockAction,
   type BlockInformation,
@@ -15,6 +16,7 @@ import {
   type CfgViewBundle,
   type EdgeStepMap,
   type PlainBlockLlmAnalysisResponse,
+  type SequenceCalldataMapping,
   type SwapPatternResult,
 } from '../api/analyze'
 import { CFG_EDGE_COLORS, getDarkAccentForColor, getFillColorForColor } from '../visualTheme'
@@ -51,6 +53,39 @@ const ACTION_NODE_STROKE = '#DC2626'
 const ACTION_NODE_GLOW = 'rgba(239, 68, 68, 0.82)'
 const ACTION_NODE_GLOW_SOFT = 'rgba(248, 113, 113, 0.48)'
 const ACTION_NODE_GLOW_WIDE = 'rgba(252, 165, 165, 0.28)'
+const PRIORITY_SIGNATURES = new Set<string>([
+  'transfer()',
+  'transferFrom()',
+  'approve()',
+  'safeTransfer()',
+  'safeTransferFrom()',
+  'swapExactTokensForTokens()',
+  'swapTokensForExactTokens()',
+  'swapExactETHForTokens()',
+  'swapTokensForExactETH()',
+  'swapExactTokensForETH()',
+  'swap()',
+  'exactInputSingle()',
+  'exactOutputSingle()',
+  'multicall()',
+  'flashLoan()',
+  'flashSwap()',
+  'executeOperation()',
+  'flashLoanSimple()',
+  'getReserves()',
+  'getAmountOut()',
+  'getAmountIn()',
+  'balanceOf()',
+  'decimals()',
+  'factory()',
+  'pairFor()',
+  'getPool()',
+  'deposit()',
+  'withdraw()',
+  'safeApprove()',
+  'pull()',
+  'call()',
+])
 
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
@@ -72,6 +107,7 @@ const showEdgeTypes = ref(false)
 const llmAnalysisState = ref<LlmAnalysisState>('idle')
 const llmAnalysisResponse = ref<PlainBlockLlmAnalysisResponse | null>(null)
 const llmAnalysisError = ref('')
+const sequenceCallMapping = ref<SequenceCalldataMapping | null>(null)
 const swapSeedNodesByMode = ref<Record<CfgMode, Set<string>>>({
   folded: new Set(),
   plain: new Set(),
@@ -100,6 +136,7 @@ watch(() => props.txHash, (newHash) => {
   } else {
     status.value = 'idle'
     cfgViews.value = null
+    sequenceCallMapping.value = null
     blockInformation.value = {}
     resetSwapSeedNodes()
     clearFilterState()
@@ -185,19 +222,22 @@ async function loadCfgData(txHash: string) {
   errorMsg.value = ''
   activeEdgeType.value = null
   cfgViews.value = null
+  sequenceCallMapping.value = null
   blockInformation.value = {}
   clearFilterState()
   resetSelection()
 
   try {
-    const [cfgViewBundle, legend, foldedSwapPatterns, plainSwapPatterns] = await Promise.all([
+    const [cfgViewBundle, legend, foldedSwapPatterns, plainSwapPatterns, callMapping] = await Promise.all([
       fetchCfgViewData(txHash, props.preferredMode),
       fetchLegendData(txHash),
       fetchSwapPatternResult(txHash, 'folded'),
       fetchSwapPatternResult(txHash, 'plain'),
+      fetchSequenceCalldataMapping(txHash).catch(() => null),
     ])
 
     cfgViews.value = cfgViewBundle
+    sequenceCallMapping.value = callMapping
     swapSeedNodesByMode.value = {
       folded: collectSwapSeedNodes(foldedSwapPatterns),
       plain: collectSwapSeedNodes(plainSwapPatterns),
@@ -374,6 +414,7 @@ function attachInteractivity() {
   if (!svg) return
 
   prepareSvgMetadata(svg)
+  annotatePlainCallEdges(svg as SVGSVGElement)
   nodeNameToEl.value.clear()
 
   svg.addEventListener('click', (event) => {
@@ -450,6 +491,165 @@ function prepareSvgMetadata(svg: SVGSVGElement) {
   })
 
   svg.querySelectorAll('title').forEach((titleEl) => titleEl.remove())
+}
+
+type PlainStepBlock = {
+  nodeName: string
+  startStep: number
+  endStep: number
+  span: number
+}
+
+function toFiniteStep(value: unknown): number | null {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function formatCompactCallSignature(signatures: string[]): string {
+  if (!signatures.length) return ''
+  const first = signatures[0]
+  if (PRIORITY_SIGNATURES.has(first)) {
+    return `${first}/...`
+  }
+  const top2 = signatures.slice(0, 2).join('/')
+  return signatures.length > 2 ? `${top2}/...` : top2
+}
+
+function buildPlainStepBlocks(): PlainStepBlock[] {
+  const blocks: PlainStepBlock[] = []
+  Object.values(blockInformation.value).forEach((block) => {
+    const start = toFiniteStep(block.start_step)
+    const end = toFiniteStep(block.end_step)
+    if (start === null || end === null || end < start) return
+    const nodeName = `node_${String(block.block_id)}`
+    blocks.push({
+      nodeName,
+      startStep: start,
+      endStep: end,
+      span: end - start,
+    })
+  })
+
+  blocks.sort((a, b) => {
+    if (a.span !== b.span) return a.span - b.span
+    if (a.startStep !== b.startStep) return a.startStep - b.startStep
+    return a.nodeName.localeCompare(b.nodeName)
+  })
+  return blocks
+}
+
+function findPlainNodeByStep(step: number, blocks: PlainStepBlock[]): string | null {
+  for (const block of blocks) {
+    if (block.startStep <= step && step <= block.endStep) {
+      return block.nodeName
+    }
+  }
+  return null
+}
+
+function getEdgeLabelPlacement(edgeEl: SVGGElement, fallbackBox: DOMRect | SVGRect) {
+  const pathCandidates = Array.from(edgeEl.querySelectorAll<SVGPathElement>('path'))
+  const mainPath =
+    pathCandidates.find((path) => path.getAttribute('fill') === 'none') ||
+    pathCandidates[0] ||
+    null
+
+  if (mainPath && typeof mainPath.getTotalLength === 'function') {
+    try {
+      const total = mainPath.getTotalLength()
+      if (Number.isFinite(total) && total > 0) {
+        const midLen = total * 0.5
+        const sample = Math.min(4, total * 0.2)
+        const pMid = mainPath.getPointAtLength(midLen)
+        const pPrev = mainPath.getPointAtLength(Math.max(0, midLen - sample))
+        const pNext = mainPath.getPointAtLength(Math.min(total, midLen + sample))
+
+        const tx = pNext.x - pPrev.x
+        const ty = pNext.y - pPrev.y
+        const norm = Math.hypot(tx, ty) || 1
+        const nx = -ty / norm
+        const ny = tx / norm
+        const offset = 44
+
+        return {
+          x: pMid.x + nx * offset,
+          y: pMid.y + ny * offset,
+          anchor: nx >= 0 ? 'start' : 'end',
+        } as const
+      }
+    } catch {
+      // Fall through to bbox placement
+    }
+  }
+
+  return {
+    x: fallbackBox.x + fallbackBox.width + 24,
+    y: fallbackBox.y + fallbackBox.height * 0.5,
+    anchor: 'start',
+  } as const
+}
+
+function annotatePlainCallEdges(svg: SVGSVGElement) {
+  if (cfgMode.value !== 'plain') return
+
+  svg.querySelectorAll('.call-signature-label').forEach((el) => el.remove())
+
+  const mapping = sequenceCallMapping.value
+  if (!mapping?.calls?.length) return
+
+  const blocks = buildPlainStepBlocks()
+  if (!blocks.length) return
+
+  const edgeByTitle = new Map<string, SVGGElement>()
+  svg.querySelectorAll<SVGGElement>('.edge').forEach((edgeEl) => {
+    const title = getEdgeTitle(edgeEl)
+    if (title) edgeByTitle.set(title, edgeEl)
+  })
+  if (!edgeByTitle.size) return
+
+  const labelByEdgeTitle = new Map<string, string>()
+  for (const call of mapping.calls) {
+    const signatures = call.probable_text_signatures || []
+    if (!signatures.length) continue
+
+    const signatureLabel = formatCompactCallSignature(signatures)
+    if (!signatureLabel) continue
+
+    const callStep = toFiniteStep(call.entry_step)
+    if (callStep === null) continue
+
+    const sourceNode = findPlainNodeByStep(callStep, blocks)
+    const targetNode = findPlainNodeByStep(callStep + 1, blocks)
+    if (!sourceNode || !targetNode) continue
+
+    const edgeTitle = `${sourceNode}->${targetNode}`
+    const edgeEl = edgeByTitle.get(edgeTitle)
+    if (!edgeEl) continue
+
+    const edgeType = getEdgeType(edgeEl)
+    if (edgeType && edgeType !== 'CALL' && edgeType !== 'DELEGATECALL') continue
+    if (!labelByEdgeTitle.has(edgeTitle)) {
+      labelByEdgeTitle.set(edgeTitle, signatureLabel)
+    }
+  }
+
+  for (const [edgeTitle, label] of labelByEdgeTitle.entries()) {
+    const edgeEl = edgeByTitle.get(edgeTitle)
+    if (!edgeEl) continue
+
+    const edgeBox = edgeEl.getBBox()
+    if (edgeBox.width <= 0 || edgeBox.height <= 0) continue
+
+    const placement = getEdgeLabelPlacement(edgeEl, edgeBox)
+    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text')
+    text.setAttribute('class', 'call-signature-label')
+    text.setAttribute('x', String(placement.x))
+    text.setAttribute('y', String(placement.y))
+    text.setAttribute('text-anchor', placement.anchor)
+    text.setAttribute('dominant-baseline', 'middle')
+    text.textContent = label
+    edgeEl.appendChild(text)
+  }
 }
 
 function harmonizeNodeAppearance(node: SVGGElement) {
@@ -1583,6 +1783,19 @@ onBeforeUnmount(() => {
 .graph-viewport :deep(.node.action-node path),
 .graph-viewport :deep(.node.action-node rect) {
   filter: drop-shadow(0 0 12px rgba(239, 68, 68, 0.82)) drop-shadow(0 0 28px rgba(248, 113, 113, 0.48)) drop-shadow(0 0 52px rgba(252, 165, 165, 0.28));
+}
+
+.graph-viewport :deep(.call-signature-label) {
+  fill: #1e3a8a;
+  font-size: 28px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-weight: 800;
+  paint-order: stroke;
+  stroke: rgba(255, 255, 255, 0.85);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+  letter-spacing: 0.2px;
+  pointer-events: none;
 }
 
 .graph-viewport :deep(.node.filtered-out),
