@@ -2,8 +2,8 @@
   --bg: #FAFAFA;
   --text: #2C2C2C;
   --border: #D0D0D0;
-  --accent: #3B5998;
-  --accent-hover: #2d4373;
+  --accent: #8698B2;
+  --accent-hover: #6B7D98;
   --panel-bg: #FFFFFF;
   --muted: #999999;
   --error: #C14A00;
@@ -18,13 +18,11 @@
 
 html {
   height: 100%;
-  overflow-y: hidden;
-  overflow-x: auto;
+  overflow: hidden;
 }
 
 body {
   height: 100%;
-  min-width: 900px;
   overflow: hidden;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 14px;

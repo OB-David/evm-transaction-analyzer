@@ -227,7 +227,6 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
     # PUML基础模板（核心修改：新增box的padding/margin控制间距）
     puml_lines = [
         "@startuml",
-        "title CALL-Contract Sequence Diagram",
         "skinparam backgroundcolor #FFFFFF",
         # 合约样式：矩形
         "skinparam participant {",

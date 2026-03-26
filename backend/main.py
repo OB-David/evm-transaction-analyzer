@@ -11,6 +11,29 @@ from utils.extract_token_changes import pair_transactions, render_asset_flow, af
 from utils.sequence_diagram import build_refined_hierarchical_trace, render_puml_to_svg, tree_to_puml
 from utils.indentify_swap import filter_to_file
 
+CONTRACT_COLORS = [
+    "#F4B9B9",
+    "#F3DAB5",
+    "#F2EBB5",
+    "#D2F3B4",
+    "#B4F3BA",
+    "#B5F2D3",
+    "#B5EBF4",
+    "#B6CDF3",
+    "#C3B5F2",
+    "#EBB8F4",
+    "#F3B4DB",
+    "#E2E2E2",
+]
+
+EDGE_COLOR_MAP = {
+    "NORMAL": "#C2CAD7",
+    "JUMP": "#D8D2CA",
+    "CALL": "#A9C7AE",
+    "DELEGATECALL": "#ABC0D9",
+    "TERMINATE": "#DABAAE",
+}
+
 # 加载环境变量
 load_dotenv()
 try:
@@ -87,9 +110,14 @@ def main():
         all_blocks = processor.process_multiple_contracts(contracts_bytecode)
         print(f"成功生成 {len(all_blocks)} 个基本块\n")
 
+        token_decimals_map = {}
+        for token_addr in erc20_token_map.keys():
+            decimals = formatter.get_token_decimals(token_addr)
+            token_decimals_map[token_addr] = decimals
+
         # 6. 构建交易级控制流图(CFG)
         print("正在构建交易级控制流图...")
-        cfg_constructor = CFGConstructor(all_blocks)
+        cfg_constructor = CFGConstructor(all_blocks, token_decimals_map)
         # 返回基本块连接的原始original_cfg，折叠后的tx_cfg
         # 查询关联都基于original_cfg
         # original_cfg基于pc，tx_cfg基于original_cfg的blockid
@@ -100,12 +128,6 @@ def main():
 
         # 7. 构建代币交易流，生成边与基本块的映射
         print("正在提取代币交易流...")
-        # 先构建代币精度映射
-        token_decimals_map = {}
-        for token_addr in erc20_token_map.keys():
-            decimals = formatter.get_token_decimals(token_addr)
-            token_decimals_map[token_addr] = decimals
-            
         # 调用 pair_transactions 时传入精度映射
         original_transfer = [from_address.lower(),to_address.lower(), int(amount)]
         print(int(amount))
@@ -195,29 +217,6 @@ def create_result_directory(tx_hash: str) -> str:
 
 def save_graphs(result_dir: str, plain_cfg: object,folded_cfg:object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]], tree_data, arb_result):
     '''渲染并保存所有图：交易级CFG图、CFG图例、代币交易流图'''
-
-    # 定义Tx_CFG,Asset_Flow和图例的共用颜色规则
-    CONTRACT_COLORS = [
-        "#F4B9B9E6",
-        "#F3DAB5E6",
-        "#F2EBB5E6",
-        "#D2F3B4E6",
-        "#B4F3BAE6",
-        "#B5F2D3E6",
-        "#B5EBF4E6",
-        "#B6CDF3E6",
-        "#C3B5F2E6",
-        "#EBB8F4E6",
-        "#F3B4DBE6",
-        "#E2E2E2E6"
-    ]
-    EDGE_COLOR_MAP = {
-        "NORMAL": "#939393",
-        "JUMP": "#5B4747",
-        "CALL": "#1F6800",
-        "DELEGATECALL": "#009DFF",
-        "TERMINATE": "#C14A00",
-    }
 
     # 保存交易级CFG的DOT文件
     tx_dot_path = os.path.join(result_dir, "plain_cfg")

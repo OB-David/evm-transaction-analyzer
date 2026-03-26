@@ -3,11 +3,14 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { zoom, zoomIdentity } from 'd3-zoom'
 import { select } from 'd3-selection'
 import {
+  fetchLegendData,
   fetchSequenceCalldataMapping,
   fetchSequenceSvg,
+  type LegendData,
   type SequenceCallEntry,
   type SequenceCalldataMapping,
 } from '../api/analyze'
+import { getDarkAccentForColor, getFillColorForColor } from '../visualTheme'
 
 const props = defineProps<{
   txHash: string | null
@@ -30,6 +33,7 @@ const popupPosition = ref({ left: 12, top: 40 })
 const popupAnchor = ref<{ x: number; y: number } | null>(null)
 
 let sequenceMapping: SequenceCalldataMapping | null = null
+let legendData: LegendData | null = null
 let resizeObserver: ResizeObserver | null = null
 let svgElement: SVGSVGElement | null = null
 let wrapperGroup: SVGGElement | null = null
@@ -68,12 +72,14 @@ async function loadSequenceData(txHash: string) {
   errorMsg.value = ''
 
   try {
-    const [svgText, mapping] = await Promise.all([
+    const [svgText, mapping, legend] = await Promise.all([
       fetchSequenceSvg(txHash),
       fetchSequenceCalldataMapping(txHash),
+      fetchLegendData(txHash).catch(() => null),
     ])
 
     sequenceMapping = mapping
+    legendData = legend
     status.value = 'success'
 
     await nextTick()
@@ -102,6 +108,7 @@ function resetPanelState() {
   clearSelection(false)
   errorMsg.value = ''
   sequenceMapping = null
+  legendData = null
   popupAnchor.value = null
   currentTransform = zoomIdentity
   if (graphContainer.value) {
@@ -149,6 +156,8 @@ function setupSvg() {
 
   svgElement.appendChild(zoomGroup)
   wrapperGroup = zoomGroup
+  harmonizeSequenceSvg()
+  applySequenceAutoFit()
 
   svgSelection = select(svgElement as Element)
   zoomBehavior = zoom()
@@ -169,6 +178,80 @@ function setupSvg() {
 
   nextTick(() => {
     resetViewport()
+  })
+}
+
+function harmonizeSequenceSvg() {
+  if (!svgElement) return
+
+  svgElement.querySelector('title')?.remove()
+
+  Array.from(svgElement.querySelectorAll('text')).forEach((textEl) => {
+    const content = (textEl.textContent || '').trim()
+    if (content.includes('CALL-Contract Sequence Diagram')) {
+      textEl.remove()
+    }
+  })
+
+  const legendEntries = legendData
+    ? [...legendData.erc20_tokens, ...legendData.normal_contracts, ...legendData.user_addresses]
+    : []
+  const entryByName = new Map(
+    legendEntries.map((entry) => [entry.name.toLowerCase(), entry]),
+  )
+  const tokenNames = new Set((legendData?.erc20_tokens || []).map(entry => entry.name.toLowerCase()))
+
+  svgElement.querySelectorAll<SVGGElement>('.participant.participant-head').forEach((head) => {
+    const rect = head.querySelector<SVGRectElement>('rect')
+    const ellipse = head.querySelector<SVGEllipseElement>('ellipse')
+    const shape = rect || ellipse
+    const text = head.querySelector<SVGTextElement>('text')
+    if (!shape || !text) return
+
+    const name = (text.textContent || '').trim().toLowerCase()
+    const entry = entryByName.get(name)
+    const fill = entry ? getFillColorForColor(entry.color) : '#E2E2E2'
+    const stroke = entry ? getDarkAccentForColor(entry.color) : '#B6B6B6'
+
+    if (tokenNames.has(name) && rect) {
+      const x = Number.parseFloat(rect.getAttribute('x') || '0')
+      const y = Number.parseFloat(rect.getAttribute('y') || '0')
+      const width = Number.parseFloat(rect.getAttribute('width') || '0')
+      const height = Number.parseFloat(rect.getAttribute('height') || '0')
+      if (width > 0 && height > 0) {
+        const nextEllipse = document.createElementNS('http://www.w3.org/2000/svg', 'ellipse')
+        nextEllipse.setAttribute('cx', String(x + width / 2))
+        nextEllipse.setAttribute('cy', String(y + height / 2))
+        nextEllipse.setAttribute('rx', String(width / 2))
+        nextEllipse.setAttribute('ry', String(height / 2))
+        nextEllipse.setAttribute('fill', fill)
+        nextEllipse.style.fill = fill
+        nextEllipse.setAttribute('stroke', stroke)
+        nextEllipse.style.stroke = stroke
+        nextEllipse.setAttribute('stroke-width', rect.getAttribute('stroke-width') || '0.5')
+        nextEllipse.style.strokeWidth = rect.getAttribute('stroke-width') || '0.5'
+        rect.replaceWith(nextEllipse)
+      }
+    } else {
+      shape.setAttribute('fill', fill)
+      shape.style.fill = fill
+      shape.setAttribute('stroke', stroke)
+      shape.style.stroke = stroke
+    }
+
+    const activeShape = head.querySelector<SVGGraphicsElement>('rect, ellipse')
+    const bounds = activeShape?.getBBox()
+    if (bounds) {
+      text.setAttribute('x', String(bounds.x + bounds.width / 2))
+      text.setAttribute('y', String(bounds.y + bounds.height / 2))
+      text.setAttribute('text-anchor', 'middle')
+      text.setAttribute('dominant-baseline', 'middle')
+      text.style.textAnchor = 'middle'
+      text.style.dominantBaseline = 'middle'
+    }
+
+    text.setAttribute('fill', '#000000')
+    text.style.fill = '#000000'
   })
 }
 
@@ -203,6 +286,7 @@ function isIdentityTransform() {
 function resetViewport() {
   if (!svgSelection || !zoomBehavior) return
   currentTransform = zoomIdentity
+  applySequenceAutoFit()
   svgSelection.call(zoomBehavior.transform as any, zoomIdentity)
 }
 
@@ -309,11 +393,62 @@ function clearSelection(shouldEmit = true) {
     emit('sequence-select', null)
   }
 }
+
+function applySequenceAutoFit() {
+  if (!svgElement || !wrapperGroup) return
+
+  const bounds = wrapperGroup.getBBox()
+  if (bounds.width <= 0 || bounds.height <= 0) return
+
+  const padding = 8
+  svgElement.setAttribute(
+    'viewBox',
+    `${bounds.x - padding} ${bounds.y - padding} ${bounds.width + padding * 2} ${bounds.height + padding * 2}`,
+  )
+  svgElement.setAttribute('preserveAspectRatio', 'none')
+
+  normalizeSequenceTextScale()
+}
+
+function normalizeSequenceTextScale() {
+  if (!svgElement || !wrapperGroup) return
+
+  const viewBox = svgElement.viewBox.baseVal
+  const viewportWidth = svgElement.clientWidth
+  const viewportHeight = svgElement.clientHeight
+  if (viewBox.width <= 0 || viewBox.height <= 0 || viewportWidth <= 0 || viewportHeight <= 0) return
+
+  const scaleX = viewportWidth / viewBox.width
+  const scaleY = viewportHeight / viewBox.height
+  if (scaleX <= 0 || scaleY <= 0) return
+  const correctionX = scaleY / scaleX
+  wrapperGroup.querySelectorAll<SVGTextElement>('text').forEach((textEl) => {
+    const originalTransform = textEl.dataset.originalTransform ?? textEl.getAttribute('transform') ?? ''
+    textEl.dataset.originalTransform = originalTransform
+
+    if (Math.abs(correctionX - 1) < 0.001) {
+      if (originalTransform) {
+        textEl.setAttribute('transform', originalTransform)
+      } else {
+        textEl.removeAttribute('transform')
+      }
+      return
+    }
+
+    const x = Number.parseFloat(textEl.getAttribute('x') || '')
+    const y = Number.parseFloat(textEl.getAttribute('y') || '')
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return
+
+    const compensation = `translate(${x} ${y}) scale(${correctionX} 1) translate(${-x} ${-y})`
+    textEl.setAttribute('transform', originalTransform ? `${originalTransform} ${compensation}` : compensation)
+  })
+}
+
 </script>
 
 <template>
   <div class="sequence-panel">
-    <span class="panel-label">(d) Sequence Diagram</span>
+    <span class="panel-label">(D) Sequence Diagram</span>
 
     <div v-if="isAnalyzing || status === 'loading'" class="status-overlay">
       Loading sequence diagram...
@@ -365,7 +500,8 @@ function clearSelection(shouldEmit = true) {
   top: 8px;
   left: 12px;
   font-size: 11px;
-  color: var(--muted);
+  color: #000000;
+  font-weight: 700;
   letter-spacing: 0.5px;
   z-index: 10;
 }
@@ -414,7 +550,7 @@ function clearSelection(shouldEmit = true) {
 }
 
 .graph-viewport :deep(.sequence-call-link.sequence-selected) {
-  filter: drop-shadow(0 0 8px rgba(37, 99, 235, 0.35));
+  filter: drop-shadow(0 0 8px rgba(145, 164, 194, 0.38));
 }
 
 .graph-viewport :deep(.sequence-call-link.sequence-selected line),
