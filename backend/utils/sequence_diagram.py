@@ -1,6 +1,171 @@
 import json
 import os
+import re
 import subprocess
+from typing import Any
+from urllib.parse import quote, urljoin
+from urllib.request import Request, urlopen
+
+
+FOURBYTE_SIGNATURE_API = "https://www.4byte.directory/api/v1/signatures/"
+FOURBYTE_MAX_PAGES = 50
+FOURBYTE_TIMEOUT_SECONDS = 8
+SELECTOR_PATTERN = re.compile(r"^0x[0-9a-f]{8}$")
+FUNCTION_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+PRIORITY_FUNCTION_NAMES = [
+    "transfer",
+    "transferFrom",
+    "approve",
+    "safeTransfer",
+    "safeTransferFrom",
+    "swapExactTokensForTokens",
+    "swapTokensForExactTokens",
+    "swapExactETHForTokens",
+    "swapTokensForExactETH",
+    "swapExactTokensForETH",
+    "swap",
+    "exactInputSingle",
+    "exactOutputSingle",
+    "multicall",
+    "flashLoan",
+    "flashSwap",
+    "executeOperation",
+    "flashLoanSimple",
+    "getReserves",
+    "getAmountOut",
+    "getAmountIn",
+    "balanceOf",
+    "decimals",
+    "factory",
+    "pairFor",
+    "getPool",
+    "deposit",
+    "withdraw",
+    "safeApprove",
+    "pull",
+    "call",
+]
+PRIORITY_SIGNATURES = [f"{name}()" for name in PRIORITY_FUNCTION_NAMES]
+PRIORITY_SIGNATURE_RANK = {name: idx for idx, name in enumerate(PRIORITY_SIGNATURES)}
+
+
+def _extract_selector(calldata_value: Any) -> str | None:
+    if not isinstance(calldata_value, str):
+        return None
+    text = calldata_value.strip().lower()
+    if len(text) < 10:
+        return None
+    selector = text[:10]
+    if SELECTOR_PATTERN.match(selector):
+        return selector
+    return None
+
+
+def _extract_function_name(text_signature: Any) -> str | None:
+    if not isinstance(text_signature, str):
+        return None
+    cleaned = text_signature.strip()
+    if not cleaned:
+        return None
+    left_paren_idx = cleaned.find("(")
+    if left_paren_idx <= 0:
+        return None
+    fn_name = cleaned[:left_paren_idx].strip()
+    if not FUNCTION_NAME_PATTERN.match(fn_name):
+        return None
+    return f"{fn_name}()"
+
+
+def _fetch_4byte_results(hex_selector: str) -> list[dict]:
+    all_results: list[dict] = []
+    next_url = f"{FOURBYTE_SIGNATURE_API}?hex_signature={quote(hex_selector)}"
+    seen_urls: set[str] = set()
+    pages = 0
+
+    while next_url and pages < FOURBYTE_MAX_PAGES:
+        if next_url in seen_urls:
+            break
+        seen_urls.add(next_url)
+
+        try:
+            req = Request(
+                next_url,
+                headers={
+                    "User-Agent": "evm-transaction-analyzer/1.0",
+                    "Accept": "application/json",
+                },
+            )
+            with urlopen(req, timeout=FOURBYTE_TIMEOUT_SECONDS) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            print(f"WARNING: 4byte lookup failed for selector {hex_selector}: {exc}")
+            return []
+
+        results = payload.get("results", [])
+        if isinstance(results, list):
+            all_results.extend(item for item in results if isinstance(item, dict))
+
+        next_link = payload.get("next")
+        next_url = urljoin(next_url, next_link) if isinstance(next_link, str) and next_link else ""
+        pages += 1
+
+    if next_url:
+        print(f"WARNING: 4byte pagination truncated at {FOURBYTE_MAX_PAGES} pages for selector {hex_selector}")
+    return all_results
+
+
+def _safe_int(value: Any, fallback: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return fallback
+
+
+def _resolve_probable_signatures(
+    selector: str,
+    selector_signature_cache: dict[str, list[str]],
+) -> list[str]:
+    cached = selector_signature_cache.get(selector)
+    if cached is not None:
+        return cached
+
+    results = _fetch_4byte_results(selector)
+    signature_to_min_id: dict[str, int] = {}
+    for item in results:
+        fn = _extract_function_name(item.get("text_signature"))
+        if not fn:
+            continue
+        item_id = _safe_int(item.get("id"), fallback=2**31 - 1)
+        prev = signature_to_min_id.get(fn)
+        if prev is None or item_id < prev:
+            signature_to_min_id[fn] = item_id
+
+    sorted_signatures = sorted(
+        signature_to_min_id.items(),
+        key=lambda item: (
+            0 if item[0] in PRIORITY_SIGNATURE_RANK else 1,
+            PRIORITY_SIGNATURE_RANK.get(item[0], 10**9),
+            item[1],
+            item[0],
+        ),
+    )
+    ordered = [item[0] for item in sorted_signatures]
+    selector_signature_cache[selector] = ordered
+    return ordered
+
+
+def _format_compact_signatures(signatures: list[str], max_items: int = 2) -> str:
+    if not signatures:
+        return ""
+    # 若命中优先函数，按需求仅展示一个并直接追加 /...
+    first_signature = signatures[0]
+    if first_signature in PRIORITY_SIGNATURE_RANK:
+        return f"{first_signature}/..."
+    compact = "/".join(signatures[:max_items])
+    if len(signatures) > max_items:
+        compact += "/..."
+    return compact
 
 def build_refined_hierarchical_trace(steps):
     """
@@ -223,6 +388,7 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
         "total_calls": 0,  # 总调用数
         "calls": []        # 每笔调用的详细映射
     }
+    selector_signature_cache: dict[str, list[str]] = {}
     
     # PUML基础模板（核心修改：新增box的padding/margin控制间距）
     puml_lines = [
@@ -375,6 +541,12 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
                 else:
                     full_calldata.append("无Calldata")
             calldata0 = segments[0]["val"] if (segments and len(segments) > 0) else "无Calldata"
+            probable_text_signatures: list[str] = []
+            selector = _extract_selector(calldata0)
+            if selector:
+                probable_text_signatures = _resolve_probable_signatures(selector, selector_signature_cache)
+            compact_signatures = _format_compact_signatures(probable_text_signatures, max_items=2)
+            call_label = compact_signatures if compact_signatures else calldata0
             
             call_id = call_data_mapping["total_calls"] + 1
             message_link = _build_message_link(
@@ -390,19 +562,19 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
                 # 虚线
                 call_line = (
                     f"{indent}{parent_instance['alias']} -[dashed]-> {current_instance['alias']} "
-                    f"{message_link} : {entry_op}\\l{calldata0}"
+                    f"{message_link} : {entry_op}\\l{call_label}"
                 )
             else:
                 # 实线
                 call_line = (
                     f"{indent}{parent_instance['alias']} -> {current_instance['alias']} "
-                    f"{message_link} : {entry_op}\\l{calldata0}"
+                    f"{message_link} : {entry_op}\\l{call_label}"
                 )
             interaction_lines.append(call_line)
 
             # 3. 记录到JSON映射（核心）
             call_data_mapping["total_calls"] = call_id
-            call_data_mapping["calls"].append({
+            call_entry = {
                 "call_id": call_id,
                 "entry_step": entry_step,
                 "exit_step": exit_step,
@@ -411,8 +583,10 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
                 "from_name": parent_instance["name"],
                 "to_name": current_instance["name"],
                 "calldata": full_calldata,
-                
-            })
+            }
+            if probable_text_signatures:
+                call_entry["probable_text_signatures"] = probable_text_signatures
+            call_data_mapping["calls"].append(call_entry)
 
         # 递归处理子节点
         if "calls" in node and isinstance(node["calls"], list):
