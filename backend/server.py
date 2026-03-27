@@ -44,6 +44,31 @@ app.add_middleware(
 TX_HASH_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
 
 
+def extract_analysis_error(stdout: str, stderr: str) -> str | None:
+    """Extract a user-facing error line from subprocess output."""
+    lines: list[str] = []
+    for text in (stderr, stdout):
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped:
+                lines.append(stripped)
+
+    if not lines:
+        return None
+
+    # Prefer explicit "not supported" reasons.
+    for line in reversed(lines):
+        if "not supported" in line.lower():
+            return line
+
+    # Fallback to the last meaningful output line.
+    for line in reversed(lines):
+        if not line.startswith("RESULT_DIR="):
+            return line
+
+    return None
+
+
 class AnalyzeRequest(BaseModel):
     tx_hash: str
 
@@ -164,7 +189,7 @@ async def analyze(req: AnalyzeRequest):
             status="error",
             result_dir="",
             files=[],
-            error=proc.stderr.strip() or proc.stdout.strip(),
+            error=extract_analysis_error(proc.stdout, proc.stderr),
         )
 
     # Parse result directory from stdout
@@ -176,11 +201,12 @@ async def analyze(req: AnalyzeRequest):
             break
 
     if not result_dir or not os.path.isdir(result_dir):
+        output_error = extract_analysis_error(proc.stdout, proc.stderr)
         return AnalyzeResponse(
             status="error",
             result_dir="",
             files=[],
-            error="Pipeline completed but result directory not found.",
+            error=output_error or "Pipeline completed but result directory not found.",
         )
 
     files = os.listdir(result_dir)
