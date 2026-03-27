@@ -59,14 +59,22 @@ def format_scientific_html(value: float, precision: int = 4, sup_size: int = 8) 
     exp = int(exp)
     return f"{mantissa}×10<sup><font point-size='{sup_size}'>{exp}</font></sup>"
 
+
 def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
     """
     按 all_changes 顺序配对余额变化并确定交易顺序
+    【正确版】
+    1. 所有ERC20变化 → 先加入pending队列
+    2. 逐个尝试匹配正负抵消的变化
+    3. 匹配成功 → 移除
+    4. 最后剩下的 → 纯孤立变动
+    5. 绝对不覆盖、不丢失
     """
     paired = []
     node_annotations = defaultdict(list)
     order_counter = 0
-    pending_erc20 = {}
+    pending_erc20 = []  # ✅ 改成列表
+    token_queues = defaultdict(list)
 
     # 交易发起时ETH Transfer
     paired.append({
@@ -74,7 +82,7 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
         "codecontract_address": None,
         "from": original_transfer[0],
         "to": original_transfer[1],
-        "amount":original_transfer[2] / (10 ** 18),
+        "amount": original_transfer[2] / (10 ** 18),
         "token": "ETH",
         "token_addr": "ETH",
         "source_pcs": None,
@@ -95,7 +103,7 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
                 "token": "ETH",
                 "token_addr": "ETH",
                 "source_pcs": [c["pc"]],
-                "source_steps":[c["step"]],
+                "source_steps": [c["step"]],
             })
             continue
 
@@ -113,6 +121,8 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
         if token_decimals_map and token_addr in token_decimals_map:
             decimals = token_decimals_map[token_addr]
 
+        # 构建当前变化结构
+        order_counter += 1
         c_structured = {
             "order": order_counter,
             "codecontract_address": codecontract_address,
@@ -121,35 +131,31 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
             "token": token_name,
             "token_addr": token_addr,
             "source_pcs": [c["SLOAD_pc"], c["SSTORE_pc"]],
-            "source_steps":[c["SLOAD_step"], c["SSTORE_step"]],
+            "source_steps": [c["SLOAD_step"], c["SSTORE_step"]],
             "decimals": decimals,
-        }    
+        }
 
-        if token_addr not in pending_erc20:
-            order_counter += 1
-            pending_erc20[token_addr] = {
-            "order": order_counter,
-            "codecontract_address": codecontract_address,
-            "user": user,
-            "value": val,
-            "token": token_name,
-            "token_addr": token_addr,
-            "source_pcs": [c["SLOAD_pc"], c["SSTORE_pc"]],
-            "source_steps":[c["SLOAD_step"], c["SSTORE_step"]],
-            "decimals": decimals,
-        }  
-        else:
-            prev = pending_erc20[token_addr]
-            # 配对条件：金额互补
-            if prev["value"] + val == 0:
+
+        # 队列存储一个token下的余额变化
+        token_queues[token_addr].append(c_structured)
+
+        # 匹配
+        queue = token_queues[token_addr]
+        if len(queue) >= 2:
+            # 取最后两笔尝试配对
+            prev = queue[-2]
+            curr = queue[-1]
+
+            if prev["value"] + curr["value"] == 0:
+                # 能配对 → 确定发送/接收
                 if prev["value"] < 0:
-                    sender, receiver = prev, c_structured
+                    sender, receiver = prev, curr
                 else:
-                    sender, receiver = c_structured, prev
+                    sender, receiver = curr, prev
 
-                formatted_val = abs(val) / (10 ** decimals)
+                formatted_val = abs(curr["value"]) / (10 ** decimals)
                 paired.append({
-                    "order": prev["order"],
+                    "order": sender["order"],
                     "from": sender.get("user"),
                     "from_codecontract": sender.get("codecontract_address"),
                     "to_codecontract": receiver.get("codecontract_address"),
@@ -161,27 +167,28 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
                         "sender_sload_pc": sender.get("source_pcs", [])[0],
                         "sender_sstore_pc": sender.get("source_pcs", [])[1],
                         "receiver_sload_pc": receiver.get("source_pcs", [])[0],
-                        "receiver_sstore_pc": receiver.get("source_pcs", [])[1]
+                        "receiver_sstore_pc": receiver.get("source_pcs", [])[1],
                     },
-                    "source_steps":{
+                    "source_steps": {
                         "sender_sload_step": sender.get("source_steps", [])[0],
                         "sender_sstore_step": sender.get("source_steps", [])[1],
                         "receiver_sload_step": receiver.get("source_steps", [])[0],
-                        "receiver_sstore_step": receiver.get("source_steps", [])[1]
+                        "receiver_sstore_step": receiver.get("source_steps", [])[1],
                     }
                 })
-                del pending_erc20[token_addr]
-            else:
-                # 如果金额不匹配，暂不处理（NFT通常是1:1匹配，不会进入这里）
-                pass
+                # 匹配成功 → 移除这两笔
+                queue.pop()
+                queue.pop()
 
-    # 遍历结束，剩余的是孤立变化（包含所有 ERC20/NFT 的铸造和销毁）
-    # 注意：此处不再过滤 WETH，也不再存入 node_annotations，统一在渲染层处理为“边”
-    
+
+    for q in token_queues.values():
+        pending_erc20.extend(q)
+
     paired.sort(key=lambda x: x["order"])
     return paired, node_annotations, pending_erc20
 
-def detect_arbitrage(paired: list, pending_erc20: dict = None) -> dict:
+
+def detect_arbitrage(paired: list, pending_erc20: list = None) -> dict:
     from collections import defaultdict
 
     graph = defaultdict(list)
@@ -195,7 +202,7 @@ def detect_arbitrage(paired: list, pending_erc20: dict = None) -> dict:
             graph[frm].append((to, tok, ord_))
 
     if pending_erc20:
-        for v in pending_erc20.values():
+        for v in pending_erc20:
             user       = v.get("user")
             token_addr = v.get("token_addr")
             tok        = v.get("token")
@@ -244,7 +251,7 @@ def detect_arbitrage(paired: list, pending_erc20: dict = None) -> dict:
 
     return {"cycles": unique_cycles, "arb_edge_orders": all_arb_orders}
 
-def compute_address_balances(paired: list, pending_erc20: dict = None) -> dict:
+def compute_address_balances(paired: list, pending_erc20: list = None) -> dict:
     """
     计算每个地址在本次交易中各代币的净变化量。
     返回格式：
@@ -272,7 +279,7 @@ def compute_address_balances(paired: list, pending_erc20: dict = None) -> dict:
             balances[to][tok]  += amount
 
     if pending_erc20:
-        for v in pending_erc20.values():
+        for v in pending_erc20:
             user    = v.get("user")
             tok     = v.get("token")
             decimals = v.get("decimals", 18)
@@ -322,7 +329,7 @@ def render_asset_flow(paired, node_annotations, users_addresses,
     for p in paired:
         addresses.add(p["from"])
         addresses.add(p["to"])
-    for v in pending_erc20.values():
+    for v in pending_erc20:
         addresses.add(v["user"])
         addresses.add(v["token_addr"]) # 确保代币合约本身也被作为节点
 
@@ -394,7 +401,7 @@ def render_asset_flow(paired, node_annotations, users_addresses,
                  style="solid" + extra_style)
 
     # 2. 绘制所有孤立的 ERC20/NFT 变化（虚线边：表示铸造或销毁）
-    for v in pending_erc20.values():
+    for v in pending_erc20:
         user_id = get_merged_node_id(v["user"])
         token_id = get_merged_node_id(v["token_addr"])
         amount = abs(v["value"]) / (10 ** v["decimals"])
@@ -496,7 +503,7 @@ def afg_to_fcfg(paired, pending_erc20, tx_cfg: CFG, folded_node_map):
                     "matched_blocks": {"sender": (blocks["s_l"], blocks["s_s"]), "receiver": (blocks["r_l"], blocks["r_s"])}
                 })  
 
-    for v in pending_erc20.values():
+    for v in pending_erc20:
         sload_block = find_node_by_pc_address(tx_cfg, folded_node_map, v["token_addr"], v["source_pcs"][0])
         sload_block = next((rid for rid, nids in folded_node_map.items() if sload_block in nids), sload_block)
         sstore_block = find_node_by_pc_address(tx_cfg, folded_node_map, v["token_addr"], v["source_pcs"][1])
@@ -602,7 +609,7 @@ def afg_to_pcfg(paired, pending_erc20, plain_cfg):
                     }
                 })
 
-    for v in pending_erc20.values():
+    for v in pending_erc20:
         # ✅ 正确：从 source_steps 取（不是 source_pcs）
         source_steps = v.get("source_steps", [])
         if len(source_steps) < 2:
