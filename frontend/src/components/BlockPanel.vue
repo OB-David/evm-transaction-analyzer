@@ -12,6 +12,7 @@ type ViewMode = 'blocks' | 'transactions'
 
 const props = defineProps<{
   blockNumber: number | null
+  selectedTxHash?: string | null
   arbitrageTxHashes?: Set<string>
   arbitrageBlockNumbers?: Set<number>
 }>()
@@ -122,6 +123,12 @@ watch(() => props.blockNumber, async (newBlock) => {
     selectedTxIndex.value = null
     await fetchAndRenderBlock(newBlock)
   }
+})
+
+watch(() => props.selectedTxHash, (newTxHash) => {
+  if (viewMode.value !== 'transactions' || !blockData.value) return
+  applySelectedTransaction(blockData.value, newTxHash)
+  renderPlotly(blockData.value)
 })
 
 watch(() => props.arbitrageTxHashes, () => {
@@ -312,12 +319,29 @@ async function fetchAndRenderBlock(blockNum: number) {
 
     await nextTick()
     if (txPlotContainer.value && data.transactions.length > 0) {
+      applySelectedTransaction(data, props.selectedTxHash)
       renderPlotly(data)
     }
   } catch (e: any) {
     error.value = e.message || 'Network error'
     loading.value = false
   }
+}
+
+function applySelectedTransaction(data: BlockGasData, txHash?: string | null) {
+  if (!txHash) {
+    selectedTxInfo.value = null
+    selectedTxIndex.value = null
+    return
+  }
+  const index = data.transactions.findIndex((tx) => tx.hash.toLowerCase() === txHash.toLowerCase())
+  if (index === -1) {
+    selectedTxInfo.value = null
+    selectedTxIndex.value = null
+    return
+  }
+  selectedTxInfo.value = data.transactions[index]
+  selectedTxIndex.value = index
 }
 
 function renderPlotly(data: BlockGasData) {

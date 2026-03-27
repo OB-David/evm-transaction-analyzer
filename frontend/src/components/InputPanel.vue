@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { analyzeTransaction, fetchTransactionBlock, type AnalyzeResult } from '../api/analyze'
+import { analyzeTransaction, fetchTransactionBlock, normalizeAnalyzeError, type AnalyzeResult } from '../api/analyze'
 
 async function copyToClipboard(text: string) {
   try {
@@ -38,9 +38,30 @@ function updateBlockNumber(num: number) {
   blockNumber.value = num.toString()
 }
 
+function setAnalyzeError(message: string) {
+  status.value = 'error'
+  errorMsg.value = normalizeAnalyzeError(message)
+  result.value = null
+}
+
+function setAnalyzing(hash?: string) {
+  if (hash) txHash.value = hash
+  status.value = 'loading'
+  errorMsg.value = ''
+  result.value = null
+}
+
+function setAnalyzeSuccess() {
+  status.value = 'success'
+  errorMsg.value = ''
+}
+
 defineExpose({
   updateTxHash,
   updateBlockNumber,
+  setAnalyzeError,
+  setAnalyzing,
+  setAnalyzeSuccess,
 })
 
 async function onSubmit() {
@@ -72,11 +93,11 @@ async function onSubmit() {
       }
     } else {
       status.value = 'error'
-      errorMsg.value = res.error || 'Analysis failed'
+      errorMsg.value = normalizeAnalyzeError(res.error)
     }
   } catch (e: any) {
     status.value = 'error'
-    errorMsg.value = e.message || 'Network error'
+    errorMsg.value = normalizeAnalyzeError(e.message || 'Network error')
   }
 }
 

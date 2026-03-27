@@ -11,6 +11,7 @@ import {
   analyzeTransaction,
   fetchEdgeStepMap,
   fetchArbitrageHashes,
+  normalizeAnalyzeError,
   triggerArbitrageRefresh,
   type BlockId,
   type CfgMode,
@@ -110,14 +111,11 @@ function handleLatestBlocksRefreshed() {
 async function handleTransactionSelected(txHash: string) {
   console.log('Transaction selected from heatmap:', txHash)
 
-  // Update the input field with the selected transaction hash
-  if (inputPanelRef.value) {
-    inputPanelRef.value.updateTxHash(txHash)
-  }
+  // Sync input and immediately switch status to processing.
+  inputPanelRef.value?.setAnalyzing(txHash)
 
   // Show loading immediately
   isAnalyzing.value = true
-  currentTxHash.value = null
 
   // First complete the analysis, THEN update the hash to trigger panel loading
   try {
@@ -127,9 +125,14 @@ async function handleTransactionSelected(txHash: string) {
       // Now set the hash to trigger CFG/AFG loading
       await new Promise(resolve => setTimeout(resolve, 100))
       currentTxHash.value = txHash
+      inputPanelRef.value?.setAnalyzeSuccess()
+    } else {
+      inputPanelRef.value?.setAnalyzeError(normalizeAnalyzeError(res.error))
     }
   } catch (e) {
     console.error('Failed to analyze selected transaction:', e)
+    const message = e instanceof Error ? e.message : 'Network error'
+    inputPanelRef.value?.setAnalyzeError(normalizeAnalyzeError(message))
   } finally {
     isAnalyzing.value = false
   }
@@ -168,6 +171,7 @@ function handleCfgModeChange(mode: CfgMode) {
       <BlockPanel
         class="block-panel"
         :block-number="currentBlockNumber"
+        :selected-tx-hash="currentTxHash"
         :arbitrage-tx-hashes="arbitrageTxHashes"
         :arbitrage-block-numbers="arbitrageBlockNumbers"
         @transaction-selected="handleTransactionSelected"
@@ -257,7 +261,6 @@ function handleCfgModeChange(mode: CfgMode) {
   min-height: 0;
   border-radius: 3px;
   box-shadow: 0 1px 4px rgba(0,0,0,0.07), 0 0 0 1px rgba(0,0,0,0.05);
-  overflow: hidden;
 }
 
 .right-col {

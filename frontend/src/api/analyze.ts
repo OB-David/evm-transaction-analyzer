@@ -375,6 +375,24 @@ export async function fetchArbitrageResult(txHash: string): Promise<ArbitrageRes
   return res.json()
 }
 
+export function normalizeAnalyzeError(message?: string | null): string {
+  const raw = (message || '').trim()
+  if (!raw) return 'Analysis failed'
+
+  const lowered = raw.toLowerCase()
+  if (lowered.includes('eth transfer transaction is not supported')) {
+    return 'This transaction is a plain ETH transfer, which is not supported by this analyzer.'
+  }
+  if (lowered.includes('contract creation transaction is not supported')) {
+    return 'Contract creation transactions are not supported by this analyzer.'
+  }
+  if (lowered.includes('pipeline completed but result directory not found')) {
+    return 'Analysis did not produce output files. This transaction type may not be supported.'
+  }
+
+  return raw
+}
+
 export async function fetchSwapPatternResult(txHash: string, mode: CfgMode = 'folded'): Promise<SwapPatternResult> {
   const filename = mode === 'plain' ? 'swap_in_pcfg.json' : 'swap_in_fcfg.json'
   const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`)
