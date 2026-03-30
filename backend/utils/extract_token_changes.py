@@ -76,6 +76,70 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
     pending_erc20 = []  # ✅ 改成列表
     token_queues = defaultdict(list)
 
+    # 预扫描 ETH 转移，用于识别 wrap/unwrap 场景下的 ERC20 余额变化，避免误配成普通转账
+    eth_mirror_pool = []
+    for c in all_changes:
+        if c.get("type") != "ETH_TRANSFER":
+            continue
+        eth_mirror_pool.append({
+            "from": c.get("from_address"),
+            "to": c.get("to_address"),
+            "value": abs(int(c.get("eth_value", 0))),
+            "step": c.get("step"),
+            "used": False,
+        })
+
+    def _to_int_or_none(v):
+        try:
+            return int(v)
+        except Exception:
+            return None
+
+    def _match_eth_mirror(token_addr, user_addr, raw_val, erc20_step):
+        """
+        识别 ERC20 变化是否与 ETH 转移构成镜像：
+        - raw_val > 0: token_addr -> user 的 mint，需匹配 user -> token_addr 的 ETH
+        - raw_val < 0: user -> token_addr 的 burn，需匹配 token_addr -> user 的 ETH
+        命中后该 ERC20 变化应保留为 pending（mint/burn），不参与 ERC20 正负配对。
+        """
+        target = abs(raw_val)
+        if target == 0:
+            return None
+
+        erc20_step_int = _to_int_or_none(erc20_step)
+        best_idx = None
+        best_dist = None
+
+        for idx, e in enumerate(eth_mirror_pool):
+            if e["used"]:
+                continue
+            if e["value"] != target:
+                continue
+
+            if raw_val > 0:
+                # wrap: user 交 ETH 给 token 合约，用户余额增加 token
+                direction_ok = (e["from"] == user_addr and e["to"] == token_addr)
+            else:
+                # unwrap: token 合约返 ETH 给 user，用户 token 余额减少
+                direction_ok = (e["from"] == token_addr and e["to"] == user_addr)
+
+            if not direction_ok:
+                continue
+
+            e_step_int = _to_int_or_none(e.get("step"))
+            if erc20_step_int is None or e_step_int is None:
+                dist = 0
+            else:
+                dist = abs(erc20_step_int - e_step_int)
+
+            if best_idx is None or dist < best_dist:
+                best_idx = idx
+                best_dist = dist
+
+        if best_idx is not None:
+            eth_mirror_pool[best_idx]["used"] = True
+        return best_idx
+
     # 交易发起时ETH Transfer
     paired.append({
         "order": order_counter,
@@ -135,6 +199,12 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
             "decimals": decimals,
         }
 
+        # 优先识别 ETH<->Token 镜像变化（例如 ETH<->WETH wrap/unwrap），命中则不进入普通配对队列
+        mirror_idx = _match_eth_mirror(token_addr, user, val, c.get("SSTORE_step"))
+        if mirror_idx is not None:
+            pending_erc20.append(c_structured)
+            continue
+
 
         # 队列存储一个token下的余额变化
         token_queues[token_addr].append(c_structured)
@@ -152,6 +222,10 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
                     sender, receiver = prev, curr
                 else:
                     sender, receiver = curr, prev
+
+                # 限制：不允许自己给自己转账
+                if sender.get("user") == receiver.get("user"):
+                    continue
 
                 formatted_val = abs(curr["value"]) / (10 ** decimals)
                 paired.append({
@@ -184,7 +258,22 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
     for q in token_queues.values():
         pending_erc20.extend(q)
 
+    # 压缩序号，保证最终序号连续且保持原始先后关系
+    combined = []
+    for p in paired:
+        combined.append((p.get("order", 0), 0, p, "paired"))
+    for v in pending_erc20:
+        combined.append((v.get("order", 0), 1, v, "pending"))
+
+    combined.sort(key=lambda x: (x[0], x[1]))
+
+    next_order = 0
+    for _, _, item, _ in combined:
+        item["order"] = next_order
+        next_order += 1
+
     paired.sort(key=lambda x: x["order"])
+    pending_erc20.sort(key=lambda x: x["order"])
     return paired, node_annotations, pending_erc20
 
 
@@ -267,8 +356,6 @@ def compute_address_balances(paired: list, pending_erc20: list = None) -> dict:
     balances = defaultdict(lambda: defaultdict(float))
 
     for p in paired:
-        if p.get("order", 0) == 0:
-            continue
         frm   = p.get("from")
         to    = p.get("to")
         tok   = p.get("token")

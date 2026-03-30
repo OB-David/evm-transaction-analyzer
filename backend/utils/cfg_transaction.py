@@ -1237,7 +1237,7 @@ class CFGConstructor:
                                     "erc20_token_address": RW_address, "token_name": token_name,
                                     "user_address": to_addr, "changed_balance": str(diff),
                                     "SLOAD_pc": balance_traces[(current_address, to_addr)]["SLOAD_pc"],
-                                    "SLOAD_step": balance_traces[(current_address, from_addr)]["SLOAD_step"] ,
+                                    "SLOAD_step": balance_traces[(current_address, to_addr)]["SLOAD_step"] ,
                                     "SSTORE_pc": balance_traces[(current_address, to_addr)]["SSTORE_pc"],
                                     "SSTORE_step": balance_traces[(current_address, to_addr)]["SSTORE_step"]
                                     
