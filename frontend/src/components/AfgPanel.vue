@@ -436,7 +436,7 @@ function handleEdgeClick(edgeId: number) {
 
 <template>
   <div class="afg-panel">
-    <span class="panel-label">(C) Asset Flow Graph</span>
+    <span class="panel-label">(C) Token Flow Graph</span>
 
     <!-- 套利 badge -->
     <div v-if="status === 'success' && isArbitrage" class="arb-badge">
