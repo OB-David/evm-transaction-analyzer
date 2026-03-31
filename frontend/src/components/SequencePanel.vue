@@ -444,7 +444,7 @@ function normalizeSequenceTextScale() {
 
 <template>
   <div class="sequence-panel">
-    <span class="panel-label">(D) Sequence Diagram</span>
+    <span class="panel-label">(D) Call Sequence Diagram</span>
 
     <div v-if="isAnalyzing || status === 'loading'" class="status-overlay">
       Loading sequence diagram...
