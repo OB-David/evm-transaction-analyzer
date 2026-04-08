@@ -65,7 +65,7 @@ function handleExportFullUiClick() {
 }
 
 .actions {
-  display: inline-flex;
+  display: none;
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
