@@ -16,6 +16,8 @@ dependencies = [
     "plotly>=6.6.0",
     "flask-cors>=6.0.2",
     "openai>=2.24.0",
+    "httpx[socks]>=0.28.1",
+    "pysocks>=1.7.1",
 ]
 
 [tool.uv.sources]

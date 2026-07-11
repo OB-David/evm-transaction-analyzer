@@ -420,7 +420,7 @@ def render_asset_flow(paired, node_annotations, users_addresses,
         addresses.add(v["user"])
         addresses.add(v["token_addr"]) # 确保代币合约本身也被作为节点
 
-    # 建立名称到地址的映射（用于合并同名合约节点）
+    # 建立地址到地址的映射（不去重：节点数量与地址数量一致）
     name_to_addrs = {}
     name_to_merged_color = {}
     
@@ -428,8 +428,8 @@ def render_asset_flow(paired, node_annotations, users_addresses,
         is_user = addr in users_set
         display_name = full_address_name_map.get(addr, addr[:8] + "...")
         
-        # 用户不合并，合约按名称合并
-        unique_key = addr if (is_user or display_name.startswith("User_")) else display_name
+        # 不合并：每个地址都单独作为一个节点 ID
+        unique_key = addr
         
         if unique_key not in name_to_addrs:
             name_to_addrs[unique_key] = []
@@ -448,7 +448,8 @@ def render_asset_flow(paired, node_annotations, users_addresses,
         else:
             shape = "record"
 
-        display_name = user_alias_map.get(main_addr, unique_key) if is_user else unique_key
+        # 节点 ID 用地址，label 展示名称（若缺失则回退到地址短写）
+        display_name = full_address_name_map.get(main_addr) or user_alias_map.get(main_addr) or (main_addr[:8] + "...")
         label = f"<{display_name}>"
         fill_color = name_to_merged_color[unique_key]
         stroke_color = dark_accent(fill_color, "#2C2C2C")
@@ -465,9 +466,7 @@ def render_asset_flow(paired, node_annotations, users_addresses,
         )
 
     def get_merged_node_id(addr):
-        if addr in users_set: return addr
-        display_name = full_address_name_map.get(addr, addr[:8] + "...")
-        return display_name if not display_name.startswith("User_") else addr
+        return addr
 
     # 1. 绘制已配对的转账边（实线）
     for p in sorted(paired, key=lambda x: x["order"]):

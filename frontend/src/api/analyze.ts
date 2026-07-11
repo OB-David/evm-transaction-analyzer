@@ -37,7 +37,7 @@ export interface BlockGasData {
   error?: string | null
 }
 
-const API_BASE = 'http://localhost:8000'
+const API_BASE = 'http://47.242.183.159:40507'
 
 async function fetchTextFile(filename: string, txHash: string): Promise<string> {
   const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`)
