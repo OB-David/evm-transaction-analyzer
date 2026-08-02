@@ -79,7 +79,11 @@ cd frontend
 npm run dev
 ```
 
-The frontend starts at `http://localhost:5173`.
+The frontend starts at `http://localhost:9006`.
+
+The frontend uses same-origin `/api` requests. During development, Vite proxies
+these requests to `http://127.0.0.1:8000`. Set `VITE_API_BASE` when the API is
+hosted separately (for example, `VITE_API_BASE=https://api.example.com`).
 
 ### Standalone analysis (no server)
 

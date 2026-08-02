@@ -1,12 +1,12 @@
 import json
 import os
 from web3 import Web3
-from typing import Dict, List, Any
+from typing import Callable, Dict, List, Any, Optional
 from dotenv import load_dotenv
 from utils.evm_information import TraceFormatter
 from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
-from utils.render_cfg import render_transaction
+from utils.render_cfg import get_valid_nodes_and_colors, render_transaction
 from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_fcfg, afg_to_pcfg, edge_link_to_json, detect_arbitrage, compute_address_balances
 from utils.sequence_diagram import build_refined_hierarchical_trace, render_puml_to_svg, tree_to_puml
 from utils.indentify_swap import filter_to_file
@@ -44,7 +44,7 @@ except Exception:
 def main():
     # 配置参数
     PROVIDER_URL = os.environ.get("GETH_API")
-    TX_HASH = "0x8e0dca21a8e73bfbef4a170c6c09e29964c0725d87e41c4e4b20206672d6be35"
+    TX_HASH = "0x1223227c2a196f0ba0c8b700f8972e8bf45d3252b5f79c20873bbb088cd45a8c"
 
     try:
         # ========== 前置检查 ==========
@@ -215,63 +215,15 @@ def create_result_directory(tx_hash: str) -> str:
     os.makedirs(result_dir, exist_ok=True)
     return result_dir
 
-def save_graphs(result_dir: str, plain_cfg: object,folded_cfg:object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]], tree_data, arb_result):
+def save_graphs(result_dir: str, plain_cfg: object,folded_cfg:object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]], tree_data, arb_result, progress_callback: Optional[Callable[[str], None]] = None):
     '''渲染并保存所有图：交易级CFG图、CFG图例、代币交易流图'''
 
-    # 保存交易级CFG的DOT文件
-    tx_dot_path = os.path.join(result_dir, "plain_cfg")
-    addr_color_map = render_transaction(
-        contract_colors = CONTRACT_COLORS,
-        edge_color_map = EDGE_COLOR_MAP,
-        cfg=plain_cfg, 
-        output_path=tx_dot_path, 
-        full_address_name_map = full_address_name_map, 
-        erc20_token_map = erc20_token_map,
-        rankdir="LR",
-        show_priority_opcode=True)
-    print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
+    def report(stage: str) -> None:
+        if progress_callback is not None:
+            progress_callback(stage)
 
-    # Render DOT to SVG using Graphviz CLI for frontend display
-    import subprocess
-    cfg_dot_file = f"{tx_dot_path}.dot"
-    cfg_svg_file = os.path.join(result_dir, "plain_cfg.svg")
-    try:
-        subprocess.run(
-            ["dot", "-Tsvg", cfg_dot_file, "-o", cfg_svg_file],
-            check=True, capture_output=True, text=True, timeout=120
-        )
-        print(f"CFG SVG已生成: {cfg_svg_file}")
-    except Exception as e:
-        print(f"WARNING: CFG SVG生成失败: {e}")
-
-
-
-
-        # 保存交易级CFG的DOT文件
-    tx_dot_path = os.path.join(result_dir, "folded_cfg")
-    addr_color_map = render_transaction(
-        contract_colors = CONTRACT_COLORS,
-        edge_color_map = EDGE_COLOR_MAP,
-        cfg=folded_cfg, 
-        output_path=tx_dot_path, 
-        full_address_name_map = full_address_name_map, 
-        erc20_token_map = erc20_token_map,
-        rankdir="LR",
-        show_priority_opcode=False)
-    print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
-
-    # Render DOT to SVG using Graphviz CLI for frontend display
-    import subprocess
-    cfg_dot_file = f"{tx_dot_path}.dot"
-    cfg_svg_file = os.path.join(result_dir, "folded_cfg.svg")
-    try:
-        subprocess.run(
-            ["dot", "-Tsvg", cfg_dot_file, "-o", cfg_svg_file],
-            check=True, capture_output=True, text=True, timeout=120
-        )
-        print(f"CFG SVG已生成: {cfg_svg_file}")
-    except Exception as e:
-        print(f"WARNING: CFG SVG生成失败: {e}")
+    # AFG needs the shared contract palette, but not a rendered CFG yet.
+    _, _, addr_color_map = get_valid_nodes_and_colors(plain_cfg, CONTRACT_COLORS)
 
     # 保存legend.json供前端使用
     legend_data: Dict[str, Any] = {"user_addresses": [], "erc20_tokens": [], "normal_contracts": []}
@@ -309,13 +261,15 @@ def save_graphs(result_dir: str, plain_cfg: object,folded_cfg:object, full_addre
                   addr_color_map, token_flow_dot_path,
                   arb_edge_orders=arb_orders)
     print(f"代币交易流图DOT文件已保存到: {token_flow_dot_path}.dot")
+    report("afg")
 
 
     # 生成时序图
     print("正在生成时序图PUML文件...")
+    resolved_tree_data = tree_data() if callable(tree_data) else tree_data
     puml_path = os.path.join(result_dir, "trace_sequence.puml")
     tree_to_puml(
-        trace_tree=tree_data,
+        trace_tree=resolved_tree_data,
         output_file=puml_path,
         erc20_token_map=erc20_token_map,
         full_address_name_map=full_address_name_map,
@@ -323,6 +277,60 @@ def save_graphs(result_dir: str, plain_cfg: object,folded_cfg:object, full_addre
     )
     print(f"时序图PUML已保存到: {puml_path}")
     render_puml_to_svg(puml_path)
+    report("sequence")
+
+    # Folded CFG is the first control-flow view exposed to the frontend.
+    tx_dot_path = os.path.join(result_dir, "folded_cfg")
+    render_transaction(
+        contract_colors=CONTRACT_COLORS,
+        edge_color_map=EDGE_COLOR_MAP,
+        cfg=folded_cfg,
+        output_path=tx_dot_path,
+        full_address_name_map=full_address_name_map,
+        erc20_token_map=erc20_token_map,
+        rankdir="LR",
+        show_priority_opcode=False,
+    )
+    print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
+
+    import subprocess
+    cfg_dot_file = f"{tx_dot_path}.dot"
+    cfg_svg_file = os.path.join(result_dir, "folded_cfg.svg")
+    try:
+        subprocess.run(
+            ["dot", "-Tsvg", cfg_dot_file, "-o", cfg_svg_file],
+            check=True, capture_output=True, text=True, timeout=120
+        )
+        print(f"CFG SVG已生成: {cfg_svg_file}")
+    except Exception as e:
+        print(f"WARNING: CFG SVG生成失败: {e}")
+    report("folded_cfg")
+
+    # Plain CFG is intentionally last because it is usually the largest view.
+    tx_dot_path = os.path.join(result_dir, "plain_cfg")
+    render_transaction(
+        contract_colors=CONTRACT_COLORS,
+        edge_color_map=EDGE_COLOR_MAP,
+        cfg=plain_cfg,
+        output_path=tx_dot_path,
+        full_address_name_map=full_address_name_map,
+        erc20_token_map=erc20_token_map,
+        rankdir="LR",
+        show_priority_opcode=True,
+    )
+    print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
+
+    cfg_dot_file = f"{tx_dot_path}.dot"
+    cfg_svg_file = os.path.join(result_dir, "plain_cfg.svg")
+    try:
+        subprocess.run(
+            ["dot", "-Tsvg", cfg_dot_file, "-o", cfg_svg_file],
+            check=True, capture_output=True, text=True, timeout=120
+        )
+        print(f"CFG SVG已生成: {cfg_svg_file}")
+    except Exception as e:
+        print(f"WARNING: CFG SVG生成失败: {e}")
+    report("plain_cfg")
 
 
 if __name__ == "__main__":

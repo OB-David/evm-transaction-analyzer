@@ -9,16 +9,21 @@ import BlockPanel from './components/BlockPanel.vue'
 import LegendPanel from './components/LegendPanel.vue'
 import {
   analyzeTransaction,
+  analysisStageReached,
   fetchEdgeStepMap,
   fetchArbitrageHashes,
   normalizeAnalyzeError,
   triggerArbitrageRefresh,
   type BlockId,
+  type AnalysisStage,
+  type AnalyzeResult,
   type CfgMode,
   type EdgeStepMap
 } from './api/analyze'
 
 const currentTxHash = ref<string | null>(null)
+const activeAnalysisTxHash = ref<string | null>(null)
+const analysisStage = ref<AnalysisStage>('queued')
 const currentBlockNumber = ref<number | null>(null)
 const highlightedBlockId = ref<BlockId[] | null>(null)
 const inputPanelRef = ref<InstanceType<typeof InputPanel> | null>(null)
@@ -50,9 +55,9 @@ const sequenceStepRange = ref<{ entryStep: number; exitStep: number } | null>(nu
 const edgeStepMap = ref<EdgeStepMap | null>(null)
 
 // Load edge step map when txHash changes
-watch([currentTxHash, currentCfgMode], async ([newHash, cfgMode]) => {
+watch([currentTxHash, currentCfgMode, analysisStage], async ([newHash, cfgMode, stage]) => {
   edgeStepMap.value = null
-  if (newHash) {
+  if (newHash && analysisStageReached(stage, 'folded_cfg')) {
     try {
       edgeStepMap.value = await fetchEdgeStepMap(newHash, cfgMode)
     } catch (e) {
@@ -71,8 +76,32 @@ const filteredEdgeIds = computed<string[] | null>(() => {
   return matched.length > 0 ? matched : null
 })
 
+function handleAnalysisProgress(txHash: string, result: AnalyzeResult) {
+  if (activeAnalysisTxHash.value !== txHash) {
+    activeAnalysisTxHash.value = txHash
+    currentTxHash.value = null
+    currentCfgMode.value = 'folded'
+    highlightedBlockId.value = null
+    sequenceStepRange.value = null
+  }
+
+  if (result.stage !== 'error') {
+    analysisStage.value = result.stage
+  }
+  isAnalyzing.value = result.status === 'processing'
+  if (analysisStageReached(result.stage, 'afg')) {
+    currentTxHash.value = txHash
+  }
+}
+
+function isStageReady(stage: AnalysisStage): boolean {
+  return analysisStageReached(analysisStage.value, stage)
+}
+
 function handleAnalysisComplete(txHash: string) {
   currentTxHash.value = txHash
+  analysisStage.value = 'complete'
+  isAnalyzing.value = false
   console.log('Analysis complete for:', txHash)
 }
 
@@ -120,12 +149,11 @@ async function handleTransactionSelected(txHash: string) {
 
   // First complete the analysis, THEN update the hash to trigger panel loading
   try {
-    const res = await analyzeTransaction(txHash)
+    const res = await analyzeTransaction(txHash, progress => handleAnalysisProgress(txHash, progress))
     if (res.status === 'success') {
       console.log('Analysis complete for selected transaction')
-      // Now set the hash to trigger CFG/AFG loading
-      await new Promise(resolve => setTimeout(resolve, 100))
       currentTxHash.value = txHash
+      analysisStage.value = 'complete'
       inputPanelRef.value?.setAnalyzeSuccess()
     } else {
       inputPanelRef.value?.setAnalyzeError(normalizeAnalyzeError(res.error))
@@ -944,6 +972,7 @@ function handleExportFullUiSvg() {
       <InputPanel
         ref="inputPanelRef"
         class="input-panel"
+        @analysis-progress="handleAnalysisProgress"
         @analysis-complete="handleAnalysisComplete"
         @block-number-changed="handleBlockNumberChanged"
       />
@@ -966,28 +995,29 @@ function handleExportFullUiSvg() {
           :tx-hash="currentTxHash"
           :cfg-mode="currentCfgMode"
           :highlighted-block-id="highlightedBlockId"
-          :is-analyzing="isAnalyzing"
+          :is-analyzing="isAnalyzing && !isStageReady('afg')"
           @cfg-navigate="handleCfgNavigate"
         />
         <SequencePanel
           class="sequence-panel"
-          :tx-hash="currentTxHash"
-          :is-analyzing="isAnalyzing"
+          :tx-hash="isStageReady('sequence') ? currentTxHash : null"
+          :is-analyzing="isAnalyzing && !isStageReady('sequence')"
           :selected-step-range="sequenceStepRange"
           @sequence-select="handleSequenceSelect"
         />
         <LegendPanel
           class="legend-panel"
-          :tx-hash="currentTxHash"
-          :is-analyzing="isAnalyzing"
+          :tx-hash="isStageReady('afg') ? currentTxHash : null"
+          :is-analyzing="isAnalyzing && !isStageReady('afg')"
         />
       </div>
       <CfgPanel
         class="cfg-panel"
-        :tx-hash="currentTxHash"
+        :tx-hash="isStageReady('folded_cfg') ? currentTxHash : null"
         :highlighted-block-id="highlightedBlockId"
         :filtered-edge-ids="filteredEdgeIds"
-        :is-analyzing="isAnalyzing"
+        :is-analyzing="isAnalyzing && !isStageReady('folded_cfg')"
+        :plain-ready="isStageReady('plain_cfg')"
         :edge-step-map="edgeStepMap"
         :preferred-mode="currentCfgMode"
         @cfg-navigate="handleCfgNavigate"

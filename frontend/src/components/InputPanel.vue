@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { analyzeTransaction, fetchTransactionBlock, normalizeAnalyzeError, type AnalyzeResult } from '../api/analyze'
 
 async function copyToClipboard(text: string) {
@@ -16,6 +16,7 @@ async function copyToClipboard(text: string) {
 }
 
 const emit = defineEmits<{
+  'analysis-progress': [txHash: string, result: AnalyzeResult]
   'analysis-complete': [txHash: string]
   'block-number-changed': [blockNumber: number]
 }>()
@@ -28,6 +29,17 @@ const blockStatus = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
 const blockErrorMsg = ref('')
 const result = ref<AnalyzeResult | null>(null)
+const progressLabel = computed(() => {
+  switch (result.value?.stage) {
+    case 'queued': return 'Analysis queued...'
+    case 'analyzing': return 'Analyzing transaction...'
+    case 'afg': return 'AFG ready · generating sequence diagram...'
+    case 'sequence': return 'Sequence ready · generating folded CFG...'
+    case 'folded_cfg': return 'Folded CFG ready · generating plain CFG...'
+    case 'plain_cfg': return 'Plain CFG ready · finalizing...'
+    default: return 'Processing transaction...'
+  }
+})
 
 // Expose methods to update fields from parent
 function updateTxHash(hash: string) {
@@ -77,7 +89,10 @@ async function onSubmit() {
   result.value = null
 
   try {
-    const res = await analyzeTransaction(hash)
+    const res = await analyzeTransaction(hash, (progress) => {
+      result.value = progress
+      emit('analysis-progress', hash, progress)
+    })
     if (res.status === 'success') {
       status.value = 'success'
       result.value = res
@@ -176,7 +191,7 @@ async function onBlockSubmit() {
     <div class="status-line">
       <span v-if="blockStatus === 'loading'" class="status-loading">Loading block...</span>
       <span v-else-if="blockStatus === 'error'" class="status-error">{{ blockErrorMsg }}</span>
-      <span v-else-if="status === 'loading'" class="status-loading">Processing transaction...</span>
+      <span v-else-if="status === 'loading'" class="status-loading">{{ progressLabel }}</span>
       <span v-else-if="status === 'error'" class="status-error">{{ errorMsg }}</span>
     </div>
   </div>

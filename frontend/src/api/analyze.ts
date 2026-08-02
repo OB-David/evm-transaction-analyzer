@@ -1,8 +1,27 @@
 export interface AnalyzeResult {
   status: string
+  stage: AnalysisStage
   result_dir: string
   files: string[]
   error?: string | null
+  updated_at?: string | null
+}
+
+export type AnalysisStage = 'queued' | 'analyzing' | 'afg' | 'sequence' | 'folded_cfg' | 'plain_cfg' | 'complete' | 'error'
+
+const ANALYSIS_STAGE_ORDER: Record<AnalysisStage, number> = {
+  queued: 0,
+  analyzing: 1,
+  afg: 2,
+  sequence: 3,
+  folded_cfg: 4,
+  plain_cfg: 5,
+  complete: 6,
+  error: -1,
+}
+
+export function analysisStageReached(current: AnalysisStage, target: AnalysisStage): boolean {
+  return ANALYSIS_STAGE_ORDER[current] >= ANALYSIS_STAGE_ORDER[target]
 }
 
 export type BlockId = string | number
@@ -37,7 +56,8 @@ export interface BlockGasData {
   error?: string | null
 }
 
-const API_BASE = 'http://47.242.183.159:40507'
+const configuredApiBase = import.meta.env.VITE_API_BASE || ''
+const API_BASE = configuredApiBase.endsWith('/') ? configuredApiBase.slice(0, -1) : configuredApiBase
 
 async function fetchTextFile(filename: string, txHash: string): Promise<string> {
   const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`)
@@ -55,7 +75,22 @@ async function fetchJsonFile<T>(filename: string, txHash: string): Promise<T> {
   return res.json()
 }
 
-export async function analyzeTransaction(txHash: string): Promise<AnalyzeResult> {
+async function fetchAnalysisStatus(txHash: string): Promise<AnalyzeResult> {
+  const res = await fetch(`${API_BASE}/api/analyze/${txHash}/status`)
+  if (!res.ok) {
+    throw new Error(`Failed to fetch analysis status: ${res.status}`)
+  }
+  return res.json()
+}
+
+function waitForPoll(milliseconds: number): Promise<void> {
+  return new Promise(resolve => window.setTimeout(resolve, milliseconds))
+}
+
+export async function analyzeTransaction(
+  txHash: string,
+  onProgress?: (result: AnalyzeResult) => void,
+): Promise<AnalyzeResult> {
   const res = await fetch(`${API_BASE}/api/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -66,7 +101,16 @@ export async function analyzeTransaction(txHash: string): Promise<AnalyzeResult>
     throw new Error(`Server error: ${res.status}`)
   }
 
-  return res.json()
+  let result: AnalyzeResult = await res.json()
+  onProgress?.(result)
+
+  while (result.status === 'processing') {
+    await waitForPoll(400)
+    result = await fetchAnalysisStatus(txHash)
+    onProgress?.(result)
+  }
+
+  return result
 }
 
 export async function fetchDotFile(txHash: string): Promise<string> {
@@ -188,12 +232,6 @@ export interface CfgViewData {
   blockInformation: BlockInformationMap
 }
 
-export interface CfgViewBundle {
-  initialMode: CfgMode
-  folded: CfgViewData
-  plain: CfgViewData
-}
-
 export interface PlainBlockLlmAnalysisRequest {
   tx_hash: string
   block_id: BlockId
@@ -255,27 +293,13 @@ async function fetchCfgSvgByMode(txHash: string, mode: CfgMode): Promise<string>
   return fetchTextFile(filename, txHash)
 }
 
-export async function fetchCfgViewData(txHash: string, preferredMode: CfgMode = 'folded'): Promise<CfgViewBundle> {
-  const [foldedSvgContent, plainSvgContent, foldedBlockInformation, plainBlockInformation] = await Promise.all([
-    fetchCfgSvgByMode(txHash, 'folded'),
-    fetchCfgSvgByMode(txHash, 'plain'),
-    fetchBlockInformation(txHash, 'folded'),
-    fetchBlockInformation(txHash, 'plain'),
+export async function fetchCfgViewData(txHash: string, mode: CfgMode = 'folded'): Promise<CfgViewData> {
+  const [svgContent, blockInformation] = await Promise.all([
+    fetchCfgSvgByMode(txHash, mode),
+    fetchBlockInformation(txHash, mode),
   ])
 
-  return {
-    initialMode: preferredMode === 'plain' ? 'plain' : 'folded',
-    folded: {
-      mode: 'folded',
-      svgContent: foldedSvgContent,
-      blockInformation: foldedBlockInformation,
-    },
-    plain: {
-      mode: 'plain',
-      svgContent: plainSvgContent,
-      blockInformation: plainBlockInformation,
-    },
-  }
+  return { mode, svgContent, blockInformation }
 }
 
 export async function fetchPlainBlockLlmAnalysis(

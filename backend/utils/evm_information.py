@@ -590,146 +590,109 @@ class TraceFormatter:
     def extract_contracts_from_trace(self, standardized_trace: StandardizedTrace) -> Set[str]:
         return {step["address"] for step in standardized_trace["steps"] if step["address"]}
 
-    # 从 trace 中为 slot 尝试寻找对应地址（按照你提供的算法，尊重原栈位置）
+    # 从 KECCAK 的 memory 输入中提取 slot 对应的地址
     def extract_slot_address_map(self, standardized_trace: Dict) -> Dict[str, str]:
         """
-        算法（精简版）：
-        - 收集所有 SSTORE/SLOAD 的 slot（取栈顶 st[-1]）
-        - 找到首次将该 slot 用于 keccak 的 SHA3 指令（SHA3 的下一 step 的栈顶等于 slot）
-        - 向前找最多两个 MSTORE（靠近 SHA3 的优先），并把每个 MSTORE 的 stack[-2] 作为地址候选
-        - 筛选候选：只保留 significant hex length 在 [20,40] 的候选
-        - 选择策略：
-            * 若只有一个候选，选它
-            * 若两个候选，比较它们各自的 top（stack[-1]）解析后的整数值，优先选能解析且值更小者；若都无法解析，选靠近SHA3的那个
-        - 返回 slot -> normalized address 映射（仅添加能被 normalize 成合法地址的项）
-        说明：日志降级为 debug 以减少噪音，只有最终添加到 slot_map 时会以 info 记录。
+        按 trace 顺序处理 KECCAK：
+        - stack[-1] 是 memory offset，stack[-2] 是 memory size
+        - 64 字节的标准 mapping 输入由 address word 和 base slot word 组成
+        - 下一 step 的 stack[-1] 是 KECCAK 结果，即 storage slot
+        - base slot 若已存在于 slot_addr_map，当前结果是二级 mapping，不写入
+        - 最后只返回实际被 SLOAD/SSTORE 使用过的 slot
         """
         steps = standardized_trace.get("steps", []) if isinstance(standardized_trace, dict) else standardized_trace["steps"]
 
-        slot_set: Set[str] = set()
-        # 收集所有 slot（从 SSTORE/SLOAD 的栈顶 st[-1]）
-        for step in steps:
-            if step["opcode"] in {"SSTORE", "SLOAD"}:
-                st = step.get("stack", []) or []
-                if len(st) >= 1:
-                    slot_set.add(st[-1].lower())
-        logger.debug(f"[slot_map]待处理 slot 列表: {slot_set}")
-
-        def hex_to_int_inner(s: str) -> Optional[int]:
-            # 期望 s 为带 0x 的 hex 字符串或其他可解析的 hex 表示
-            if not s:
+        def normalize_word(value: str) -> Optional[str]:
+            """标准化为 0x + 64 位小写 hex，供 slot 比较使用。"""
+            if value is None:
                 return None
-            try:
-                s2 = str(s).strip().lower()
-                if s2.startswith("0x"):
-                    s2 = s2[2:]
-                if s2 == "":
-                    return 0
-                return int(s2, 16)
-            except Exception:
+            body = self._strip_0x(str(value).strip()).lower() or "0"
+            if len(body) > 64 or any(ch not in "0123456789abcdef" for ch in body):
                 return None
+            return f"0x{body.zfill(64)}"
 
-        def significant_hex_length_raw(s: str) -> int:
-            """去掉 0x 前缀并去除前导零后返回十六进制字符长度"""
-            if not s:
-                return 0
-            s2 = str(s).lower()
-            if s2.startswith("0x"):
-                s2 = s2[2:]
-            s2 = s2.lstrip("0")
-            return len(s2)
+        def word_to_int(value: str) -> Optional[int]:
+            word = normalize_word(value)
+            return int(word, 16) if word is not None else None
 
-        slot_map: Dict[str, str] = {}
+        def flatten_memory(memory: List[str]) -> Optional[str]:
+            """将 memory 的 32 字节分段拼成连续、不含 0x 的 hex。"""
+            words = []
+            for raw_word in memory:
+                word = normalize_word(raw_word)
+                if word is None:
+                    return None
+                words.append(word[2:])
+            return "".join(words)
 
-        for slot in slot_set:
-            slot_int = hex_to_int_inner(slot)
-            if slot_int is None:
-                logger.debug(f"[slot_map] skip slot (cannot parse to int): {slot}")
+        # canonical slot -> SLOAD/SSTORE 栈中实际出现的字符串格式
+        used_slots: Dict[str, Set[str]] = {}
+        # canonical slot -> address；同时承担此前 slot 历史的作用
+        slot_addr_map: Dict[str, str] = {}
+
+        for index, step in enumerate(steps):
+            opcode = step.get("opcode", "").upper()
+            stack = step.get("stack", []) or []
+
+            if opcode in {"SLOAD", "SSTORE"} and stack:
+                canonical_slot = normalize_word(stack[-1])
+                if canonical_slot is not None:
+                    used_slots.setdefault(canonical_slot, set()).add(str(stack[-1]).lower())
+
+            if opcode not in {"SHA3", "KECCAK256", "KECCAK"}:
+                continue
+            if len(stack) < 2 or index + 1 >= len(steps):
                 continue
 
-            # 找到首次将 slot 写入 keccak 的 SHA3 指令索引（SHA3 的下一 step 的栈顶等于 slot）
-            sha3_index = None
-            for i, step in enumerate(steps):
-                if step["opcode"] in {"SHA3", "KECCAK256", "KECCAK"}:
-                    if i + 1 < len(steps):
-                        next_stack = steps[i + 1].get("stack", []) or []
-                        if len(next_stack) >= 1:
-                            top_val = hex_to_int_inner(next_stack[-1])
-                            if top_val is not None and top_val == slot_int:
-                                sha3_index = i
-                                break
-
-            if sha3_index is None:
-                logger.debug(f"[slot_map] no SHA3 usage found for slot {slot}")
+            memory_offset = word_to_int(stack[-1])
+            memory_size = word_to_int(stack[-2])
+            if memory_offset is None or memory_size != 64:
                 continue
 
-            # 向前找最多两个 MSTORE（靠近 SHA3 的先找到）
-            mstore_candidates = []
-            j = sha3_index - 1
-            while j >= 0 and len(mstore_candidates) < 2:
-                if steps[j]["opcode"] == "MSTORE":
-                    mstore_candidates.append((j, steps[j]))
-                j -= 1
-
-            if not mstore_candidates:
-                logger.debug(f"[slot_map] no MSTORE found before SHA3 for slot {slot}")
+            memory = step.get("memory", []) or []
+            if not isinstance(memory, list):
+                continue
+            memory_hex = flatten_memory(memory)
+            if memory_hex is None:
                 continue
 
-            # 从每个 MSTORE 提取 stack[-2] 作为候选地址，并记录其 stack[-1]（用于比较）
-            parsed_candidates = []
-            for idx, mstep in mstore_candidates:
-                mstack = mstep.get("stack", []) or []
-                if len(mstack) >= 2:
-                    cand_raw = mstack[-2]  # 地址候选来自 MSTORE 的栈顶第二个元素
-                    cand_top = mstack[-1]
-                    parsed_candidates.append({
-                        "raw": cand_raw,
-                        "top": cand_top,
-                        "mstep_idx": idx
-                    })
+            start = memory_offset * 2
+            end = start + memory_size * 2
+            if end > len(memory_hex):
+                continue
+            keccak_input = memory_hex[start:end]
+            address_word = keccak_input[:64]
+            base_slot = f"0x{keccak_input[64:128]}"
 
-            if not parsed_candidates:
-                logger.debug(f"[slot_map] no parsed candidates for slot {slot}")
+            # mapping key 必须是左侧补 12 字节 0 的标准 address word。
+            if address_word[:24] != "0" * 24:
+                continue
+            significant_address_length = len(address_word.lstrip("0"))
+            if not 20 <= significant_address_length <= 40:
                 continue
 
-            # 筛选满足 20-40 hex 位（去 0x 并去前导零）的候选
-            valid_candidates = [c for c in parsed_candidates if 20 <= significant_hex_length_raw(c["raw"]) <= 40]
+            next_stack = steps[index + 1].get("stack", []) or []
+            if not next_stack:
+                continue
+            slot = normalize_word(next_stack[-1])
+            if slot is None:
+                continue
 
-            chosen_addr = ""
+            # 第二部分引用已识别 slot，说明是 allowance 等二级 mapping。
+            if base_slot in slot_addr_map:
+                logger.debug(f"[slot_map] skip nested mapping slot: {slot}")
+                continue
 
-            if len(valid_candidates) == 1:
-                normalized_candidate = self._normalize_address(valid_candidates[0]["raw"])
-                if normalized_candidate:
-                    chosen_addr = normalized_candidate
-            elif len(valid_candidates) == 2:
-                # 两个候选都满足长度限制，比较各自 top 值
-                def top_int(c):
-                    return hex_to_int_inner(c["top"])
+            address = self._normalize_address(f"0x{address_word[-40:]}")
+            if address:
+                slot_addr_map[slot] = address
 
-                t0 = top_int(valid_candidates[0])
-                t1 = top_int(valid_candidates[1])
-
-                # 选择逻辑精简：优先选择能解析且值较小者；若只有一个可解析则选它；若都不可解析则选靠近 SHA3 的（列表顺序保证）
-                if t0 is None and t1 is not None:
-                    pick = valid_candidates[1]
-                elif t0 is not None and t1 is None:
-                    pick = valid_candidates[0]
-                elif t0 is not None and t1 is not None:
-                    pick = valid_candidates[0] if t0 <= t1 else valid_candidates[1]
-                else:
-                    pick = valid_candidates[0]
-
-                normalized_candidate = self._normalize_address(pick["raw"])
-                if normalized_candidate:
-                    chosen_addr = normalized_candidate
-
-            # 若选到地址则加入映射（并做一次标准化校验）
-            if chosen_addr:
-                norm_chosen = self._normalize_address(chosen_addr)
-                if norm_chosen:
-                    slot_map[slot] = norm_chosen
-
-        return slot_map
+        # 对外保留 trace 栈中的 slot 格式，兼容下游的直接字符串查表。
+        return {
+            raw_slot: address
+            for slot, address in slot_addr_map.items()
+            for raw_slot in used_slots.get(slot, set())
+        }
 
     # 获取单个合约字节码（使用缓存）
     def get_contract_bytecode(self, contract_address: str) -> ContractBytecode:

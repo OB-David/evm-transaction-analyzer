@@ -13,7 +13,7 @@ import {
   type BlockInformation,
   type BlockInformationMap,
   type CfgMode,
-  type CfgViewBundle,
+  type CfgViewData,
   type EdgeStepMap,
   type PlainBlockLlmAnalysisResponse,
   type SequenceCalldataMapping,
@@ -28,6 +28,7 @@ const props = defineProps<{
   isAnalyzing: boolean
   edgeStepMap: EdgeStepMap | null
   preferredMode: CfgMode
+  plainReady: boolean
 }>()
 
 const emit = defineEmits<{
@@ -90,7 +91,8 @@ const PRIORITY_SIGNATURES = new Set<string>([
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
 const cfgMode = ref<CfgMode>('folded')
-const cfgViews = ref<CfgViewBundle | null>(null)
+const cfgViews = ref<Partial<Record<CfgMode, CfgViewData>>>({})
+const plainLoading = ref(false)
 const blockInformation = ref<BlockInformationMap>({})
 const selectedNodeName = ref<string | null>(null)
 const selectedBlockInfo = ref<BlockInformation | null>(null)
@@ -135,7 +137,7 @@ watch(() => props.txHash, (newHash) => {
     loadCfgData(newHash)
   } else {
     status.value = 'idle'
-    cfgViews.value = null
+    cfgViews.value = {}
     sequenceCallMapping.value = null
     blockInformation.value = {}
     resetSwapSeedNodes()
@@ -202,8 +204,13 @@ watch(() => props.filteredEdgeIds, (edgeIds) => {
 
 watch(() => props.preferredMode, (mode) => {
   if (status.value !== 'success' || mode === cfgMode.value) return
-  if (!getCfgView(mode)) return
   void switchCfgMode(mode)
+})
+
+watch(() => props.plainReady, (ready) => {
+  if (ready && props.txHash && status.value === 'success') {
+    void ensureCfgView('plain')
+  }
 })
 
 watch(
@@ -221,26 +228,25 @@ async function loadCfgData(txHash: string) {
   status.value = 'loading'
   errorMsg.value = ''
   activeEdgeType.value = null
-  cfgViews.value = null
+  cfgViews.value = {}
   sequenceCallMapping.value = null
   blockInformation.value = {}
   clearFilterState()
   resetSelection()
 
   try {
-    const [cfgViewBundle, legend, foldedSwapPatterns, plainSwapPatterns, callMapping] = await Promise.all([
-      fetchCfgViewData(txHash, props.preferredMode),
+    const [foldedView, legend, foldedSwapPatterns, callMapping] = await Promise.all([
+      fetchCfgViewData(txHash, 'folded'),
       fetchLegendData(txHash),
       fetchSwapPatternResult(txHash, 'folded'),
-      fetchSwapPatternResult(txHash, 'plain'),
       fetchSequenceCalldataMapping(txHash).catch(() => null),
     ])
 
-    cfgViews.value = cfgViewBundle
+    cfgViews.value = { folded: foldedView }
     sequenceCallMapping.value = callMapping
     swapSeedNodesByMode.value = {
       folded: collectSwapSeedNodes(foldedSwapPatterns),
-      plain: collectSwapSeedNodes(plainSwapPatterns),
+      plain: new Set(),
     }
 
     addressNameMap.value.clear()
@@ -249,7 +255,8 @@ async function loadCfgData(txHash: string) {
     }
 
     status.value = 'success'
-    await switchCfgMode(cfgViewBundle.initialMode)
+    await switchCfgMode('folded')
+    if (props.plainReady) void ensureCfgView('plain')
   } catch (e: any) {
     status.value = 'error'
     errorMsg.value = e.message || 'Failed to load CFG data'
@@ -258,12 +265,12 @@ async function loadCfgData(txHash: string) {
 }
 
 function getCfgView(mode: CfgMode) {
-  if (!cfgViews.value) return null
-  return mode === 'plain' ? cfgViews.value.plain : cfgViews.value.folded
+  return cfgViews.value[mode] ?? null
 }
 
 async function switchCfgMode(mode: CfgMode) {
-  const nextView = getCfgView(mode)
+  if (mode === 'plain' && !props.plainReady) return
+  const nextView = getCfgView(mode) ?? await ensureCfgView(mode)
   if (!nextView) return
 
   cfgMode.value = mode
@@ -275,9 +282,33 @@ async function switchCfgMode(mode: CfgMode) {
   renderSvg(nextView.svgContent)
 }
 
+async function ensureCfgView(mode: CfgMode): Promise<CfgViewData | null> {
+  const existing = getCfgView(mode)
+  if (existing) return existing
+  if (!props.txHash || (mode === 'plain' && !props.plainReady)) return null
+
+  if (mode === 'plain') plainLoading.value = true
+  try {
+    const [view, swapPatterns] = await Promise.all([
+      fetchCfgViewData(props.txHash, mode),
+      fetchSwapPatternResult(props.txHash, mode),
+    ])
+    cfgViews.value = { ...cfgViews.value, [mode]: view }
+    swapSeedNodesByMode.value = {
+      ...swapSeedNodesByMode.value,
+      [mode]: collectSwapSeedNodes(swapPatterns),
+    }
+    return view
+  } catch (e: any) {
+    errorMsg.value = e.message || `Failed to load ${mode} CFG data`
+    return null
+  } finally {
+    if (mode === 'plain') plainLoading.value = false
+  }
+}
+
 function toggleCfgMode() {
   const nextMode: CfgMode = cfgMode.value === 'folded' ? 'plain' : 'folded'
-  if (!getCfgView(nextMode)) return
   void switchCfgMode(nextMode)
 }
 
@@ -1482,9 +1513,10 @@ onBeforeUnmount(() => {
       <span class="mode-badge" :class="cfgMode">{{ cfgModeBadge }}</span>
       <button
         class="cfg-mode-toggle"
+        :disabled="cfgMode === 'folded' && (!plainReady || plainLoading)"
         @click="toggleCfgMode"
       >
-        {{ toggleButtonLabel }}
+        {{ plainLoading && cfgMode === 'folded' ? 'Loading Plain CFG…' : toggleButtonLabel }}
       </button>
       <span
         class="edge-info-icon"
@@ -1710,6 +1742,11 @@ onBeforeUnmount(() => {
 .cfg-mode-toggle:hover {
   background: #f8fafc;
   border-color: rgba(100, 116, 139, 0.55);
+}
+
+.cfg-mode-toggle:disabled {
+  cursor: wait;
+  opacity: 0.58;
 }
 
 .cfg-container {

@@ -3,6 +3,7 @@ import sys
 import io
 import json
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict
 from web3 import Web3
 
@@ -27,6 +28,28 @@ from utils.sequence_diagram import build_refined_hierarchical_trace
 from main import create_result_directory, save_graphs
 
 load_dotenv()
+
+ANALYSIS_STATUS_FILENAME = "analysis_status.json"
+
+
+def _write_analysis_status(result_dir: str, stage: str, error: str | None = None) -> None:
+    """Atomically publish pipeline progress for the API and frontend poller."""
+    payload = {
+        "status": "error" if error else ("success" if stage == "complete" else "processing"),
+        "stage": stage,
+        "result_dir": os.path.abspath(result_dir),
+        "files": sorted(
+            name for name in os.listdir(result_dir)
+            if name != f".{ANALYSIS_STATUS_FILENAME}.tmp"
+        ),
+        "error": error,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    status_path = os.path.join(result_dir, ANALYSIS_STATUS_FILENAME)
+    temp_path = os.path.join(result_dir, f".{ANALYSIS_STATUS_FILENAME}.tmp")
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    os.replace(temp_path, status_path)
 
 def _normalize_edge_step(value: Any) -> int:
     if isinstance(value, bool): return 0
@@ -82,6 +105,7 @@ def _enrich_folded_blocks_information(cfg: Any, folded_blocks_map: Dict[str, Any
 def run(tx_hash: str):
     PROVIDER_URL = os.environ.get("GETH_API")
     result_dir = create_result_directory(tx_hash)
+    _write_analysis_status(result_dir, "analyzing")
 
     web3 = Web3(Web3.HTTPProvider(PROVIDER_URL))
     tx = web3.eth.get_transaction(tx_hash)
@@ -91,13 +115,11 @@ def run(tx_hash: str):
 
     # 基础检查
     if to_address is None or to_address == "":
-        print("This contract creation transaction is not supported.")
-        return
+        raise ValueError("This contract creation transaction is not supported.")
     
     contract_code = web3.eth.get_code(to_address)
     if len(contract_code) == 0:
-        print("This ETH transfer transaction is not supported.")
-        return
+        raise ValueError("This ETH transfer transaction is not supported.")
 
     formatter = TraceFormatter(PROVIDER_URL)
     processor = BasicBlockProcessor()
@@ -125,47 +147,19 @@ def run(tx_hash: str):
 
     pairs, annotations, pending_erc20 = pair_transactions(original_transfer, all_changes, token_decimals_map)
     edge_link_fcfg = afg_to_fcfg(pairs, pending_erc20, original_cfg, folded_node_map)
-    edge_link_pcfg = afg_to_pcfg(pairs, pending_erc20, plain_cfg)
     json_output_fcfg = edge_link_to_json(edge_link_fcfg)
-    json_output_pcfg = edge_link_to_json(edge_link_pcfg)
     arb_result = detect_arbitrage(pairs, pending_erc20)
     addr_balances = compute_address_balances(pairs, pending_erc20)
 
     # 4. 保存文件
-    # Trace & Changes
-    with open(os.path.join(result_dir, "trace.json"), "w", encoding="utf-8") as f:
-        json.dump(standardized_trace, f, indent=2, ensure_ascii=False)
+    # Changes are needed by the evidence panels; the very large full trace is
+    # persisted only after AFG has been published.
     with open(os.path.join(result_dir, "balance_and_eth_changes.json"), "w", encoding="utf-8") as f:
         json.dump(all_changes, f, indent=2, ensure_ascii=False)
 
     # Save edge link mappings
     with open(os.path.join(result_dir, "TFG_link_FCFG.json"), "w", encoding="utf-8") as f:
         f.write(json_output_fcfg)
-    with open(os.path.join(result_dir, "TFG_link_PCFG.json"), "w", encoding="utf-8") as f:
-        f.write(json_output_pcfg)
-
-    # Save folded blocks information and backfill PC range metadata.
-    folded_blocks_path = os.path.join(result_dir, "folded_blocks_information.json")
-    folded_blocks_map = cfg_constructor.build_fcfg_blocks_information(folded_cfg)
-    folded_blocks_map = _enrich_folded_blocks_information(folded_cfg, folded_blocks_map)
-    with open(folded_blocks_path, "w", encoding="utf-8") as f:
-        json.dump(folded_blocks_map, f, indent=2, ensure_ascii=False)
-
-    plain_blocks_path = os.path.join(result_dir, "plain_blocks_information.json")
-    plain_blocks_map = cfg_constructor.build_pcfg_blocks_information(plain_cfg, standardized_trace)
-    plain_blocks_map = _enrich_folded_blocks_information(plain_cfg, plain_blocks_map)
-    with open(plain_blocks_path, "w", encoding="utf-8") as f:
-        json.dump(plain_blocks_map, f, indent=2, ensure_ascii=False)
-
-    swap_fcfg_path = os.path.join(result_dir, "swap_in_fcfg.json")
-    swap_pcfg_path = os.path.join(result_dir, "swap_in_pcfg.json")
-    filter_to_file(folded_blocks_path, swap_fcfg_path)
-    filter_to_file(plain_blocks_path, swap_pcfg_path)
-
-    edge_info_path = os.path.join(result_dir, "edge_id-step.json")
-    edge_step_map = _build_edge_step_information_compat(folded_cfg)
-    with open(edge_info_path, "w", encoding="utf-8") as f:
-        json.dump(edge_step_map, f, indent=2, ensure_ascii=False)
 
     # Arbitrage & Balances
     with open(os.path.join(result_dir, "arbitrage.json"), "w", encoding="utf-8") as f:
@@ -178,8 +172,38 @@ def run(tx_hash: str):
     with open(os.path.join(result_dir, "address_balances.json"), "w", encoding="utf-8") as f:
         json.dump(addr_balances, f, indent=2, ensure_ascii=False)
 
+    def publish_stage(stage: str) -> None:
+        if stage == "afg":
+            _write_analysis_status(result_dir, stage)
+            with open(os.path.join(result_dir, "trace.json"), "w", encoding="utf-8") as f:
+                json.dump(standardized_trace, f, indent=2, ensure_ascii=False)
+            return
+        if stage == "folded_cfg":
+            folded_blocks_path = os.path.join(result_dir, "folded_blocks_information.json")
+            folded_blocks_map = cfg_constructor.build_fcfg_blocks_information(folded_cfg)
+            folded_blocks_map = _enrich_folded_blocks_information(folded_cfg, folded_blocks_map)
+            with open(folded_blocks_path, "w", encoding="utf-8") as f:
+                json.dump(folded_blocks_map, f, indent=2, ensure_ascii=False)
+            filter_to_file(folded_blocks_path, os.path.join(result_dir, "swap_in_fcfg.json"))
+
+            edge_step_map = _build_edge_step_information_compat(folded_cfg)
+            with open(os.path.join(result_dir, "edge_id-step.json"), "w", encoding="utf-8") as f:
+                json.dump(edge_step_map, f, indent=2, ensure_ascii=False)
+        elif stage == "plain_cfg":
+            edge_link_pcfg = afg_to_pcfg(pairs, pending_erc20, plain_cfg)
+            with open(os.path.join(result_dir, "TFG_link_PCFG.json"), "w", encoding="utf-8") as f:
+                f.write(edge_link_to_json(edge_link_pcfg))
+
+            plain_blocks_path = os.path.join(result_dir, "plain_blocks_information.json")
+            plain_blocks_map = cfg_constructor.build_pcfg_blocks_information(plain_cfg, standardized_trace)
+            plain_blocks_map = _enrich_folded_blocks_information(plain_cfg, plain_blocks_map)
+            with open(plain_blocks_path, "w", encoding="utf-8") as f:
+                json.dump(plain_blocks_map, f, indent=2, ensure_ascii=False)
+            filter_to_file(plain_blocks_path, os.path.join(result_dir, "swap_in_pcfg.json"))
+
+        _write_analysis_status(result_dir, stage)
+
     # 5. 渲染图表
-    tree_data = build_refined_hierarchical_trace(standardized_trace["steps"])
     save_graphs(
         result_dir=result_dir,
         plain_cfg=plain_cfg,
@@ -190,9 +214,12 @@ def run(tx_hash: str):
         pairs=pairs,
         annotations=annotations,
         pending_erc20=pending_erc20,
-        tree_data=tree_data,
+        tree_data=lambda: build_refined_hierarchical_trace(standardized_trace["steps"]),
         arb_result=arb_result,
+        progress_callback=publish_stage,
     )
+
+    _write_analysis_status(result_dir, "complete")
 
     print(f"RESULT_DIR={os.path.abspath(result_dir)}")
 
@@ -200,4 +227,10 @@ if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Usage: python main_api.py <tx_hash>", file=sys.stderr)
         sys.exit(1)
-    run(sys.argv[1])
+    tx_hash_arg = sys.argv[1]
+    try:
+        run(tx_hash_arg)
+    except Exception as exc:
+        result_dir_arg = create_result_directory(tx_hash_arg)
+        _write_analysis_status(result_dir_arg, "error", str(exc))
+        raise

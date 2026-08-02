@@ -5,7 +5,7 @@ import json, os
 import re
 import subprocess
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -33,6 +33,8 @@ def startup_prefetch():
 
 # Thread pool for running subprocesses on Windows
 executor = ThreadPoolExecutor(max_workers=4)
+analysis_jobs: dict[str, Future[subprocess.CompletedProcess[str]]] = {}
+analysis_jobs_lock = threading.Lock()
 
 app.add_middleware(
     CORSMiddleware,
@@ -82,9 +84,11 @@ class AnalyzeRequest(BaseModel):
 
 class AnalyzeResponse(BaseModel):
     status: str
+    stage: str = "analyzing"
     result_dir: str
     files: list[str]
     error: str | None = None
+    updated_at: str | None = None
 
 
 class BlockRequest(BaseModel):
@@ -166,55 +170,98 @@ class PlainBlockAnalysisResponse(BaseModel):
     context_meta: dict[str, Any]
 
 
+def _analysis_result_dir(tx_hash: str) -> str:
+    return os.path.join("Result", tx_hash.lstrip("0x"))
+
+
+def _analysis_status_path(tx_hash: str) -> str:
+    return os.path.join(_analysis_result_dir(tx_hash), "analysis_status.json")
+
+
+def _write_server_analysis_status(tx_hash: str, stage: str, error: str | None = None) -> None:
+    result_dir = _analysis_result_dir(tx_hash)
+    os.makedirs(result_dir, exist_ok=True)
+    payload = {
+        "status": "error" if error else "processing",
+        "stage": stage,
+        "result_dir": os.path.abspath(result_dir),
+        "files": sorted(os.listdir(result_dir)),
+        "error": error,
+    }
+    status_path = _analysis_status_path(tx_hash)
+    temp_path = f"{status_path}.tmp"
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    os.replace(temp_path, status_path)
+
+
+def _read_analysis_status(tx_hash: str) -> AnalyzeResponse | None:
+    status_path = _analysis_status_path(tx_hash)
+    try:
+        with open(status_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        return AnalyzeResponse(**payload)
+    except (FileNotFoundError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def _run_analysis_subprocess(tx_hash: str) -> subprocess.CompletedProcess[str]:
+    proc = subprocess.run(
+        ["uv", "run", "python", "main_api.py", tx_hash],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if proc.returncode != 0:
+        current = _read_analysis_status(tx_hash)
+        if current is None or current.status != "error":
+            _write_server_analysis_status(
+                tx_hash,
+                "error",
+                extract_analysis_error(proc.stdout, proc.stderr) or "Analysis failed.",
+            )
+    return proc
+
+
+def _cleanup_analysis_job(tx_hash: str, completed: Future[subprocess.CompletedProcess[str]]) -> None:
+    with analysis_jobs_lock:
+        if analysis_jobs.get(tx_hash) is completed:
+            analysis_jobs.pop(tx_hash, None)
+
+
 @app.post("/api/analyze", response_model=AnalyzeResponse)
 async def analyze(req: AnalyzeRequest):
     clear_plain_cfg_runtime_cache(req.tx_hash)
 
-    def run_analysis():
-        """Run analysis in a thread to avoid Windows asyncio subprocess issues."""
-        proc = subprocess.run(
-            ["uv", "run", "python", "main_api.py", req.tx_hash],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
-        return proc
+    with analysis_jobs_lock:
+        existing_job = analysis_jobs.get(req.tx_hash)
+        current = _read_analysis_status(req.tx_hash)
+        if existing_job is not None and not existing_job.done():
+            return current or AnalyzeResponse(status="processing", stage="queued", result_dir="", files=[])
+        if current is not None and current.status == "success":
+            return current
 
-    # Run subprocess in thread pool
-    loop = asyncio.get_event_loop()
-    proc = await loop.run_in_executor(executor, run_analysis)
+        _write_server_analysis_status(req.tx_hash, "queued")
+        submitted_job = executor.submit(_run_analysis_subprocess, req.tx_hash)
+        analysis_jobs[req.tx_hash] = submitted_job
 
-    if proc.returncode != 0:
-        return AnalyzeResponse(
-            status="error",
-            result_dir="",
-            files=[],
-            error=extract_analysis_error(proc.stdout, proc.stderr),
-        )
-
-    # Parse result directory from stdout
-    output = proc.stdout
-    result_dir = ""
-    for line in output.splitlines():
-        if line.startswith("RESULT_DIR="):
-            result_dir = line.split("=", 1)[1]
-            break
-
-    if not result_dir or not os.path.isdir(result_dir):
-        output_error = extract_analysis_error(proc.stdout, proc.stderr)
-        return AnalyzeResponse(
-            status="error",
-            result_dir="",
-            files=[],
-            error=output_error or "Pipeline completed but result directory not found.",
-        )
-
-    files = os.listdir(result_dir)
-    return AnalyzeResponse(
-        status="success",
-        result_dir=result_dir,
-        files=files,
+    submitted_job.add_done_callback(
+        lambda completed, tx_hash=req.tx_hash: _cleanup_analysis_job(tx_hash, completed)
     )
+
+    return _read_analysis_status(req.tx_hash) or AnalyzeResponse(
+        status="processing", stage="queued", result_dir="", files=[]
+    )
+
+
+@app.get("/api/analyze/{tx_hash}/status", response_model=AnalyzeResponse)
+async def analyze_status(tx_hash: str):
+    if not TX_HASH_RE.match(tx_hash):
+        raise HTTPException(status_code=400, detail="Invalid tx_hash format")
+    current = _read_analysis_status(tx_hash)
+    if current is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    return current
 
 
 @app.get("/api/files/{tx_hash}/{filename}")
