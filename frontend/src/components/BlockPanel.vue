@@ -3,6 +3,7 @@ import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import {
   fetchBlockGasData,
   fetchBlocksHeatmap,
+  fetchArbitrageTransactions,
   type BlockGasData,
   type BlocksHeatmapData,
   type TransactionGasInfo,
@@ -13,15 +14,12 @@ type ViewMode = 'blocks' | 'transactions'
 const props = defineProps<{
   blockNumber: number | null
   selectedTxHash?: string | null
-  arbitrageTxHashes?: Set<string>
-  arbitrageBlockNumbers?: Set<number>
 }>()
 
 const emit = defineEmits<{
   'transaction-selected': [txHash: string]
   'block-selected': [blockNumber: number]
   'latest-block': [blockNumber: number]
-  'latest-blocks-refreshed': []
 }>()
 
 // Shared state
@@ -37,9 +35,21 @@ const TX_COLOR_RANGE_MAX = 0.86
 // Auto-refresh
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 const REFRESH_INTERVAL_MS = 12000  // ~1 Ethereum block time
+const REQUEST_TIMEOUT_MS = 30000
+
+let blocksAbortController: AbortController | null = null
+let blockAbortController: AbortController | null = null
+let pageMarkerAbortController: AbortController | null = null
+let transactionMarkerAbortController: AbortController | null = null
+let plotResizeObserver: ResizeObserver | null = null
+let resizeFrame: number | null = null
+let reloadBlocksWhenVisible = false
+let reloadBlockWhenVisible = false
+let visibilityRestoreId = 0
 
 function startAutoRefresh() {
   stopAutoRefresh()
+  if (document.hidden) return
   refreshTimer = setInterval(() => {
     if (viewMode.value === 'blocks' && blocksOffset.value === 0 && !blocksLoading.value) {
       loadBlocksHeatmap()
@@ -78,14 +88,30 @@ function formatAge(blockTs: number): string {
 onUnmounted(() => {
   stopAutoRefresh()
   if (clockTimer !== null) clearInterval(clockTimer)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+  plotResizeObserver?.disconnect()
+  if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame)
+  blocksAbortController?.abort()
+  blockAbortController?.abort()
+  pageMarkerAbortController?.abort()
+  transactionMarkerAbortController?.abort()
 })
 
 // Blocks view state
 const blockPlotContainer = ref<HTMLDivElement | null>(null)
+const heatmapContainer = ref<HTMLDivElement | null>(null)
 const blocksData = ref<BlocksHeatmapData | null>(null)
 const blocksOffset = ref(0)
 const blocksLoading = ref(false)
 const blocksError = ref('')
+const transactionArbitrageTxHashes = ref<Set<string>>(new Set())
+const pageArbitrageBlockNumbers = ref<Set<number>>(new Set())
+const latestArbitrageBlock = ref<number | null>(null)
+const arbitrageCoverageMessage = ref('')
+let pageArbitrageRequestId = 0
+let transactionArbitrageRequestId = 0
+let blocksRequestId = 0
+let blockRequestId = 0
 
 // Transactions view state
 const txPlotContainer = ref<HTMLDivElement | null>(null)
@@ -102,6 +128,8 @@ const gasMax = ref<string>('')
 // Load Plotly from CDN
 onMounted(() => {
   startClock()
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  setupPlotResizeObserver()
   if (!(window as any).Plotly) {
     const script = document.createElement('script')
     script.src = 'https://cdn.plot.ly/plotly-2.24.1.min.js'
@@ -109,12 +137,101 @@ onMounted(() => {
       plotlyReady.value = true
       loadBlocksHeatmap().then(startAutoRefresh)
     }
+    script.onerror = () => {
+      blocksError.value = 'Failed to load the chart renderer'
+      blocksLoading.value = false
+    }
     document.head.appendChild(script)
   } else {
     plotlyReady.value = true
     loadBlocksHeatmap().then(startAutoRefresh)
   }
 })
+
+function setupPlotResizeObserver() {
+  if (typeof ResizeObserver === 'undefined') return
+  plotResizeObserver = new ResizeObserver(() => scheduleVisiblePlotResize())
+  if (heatmapContainer.value) plotResizeObserver.observe(heatmapContainer.value)
+}
+
+function scheduleVisiblePlotResize() {
+  if (document.hidden || resizeFrame !== null) return
+  resizeFrame = window.requestAnimationFrame(() => {
+    resizeFrame = null
+    const Plotly = (window as any).Plotly
+    const container = viewMode.value === 'blocks' ? blockPlotContainer.value : txPlotContainer.value
+    if (!Plotly || !container || container.clientWidth <= 0 || container.clientHeight <= 0) return
+    try {
+      Plotly.Plots.resize(container)
+    } catch (e) {
+      console.warn('Failed to resize block explorer chart:', e)
+    }
+  })
+}
+
+function handleVisibilityChange() {
+  if (document.hidden) {
+    visibilityRestoreId += 1
+    stopAutoRefresh()
+    reloadBlocksWhenVisible = blocksLoading.value
+    reloadBlockWhenVisible = loading.value
+    blocksRequestId += 1
+    blockRequestId += 1
+    pageArbitrageRequestId += 1
+    transactionArbitrageRequestId += 1
+    blocksAbortController?.abort()
+    blockAbortController?.abort()
+    pageMarkerAbortController?.abort()
+    transactionMarkerAbortController?.abort()
+    blocksLoading.value = false
+    loading.value = false
+    return
+  }
+
+  const restoreId = ++visibilityRestoreId
+  void restoreVisiblePlot(restoreId)
+}
+
+async function restoreVisiblePlot(restoreId: number) {
+  await nextTick()
+
+  let previousWidth = -1
+  let stableFrames = 0
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()))
+    if (document.hidden || restoreId !== visibilityRestoreId) return
+    const container = viewMode.value === 'blocks' ? blockPlotContainer.value : txPlotContainer.value
+    const width = container?.getBoundingClientRect().width ?? 0
+    if (width > 0 && Math.abs(width - previousWidth) < 0.5) stableFrames += 1
+    else stableFrames = 0
+    previousWidth = width
+    if (stableFrames >= 2) break
+  }
+
+  if (document.hidden || restoreId !== visibilityRestoreId) return
+  if (viewMode.value === 'blocks') {
+    if (blocksData.value) renderBlocksPlotly(blocksData.value)
+    if (reloadBlocksWhenVisible || !blocksData.value) void loadBlocksHeatmap()
+    if (blocksOffset.value === 0) startAutoRefresh()
+  } else {
+    if (blockData.value) renderPlotly(blockData.value)
+    if (reloadBlockWhenVisible && props.blockNumber !== null) {
+      void fetchAndRenderBlock(props.blockNumber)
+    }
+  }
+  reloadBlocksWhenVisible = false
+  reloadBlockWhenVisible = false
+}
+
+function startRequestTimeout(controller: AbortController): number {
+  return window.setTimeout(() => {
+    controller.abort(new DOMException('Request timed out', 'TimeoutError'))
+  }, REQUEST_TIMEOUT_MS)
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
 
 watch(() => props.blockNumber, async (newBlock) => {
   if (newBlock && plotlyReady.value) {
@@ -125,50 +242,116 @@ watch(() => props.blockNumber, async (newBlock) => {
   }
 })
 
+watch(viewMode, (_newMode, oldMode) => {
+  const Plotly = (window as any).Plotly
+  const oldContainer = oldMode === 'blocks' ? blockPlotContainer.value : txPlotContainer.value
+  if (Plotly && oldContainer) Plotly.purge(oldContainer)
+}, { flush: 'pre' })
+
 watch(() => props.selectedTxHash, (newTxHash) => {
   if (viewMode.value !== 'transactions' || !blockData.value) return
   applySelectedTransaction(blockData.value, newTxHash)
   renderPlotly(blockData.value)
 })
 
-watch(() => props.arbitrageTxHashes, () => {
-  if (viewMode.value === 'transactions' && blockData.value) {
-    renderPlotly(blockData.value)
-  }
-})
-
-watch(() => props.arbitrageBlockNumbers, () => {
-  if (viewMode.value === 'blocks' && blocksData.value) {
-    renderBlocksPlotly(blocksData.value)
-  }
-})
-
 // ─── Blocks View ───
 
+async function loadArbitrageMarkers(
+  fromBlock: number,
+  toBlock: number,
+  scope: 'page' | 'transactions',
+): Promise<void> {
+  const requestId = scope === 'page' ? ++pageArbitrageRequestId : ++transactionArbitrageRequestId
+  const previousController = scope === 'page' ? pageMarkerAbortController : transactionMarkerAbortController
+  previousController?.abort()
+  const controller = new AbortController()
+  if (scope === 'page') pageMarkerAbortController = controller
+  else transactionMarkerAbortController = controller
+  const timeout = startRequestTimeout(controller)
+  try {
+    const data = await fetchArbitrageTransactions(fromBlock, toBlock, controller.signal)
+    const isCurrent = scope === 'page'
+      ? requestId === pageArbitrageRequestId
+      : requestId === transactionArbitrageRequestId
+    if (!isCurrent) return
+    if (scope === 'page') {
+      pageArbitrageBlockNumbers.value = new Set(data.transactions.map(tx => tx.block_number))
+    } else {
+      transactionArbitrageTxHashes.value = new Set(data.transactions.map(tx => tx.tx_hash.toLowerCase()))
+    }
+    if (scope === 'page') {
+      latestArbitrageBlock.value = data.max_arbitrage_block
+      if (toBlock < data.history_start_block || fromBlock < data.history_start_block) {
+        arbitrageCoverageMessage.value = `Dune arbitrage coverage starts at #${data.history_start_block}`
+      } else if (!data.coverage_complete) {
+        arbitrageCoverageMessage.value = data.initial_sync_complete
+          ? 'Dune arbitrage index is updating'
+          : 'Dune arbitrage history is still syncing'
+      } else {
+        arbitrageCoverageMessage.value = ''
+      }
+    }
+  } catch (e) {
+    const isCurrent = scope === 'page'
+      ? requestId === pageArbitrageRequestId
+      : requestId === transactionArbitrageRequestId
+    if (!isCurrent) return
+    if (isAbortError(e)) return
+    if (scope === 'page') pageArbitrageBlockNumbers.value = new Set()
+    else transactionArbitrageTxHashes.value = new Set()
+    if (scope === 'page') {
+      latestArbitrageBlock.value = null
+      arbitrageCoverageMessage.value = 'Dune arbitrage markers unavailable'
+    }
+    console.warn('Failed to load local arbitrage markers:', e)
+  } finally {
+    window.clearTimeout(timeout)
+    if (scope === 'page' && pageMarkerAbortController === controller) pageMarkerAbortController = null
+    if (scope === 'transactions' && transactionMarkerAbortController === controller) {
+      transactionMarkerAbortController = null
+    }
+  }
+}
+
 async function loadBlocksHeatmap(): Promise<void> {
+  const requestId = ++blocksRequestId
+  const requestedOffset = blocksOffset.value
+  blocksAbortController?.abort()
+  const controller = new AbortController()
+  blocksAbortController = controller
+  const timeout = startRequestTimeout(controller)
   blocksLoading.value = true
   blocksError.value = ''
 
   try {
-    const data = await fetchBlocksHeatmap(blocksOffset.value, BLOCKS_HEATMAP_COUNT)
+    const data = await fetchBlocksHeatmap(requestedOffset, BLOCKS_HEATMAP_COUNT, controller.signal)
+    if (requestId !== blocksRequestId || requestedOffset !== blocksOffset.value) return
     if (data.status === 'error') {
       blocksError.value = data.error || 'Failed to fetch blocks'
       blocksLoading.value = false
       return
     }
     blocksData.value = data
+    if (data.blocks.length > 0) {
+      const blockNumbers = data.blocks.map(block => block.block_number)
+      await loadArbitrageMarkers(Math.min(...blockNumbers), Math.max(...blockNumbers), 'page')
+      if (requestId !== blocksRequestId || requestedOffset !== blocksOffset.value) return
+    }
     blocksLoading.value = false
 
     emit('latest-block', data.latest_block)
-    if (blocksOffset.value === 0) emit('latest-blocks-refreshed')
 
     await nextTick()
     if (blockPlotContainer.value && data.blocks.length > 0) {
       renderBlocksPlotly(data)
     }
   } catch (e: any) {
-    blocksError.value = e.message || 'Network error'
-    blocksLoading.value = false
+    if (requestId !== blocksRequestId) return
+    if (!isAbortError(e)) blocksError.value = e.message || 'Network error'
+  } finally {
+    window.clearTimeout(timeout)
+    if (requestId === blocksRequestId) blocksLoading.value = false
+    if (blocksAbortController === controller) blocksAbortController = null
   }
 }
 
@@ -184,11 +367,14 @@ function renderBlocksPlotly(data: BlocksHeatmapData) {
   gasMin.value = Math.round(colorMapping.actualMin).toLocaleString()
   gasMax.value = Math.round(colorMapping.actualMax).toLocaleString()
 
-  const hoverTexts = blocks.map(b =>
-    `Block: ${b.block_number}<br>` +
-    `Avg Gas: ${b.avg_gas.toFixed(0)}<br>` +
-    `Tx Count: ${b.tx_count}`
-  )
+  const hoverTexts = blocks.map(b => {
+    const arbitrageLabel = pageArbitrageBlockNumbers.value.has(b.block_number)
+      ? '<br>Dune atomic arbitrage: Yes'
+      : ''
+    return `Block: ${b.block_number}<br>` +
+      `Avg Gas: ${b.avg_gas.toFixed(0)}<br>` +
+      `Tx Count: ${b.tx_count}${arbitrageLabel}`
+  })
 
   const rows = Math.ceil(blocks.length / 10)
   const plotHeight = rows * 30 + 22
@@ -223,7 +409,7 @@ function renderBlocksPlotly(data: BlocksHeatmapData) {
   }
 
   const layout = {
-    width: null as any,
+    autosize: true,
     height: plotHeight,
     showlegend: false,
     xaxis: { visible: false, fixedrange: true, range: [-0.5, 9.5] },
@@ -235,7 +421,7 @@ function renderBlocksPlotly(data: BlocksHeatmapData) {
 
   const blockTraces: any[] = [trace]
 
-  const arbBlocks = props.arbitrageBlockNumbers
+  const arbBlocks = pageArbitrageBlockNumbers.value
   if (arbBlocks && arbBlocks.size > 0) {
     const flagged = blocks.filter(b => arbBlocks.has(b.block_number))
     if (flagged.length > 0) {
@@ -257,8 +443,9 @@ function renderBlocksPlotly(data: BlocksHeatmapData) {
 
   Plotly.newPlot(blockPlotContainer.value, blockTraces, layout, {
     displayModeBar: false,
-    responsive: true,
+    responsive: false,
   })
+  scheduleVisiblePlotResize()
 
   ;(blockPlotContainer.value as any).removeAllListeners('plotly_click')
   ;(blockPlotContainer.value as any).on('plotly_click', (eventData: any) => {
@@ -289,6 +476,22 @@ function navigateLatest() {
   loadBlocksHeatmap().then(startAutoRefresh)
 }
 
+function navigateLatestArbitrage() {
+  const targetBlock = latestArbitrageBlock.value
+  const latestBlock = blocksData.value?.latest_block
+  if (targetBlock === null || latestBlock === undefined) return
+
+  stopAutoRefresh()
+  viewMode.value = 'blocks'
+
+  // Keep the target near the center of the 180-block heatmap instead of
+  // opening its transaction view directly.
+  const blocksAfterTarget = Math.floor(BLOCKS_HEATMAP_COUNT / 2)
+  const pageNewestBlock = Math.min(latestBlock, targetBlock + blocksAfterTarget)
+  blocksOffset.value = Math.max(0, latestBlock - pageNewestBlock)
+  loadBlocksHeatmap()
+}
+
 function backToBlocks() {
   viewMode.value = 'blocks'
   selectedTxInfo.value = null
@@ -303,18 +506,26 @@ function backToBlocks() {
 // ─── Transactions View ───
 
 async function fetchAndRenderBlock(blockNum: number) {
+  const requestId = ++blockRequestId
+  blockAbortController?.abort()
+  const controller = new AbortController()
+  blockAbortController = controller
+  const timeout = startRequestTimeout(controller)
   loading.value = true
   error.value = ''
   blockData.value = null
 
   try {
-    const data = await fetchBlockGasData(blockNum)
+    const data = await fetchBlockGasData(blockNum, controller.signal)
+    if (requestId !== blockRequestId || props.blockNumber !== blockNum) return
     if (data.status === 'error') {
       error.value = data.error || 'Failed to fetch block data'
       loading.value = false
       return
     }
     blockData.value = data
+    await loadArbitrageMarkers(blockNum, blockNum, 'transactions')
+    if (requestId !== blockRequestId || props.blockNumber !== blockNum) return
     loading.value = false
 
     await nextTick()
@@ -323,8 +534,12 @@ async function fetchAndRenderBlock(blockNum: number) {
       renderPlotly(data)
     }
   } catch (e: any) {
-    error.value = e.message || 'Network error'
-    loading.value = false
+    if (requestId !== blockRequestId) return
+    if (!isAbortError(e)) error.value = e.message || 'Network error'
+  } finally {
+    window.clearTimeout(timeout)
+    if (requestId === blockRequestId) loading.value = false
+    if (blockAbortController === controller) blockAbortController = null
   }
 }
 
@@ -340,7 +555,7 @@ function applySelectedTransaction(data: BlockGasData, txHash?: string | null) {
     selectedTxIndex.value = null
     return
   }
-  selectedTxInfo.value = data.transactions[index]
+  selectedTxInfo.value = data.transactions[index]!
   selectedTxIndex.value = index
 }
 
@@ -366,11 +581,14 @@ function renderPlotly(data: BlockGasData) {
     const toDisplay = tx.to_addr
       ? `${tx.to_addr.substring(0, 10)}...`
       : 'Contract Creation'
+    const arbitrageLabel = transactionArbitrageTxHashes.value.has(tx.hash.toLowerCase())
+      ? '<br>Dune atomic arbitrage: Yes'
+      : ''
     return `${tx.hash.substring(0, 10)}...${tx.hash.substring(tx.hash.length - 6)}<br>` +
            `Gas: ${tx.gas}<br>` +
            `Price: ${tx.gas_price_gwei.toFixed(2)} Gwei<br>` +
            `From: ${tx.from_addr.substring(0, 10)}...<br>` +
-           `To: ${toDisplay}`
+           `To: ${toDisplay}${arbitrageLabel}`
   })
 
   const rows = Math.ceil(txs.length / 10)
@@ -380,6 +598,7 @@ function renderPlotly(data: BlockGasData) {
     x: txs.map(tx => tx.x),
     y: txs.map(tx => tx.y),
     mode: 'markers' as const,
+    customdata: txs.map(tx => tx.hash),
     marker: {
       symbol: 'square',
       size: 30,
@@ -409,13 +628,14 @@ function renderPlotly(data: BlockGasData) {
   const traces: any[] = [trace]
 
   // Arbitrage overlay: red border for transactions flagged by Dune
-  const arbSet = props.arbitrageTxHashes
+  const arbSet = transactionArbitrageTxHashes.value
   if (arbSet && arbSet.size > 0) {
-    const arbTxs = txs.filter(tx => arbSet.has(tx.hash))
+    const arbTxs = txs.filter(tx => arbSet.has(tx.hash.toLowerCase()))
     if (arbTxs.length > 0) {
       traces.push({
         x: arbTxs.map(tx => tx.x),
         y: arbTxs.map(tx => tx.y),
+        customdata: arbTxs.map(tx => tx.hash),
         mode: 'markers',
         marker: {
           symbol: 'square',
@@ -435,6 +655,7 @@ function renderPlotly(data: BlockGasData) {
       traces.push({
         x: [sel.x],
         y: [sel.y],
+        customdata: [sel.hash],
         mode: 'markers',
         marker: {
           symbol: 'square',
@@ -449,7 +670,7 @@ function renderPlotly(data: BlockGasData) {
   }
 
   const layout = {
-    width: null as any,
+    autosize: true,
     height: plotHeight,
     showlegend: false,
     xaxis: { visible: false, fixedrange: true, range: [-0.5, 9.5] },
@@ -461,15 +682,19 @@ function renderPlotly(data: BlockGasData) {
 
   Plotly.newPlot(txPlotContainer.value, traces, layout, {
     displayModeBar: false,
-    responsive: true,
+    responsive: false,
   })
+  scheduleVisiblePlotResize()
 
   ;(txPlotContainer.value as any).removeAllListeners('plotly_click')
   ;(txPlotContainer.value as any).on('plotly_click', (eventData: any) => {
     const pt = eventData.points?.[0]
     if (!pt) return
-    const idx = pt.pointIndex as number
-    const tx = txs[idx]
+    const clickedHash = typeof pt.customdata === 'string' ? pt.customdata : null
+    const idx = clickedHash
+      ? txs.findIndex(tx => tx.hash.toLowerCase() === clickedHash.toLowerCase())
+      : pt.pointIndex as number
+    const tx = idx >= 0 ? txs[idx] : undefined
     if (!tx) return
     selectedTxInfo.value = tx
     selectedTxIndex.value = idx
@@ -480,12 +705,6 @@ function renderPlotly(data: BlockGasData) {
 }
 
 // ─── Helpers ───
-
-function formatTimestamp(ts: number): string {
-  if (!ts) return ''
-  const date = new Date(ts * 1000)
-  return date.toLocaleString()
-}
 
 function truncateHash(hash: string): string {
   if (hash.length <= 20) return hash
@@ -502,8 +721,8 @@ function quantile(values: number[], p: number): number {
   const pos = (sorted.length - 1) * p
   const base = Math.floor(pos)
   const rest = pos - base
-  const lower = sorted[base]
-  const upper = sorted[Math.min(base + 1, sorted.length - 1)]
+  const lower = sorted[base]!
+  const upper = sorted[Math.min(base + 1, sorted.length - 1)]!
   return lower + (upper - lower) * rest
 }
 
@@ -585,9 +804,22 @@ async function copyToClipboard(text: string) {
           <span class="age-text">{{ formatAge(blocksData.latest_block_timestamp || blocksData.page_timestamp) }}</span>
           <span v-if="refreshTimer !== null" class="live-badge">LIVE</span>
         </div>
+        <div v-if="arbitrageCoverageMessage" class="arbitrage-coverage">
+          {{ arbitrageCoverageMessage }}
+        </div>
         <div class="nav-buttons">
           <button class="nav-btn" @click="navigateOlder">Older 100</button>
           <button class="nav-btn nav-btn-home" @click="navigateLatest">Latest</button>
+          <button
+            class="nav-btn nav-btn-arbitrage"
+            :disabled="latestArbitrageBlock === null"
+            :title="latestArbitrageBlock === null
+              ? 'No local Dune arbitrage record is available'
+              : `Show blocks around latest recorded arbitrage block #${latestArbitrageBlock}`"
+            @click="navigateLatestArbitrage"
+          >
+            Latest Arbitrage
+          </button>
           <button class="nav-btn" @click="navigateNewer">Newer 100</button>
         </div>
       </template>
@@ -626,9 +858,9 @@ async function copyToClipboard(text: string) {
     <div v-else-if="viewMode === 'transactions' && error" class="status-error">{{ error }}</div>
 
     <!-- Heatmap area -->
-    <div class="heatmap-container">
-      <div v-show="viewMode === 'blocks'" ref="blockPlotContainer" class="plot-area"></div>
-      <div v-show="viewMode === 'transactions' && blockData" ref="txPlotContainer" class="plot-area"></div>
+    <div ref="heatmapContainer" class="heatmap-container">
+      <div v-if="viewMode === 'blocks'" ref="blockPlotContainer" class="plot-area"></div>
+      <div v-else-if="blockData" ref="txPlotContainer" class="plot-area"></div>
     </div>
   </div>
 </template>
@@ -636,6 +868,8 @@ async function copyToClipboard(text: string) {
 <style scoped>
 .block-panel {
   position: relative;
+  width: 100%;
+  min-width: 0;
   background: var(--panel-bg);
   padding: 6px 12px 10px 12px;
   display: flex;
@@ -715,6 +949,12 @@ async function copyToClipboard(text: string) {
   gap: 6px;
 }
 
+.arbitrage-coverage {
+  color: #9a6700;
+  font-size: 9px;
+  text-align: center;
+}
+
 .latest-block-num {
   font-family: 'Consolas', 'Monaco', monospace;
   color: var(--text);
@@ -743,6 +983,8 @@ async function copyToClipboard(text: string) {
 
 .nav-buttons {
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   gap: 4px;
   justify-content: center;
 }
@@ -763,6 +1005,13 @@ async function copyToClipboard(text: string) {
   color: var(--accent);
 }
 
+.nav-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  border-color: var(--border);
+  color: var(--muted);
+}
+
 .nav-btn-home {
   background: var(--accent);
   color: #fff;
@@ -773,6 +1022,17 @@ async function copyToClipboard(text: string) {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
   color: #fff;
+}
+
+.nav-btn-arbitrage {
+  border-color: #e53935;
+  color: #c62828;
+  font-weight: 600;
+}
+
+.nav-btn-arbitrage:not(:disabled):hover {
+  border-color: #c62828;
+  color: #b71c1c;
 }
 
 .copy-btn {
@@ -877,16 +1137,21 @@ async function copyToClipboard(text: string) {
 
 .heatmap-container {
   flex: 1;
-  overflow: visible;
+  width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: visible;
   display: flex;
   flex-direction: column;
   min-height: 0;
   padding: 8px 0;
-  margin: 0 -12px;
 }
 
 .plot-area {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding: 2px 0;
-  flex-shrink: 0;
+  flex: 0 0 auto;
 }
 </style>

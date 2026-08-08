@@ -40,8 +40,10 @@ let wrapperGroup: SVGGElement | null = null
 let zoomBehavior: any = null
 let svgSelection: any = null
 let currentTransform = zoomIdentity
+let loadRequestId = 0
 
 watch(() => props.txHash, (newHash) => {
+  loadRequestId += 1
   resetPanelState()
   if (newHash) {
     loadSequenceData(newHash)
@@ -64,6 +66,7 @@ onBeforeUnmount(() => {
 })
 
 async function loadSequenceData(txHash: string) {
+  const requestId = loadRequestId
   status.value = 'loading'
   errorMsg.value = ''
 
@@ -73,17 +76,19 @@ async function loadSequenceData(txHash: string) {
       fetchSequenceCalldataMapping(txHash),
       fetchLegendData(txHash).catch(() => null),
     ])
+    if (requestId !== loadRequestId || props.txHash !== txHash) return
 
     sequenceMapping = mapping
     legendData = legend
     status.value = 'success'
 
     await nextTick()
-    if (!graphContainer.value) return
+    if (!graphContainer.value || requestId !== loadRequestId) return
 
     graphContainer.value.innerHTML = svgText
     setupSvg()
   } catch (error: any) {
+    if (requestId !== loadRequestId) return
     status.value = 'error'
     errorMsg.value = formatLoadError(error)
   }

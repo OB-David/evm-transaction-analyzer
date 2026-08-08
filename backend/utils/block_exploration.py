@@ -2,13 +2,20 @@
 import os
 import time
 import threading
+import logging
 import numpy as np
 from web3 import Web3
+from web3.exceptions import BlockNotFound
 from typing import Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+logger = logging.getLogger(__name__)
+ETHEREUM_MAINNET_CHAIN_ID = 1
+# This repository only indexes mainnet from this known-existing block onward.
+MAINNET_KNOWN_BLOCK = 24_136_053
 
 # Initialize Web3 connection
 # Add no-cache headers to avoid HTTP-level caching by proxies and public RPC gateways.
@@ -25,6 +32,66 @@ _latest_block_cache = {"num": 0, "ts": 0.0, "block_ts": 0}
 PREFETCH_COUNT = 300
 
 
+def get_chain_id() -> int:
+    return int(w3.eth.chain_id)
+
+
+def _find_latest_available_mainnet_block() -> Tuple[int, int]:
+    """Find the highest readable block when a provider reports latest=0.
+
+    Some archive gateways serve numbered blocks correctly but return genesis for
+    both eth_blockNumber and eth_getBlockByNumber('latest'). Probe upward from a
+    known mainnet block, then binary-search the first unavailable block.
+    """
+    cached_number = int(_latest_block_cache["num"])
+    lower = max(MAINNET_KNOWN_BLOCK, cached_number)
+    try:
+        lower_block = w3.eth.get_block(lower, full_transactions=False)
+    except BlockNotFound as exc:
+        raise RuntimeError(
+            f"Ethereum RPC cannot read required mainnet block {lower}"
+        ) from exc
+
+    # After the first resolution, the common case is that no newer numbered block
+    # exists yet. One probe answers that without repeating a full binary search.
+    if cached_number >= MAINNET_KNOWN_BLOCK:
+        try:
+            next_block = w3.eth.get_block(lower + 1, full_transactions=False)
+        except BlockNotFound:
+            return int(lower_block["number"]), int(lower_block.get("timestamp", 0))
+        lower += 1
+        lower_block = next_block
+
+    # Exponential probing quickly brackets the head without assuming block time.
+    step = 16 if cached_number >= MAINNET_KNOWN_BLOCK else 1_024
+    max_probe = lower + 20_000_000
+    upper = lower + step
+    while upper <= max_probe:
+        try:
+            candidate = w3.eth.get_block(upper, full_transactions=False)
+        except BlockNotFound:
+            break
+        lower = upper
+        lower_block = candidate
+        step *= 2
+        upper = lower + step
+    else:
+        raise RuntimeError("Ethereum RPC head search exceeded its safety boundary")
+
+    # lower exists and upper does not. Find the last existing block.
+    while lower + 1 < upper:
+        middle = (lower + upper) // 2
+        try:
+            candidate = w3.eth.get_block(middle, full_transactions=False)
+        except BlockNotFound:
+            upper = middle
+        else:
+            lower = middle
+            lower_block = candidate
+
+    return int(lower_block["number"]), int(lower_block.get("timestamp", 0))
+
+
 def get_latest_block_info() -> Tuple[int, int]:
     """Return (block_number, block_timestamp) for the chain tip.
 
@@ -37,8 +104,14 @@ def get_latest_block_info() -> Tuple[int, int]:
     if now - _latest_block_cache["ts"] < 3 and _latest_block_cache["num"] > 0:
         return _latest_block_cache["num"], _latest_block_cache["block_ts"]
     block = w3.eth.get_block('latest', full_transactions=False)
-    num = block['number']
-    block_ts = block.get('timestamp', 0)
+    num = int(block['number'])
+    block_ts = int(block.get('timestamp', 0))
+    if num < MAINNET_KNOWN_BLOCK and get_chain_id() == ETHEREUM_MAINNET_CHAIN_ID:
+        logger.warning(
+            "Ethereum RPC reported latest block %d; locating the mainnet head by block number",
+            num,
+        )
+        num, block_ts = _find_latest_available_mainnet_block()
     _latest_block_cache["num"] = num
     _latest_block_cache["block_ts"] = block_ts
     _latest_block_cache["ts"] = now
@@ -93,9 +166,7 @@ def _new_block_watcher():
     while True:
         time.sleep(3)
         try:
-            block = w3.eth.get_block('latest', full_transactions=False)
-            current = block['number']
-            block_ts = block.get('timestamp', 0)
+            current, block_ts = get_latest_block_info()
             if current > last_seen:
                 for num in range(last_seen + 1, current + 1):
                     cache_key = str(num)
@@ -122,10 +193,9 @@ def _new_block_watcher():
 def start_prefetch():
     """Start background prefetch thread from the latest block, then watch for new blocks."""
     try:
-        block = w3.eth.get_block('latest', full_transactions=False)
-        initial_height = block['number']
+        initial_height, initial_timestamp = get_latest_block_info()
         _latest_block_cache["num"] = initial_height
-        _latest_block_cache["block_ts"] = block.get('timestamp', 0)
+        _latest_block_cache["block_ts"] = initial_timestamp
         _latest_block_cache["ts"] = time.time()
         threading.Thread(target=_prefetch_worker, args=(initial_height,), daemon=True).start()
         threading.Thread(target=_new_block_watcher, daemon=True).start()

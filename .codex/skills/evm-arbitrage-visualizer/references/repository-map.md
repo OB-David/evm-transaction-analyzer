@@ -15,7 +15,7 @@
 
 ## Result artifacts
 
-Results live under `backend/Result/<hash-without-0x>/` when run from the documented backend directory.
+Results live under `data_base/analysis/<hash-without-0x>/`, independent of the process working directory.
 
 - `trace.json`: standardized execution evidence.
 - `balance_and_eth_changes.json`: asset-change evidence.
@@ -32,10 +32,20 @@ Results live under `backend/Result/<hash-without-0x>/` when run from the documen
 
 ## API and frontend
 
-`backend/server.py` runs `main_api.py` via `POST /api/analyze`, serves whitelisted artifacts, provides block gas views, cached Dune hashes, and plain-block LLM analysis. Arbitrage endpoints include `GET/POST /api/arbitrage-hashes` and `GET /api/arbitrage/{tx_hash}`.
+`backend/server.py` runs `main_api.py` via `POST /api/analyze`, serves whitelisted artifacts, provides block gas views, local SQLite-backed arbitrage markers, and plain-block LLM analysis. Arbitrage endpoints include `GET /api/arbitrage-transactions` and `GET /api/arbitrage/{tx_hash}`.
 
-`frontend/src/api/analyze.ts` owns artifact types/loaders. `AfgPanel.vue` concurrently loads DOT, edge links, detector output, balances, and legend; it extracts orders from labels like `(7)`, highlights/filter candidates, shows balance tooltips, and emits CFG IDs. `CfgPanel.vue` supplies folded/plain and swap highlighting. `BlockPanel.vue` marks Dune hashes/blocks. `App.vue` coordinates cross-panel selection and SVG export.
+`frontend/src/api/analyze.ts` owns artifact types/loaders. `AfgPanel.vue` concurrently loads DOT, edge links, detector output, balances, and legend; it extracts orders from labels like `(7)`, highlights/filter candidates, shows balance tooltips, and emits CFG IDs. `CfgPanel.vue` supplies folded/plain and swap highlighting. `BlockPanel.vue` queries local block-range labels and marks matching transactions/blocks. `App.vue` coordinates cross-panel selection and SVG export.
+
+## Label toolbox
+
+`backend/labels/` has exactly two provider families plus one coordinator:
+
+- `dune/`: imports externally computed Dune labels; its `store.py` owns Dune run/chunk state and historical backfill support.
+- `geth/`: reads Geth call traces and detects labels; its `store.py` owns the durable per-block cursor and atomic writes.
+- `coordinator.py`: initializes the shared SQLite database, exposes unified label queries, and merges Dune/Geth coverage intervals.
+
+The Geth detector lives inside `labels/geth/`; it is an implementation detail of the Geth label source, not a third label provider.
 
 ## Runtime
 
-Backend needs Python 3.12+, UV, FastAPI/Web3, and `GETH_API`. Dune markers use `DUNE_API` and the fixed query in `arbitrage_crawler.py`. Rendering uses Graphviz and PlantUML/Java. Frontend uses Vue 3, TypeScript, Vite, D3-Graphviz, and Plotly. Pure detector tests can use synthetic fixtures without network access.
+Backend needs Python 3.12+, UV, FastAPI/Web3, and `GETH_API`. Dune imports use numbered `DUNE_API1`, `DUNE_API2`, ... credentials and the query in `backend/labels/dune/DUNE_QUERY.sql`. Rendering uses Graphviz and PlantUML/Java. Frontend uses Vue 3, TypeScript, Vite, D3-Graphviz, and Plotly. Pure detector tests can use synthetic fixtures without network access.

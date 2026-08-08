@@ -9,15 +9,21 @@ const props = defineProps<{
 }>()
 
 const legendData = ref<LegendData | null>(null)
+let loadRequestId = 0
 
 watch(() => props.txHash, async (newHash) => {
+  const requestId = ++loadRequestId
   if (!newHash) {
     legendData.value = null
     return
   }
   try {
-    legendData.value = await fetchLegendData(newHash)
+    const nextLegend = await fetchLegendData(newHash)
+    if (requestId === loadRequestId && props.txHash === newHash) {
+      legendData.value = nextLegend
+    }
   } catch (e) {
+    if (requestId !== loadRequestId) return
     console.warn('Failed to load legend data:', e)
     legendData.value = null
   }

@@ -122,6 +122,7 @@ const PLAIN_VIEW_PADDING = 20
 let zoomBehavior: ZoomBehavior<SVGSVGElement, unknown> | null = null
 let resizeObserver: ResizeObserver | null = null
 let edgeTooltipHideTimer: number | null = null
+let cfgLoadRequestId = 0
 
 const cfgModeBadge = computed(() => cfgMode.value === 'folded' ? 'Folded CFG' : 'Plain CFG')
 const toggleButtonLabel = computed(() => cfgMode.value === 'folded' ? 'Plain CFG' : 'Folded CFG')
@@ -132,6 +133,7 @@ const selectedActionDisplays = computed<ActionDisplay[]>(() => {
 })
 
 watch(() => props.txHash, (newHash) => {
+  cfgLoadRequestId += 1
   resetSelection()
   if (newHash) {
     loadCfgData(newHash)
@@ -225,6 +227,7 @@ watch(
 )
 
 async function loadCfgData(txHash: string) {
+  const requestId = cfgLoadRequestId
   status.value = 'loading'
   errorMsg.value = ''
   activeEdgeType.value = null
@@ -241,6 +244,7 @@ async function loadCfgData(txHash: string) {
       fetchSwapPatternResult(txHash, 'folded'),
       fetchSequenceCalldataMapping(txHash).catch(() => null),
     ])
+    if (requestId !== cfgLoadRequestId || props.txHash !== txHash) return
 
     cfgViews.value = { folded: foldedView }
     sequenceCallMapping.value = callMapping
@@ -256,8 +260,10 @@ async function loadCfgData(txHash: string) {
 
     status.value = 'success'
     await switchCfgMode('folded')
+    if (requestId !== cfgLoadRequestId) return
     if (props.plainReady) void ensureCfgView('plain')
   } catch (e: any) {
+    if (requestId !== cfgLoadRequestId) return
     status.value = 'error'
     errorMsg.value = e.message || 'Failed to load CFG data'
     resetSwapSeedNodes()
@@ -270,8 +276,9 @@ function getCfgView(mode: CfgMode) {
 
 async function switchCfgMode(mode: CfgMode) {
   if (mode === 'plain' && !props.plainReady) return
+  const requestId = cfgLoadRequestId
   const nextView = getCfgView(mode) ?? await ensureCfgView(mode)
-  if (!nextView) return
+  if (!nextView || requestId !== cfgLoadRequestId) return
 
   cfgMode.value = mode
   blockInformation.value = nextView.blockInformation
@@ -286,13 +293,16 @@ async function ensureCfgView(mode: CfgMode): Promise<CfgViewData | null> {
   const existing = getCfgView(mode)
   if (existing) return existing
   if (!props.txHash || (mode === 'plain' && !props.plainReady)) return null
+  const txHash = props.txHash
+  const requestId = cfgLoadRequestId
 
   if (mode === 'plain') plainLoading.value = true
   try {
     const [view, swapPatterns] = await Promise.all([
-      fetchCfgViewData(props.txHash, mode),
-      fetchSwapPatternResult(props.txHash, mode),
+      fetchCfgViewData(txHash, mode),
+      fetchSwapPatternResult(txHash, mode),
     ])
+    if (requestId !== cfgLoadRequestId || props.txHash !== txHash) return null
     cfgViews.value = { ...cfgViews.value, [mode]: view }
     swapSeedNodesByMode.value = {
       ...swapSeedNodesByMode.value,
@@ -300,10 +310,11 @@ async function ensureCfgView(mode: CfgMode): Promise<CfgViewData | null> {
     }
     return view
   } catch (e: any) {
+    if (requestId !== cfgLoadRequestId) return null
     errorMsg.value = e.message || `Failed to load ${mode} CFG data`
     return null
   } finally {
-    if (mode === 'plain') plainLoading.value = false
+    if (mode === 'plain' && requestId === cfgLoadRequestId) plainLoading.value = false
   }
 }
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { analyzeTransaction, fetchTransactionBlock, normalizeAnalyzeError, type AnalyzeResult } from '../api/analyze'
+import { normalizeAnalyzeError, type AnalyzeResult } from '../api/analyze'
 
 async function copyToClipboard(text: string) {
   try {
@@ -16,8 +16,7 @@ async function copyToClipboard(text: string) {
 }
 
 const emit = defineEmits<{
-  'analysis-progress': [txHash: string, result: AnalyzeResult]
-  'analysis-complete': [txHash: string]
+  'analysis-requested': [txHash: string]
   'block-number-changed': [blockNumber: number]
 }>()
 
@@ -68,15 +67,21 @@ function setAnalyzeSuccess() {
   errorMsg.value = ''
 }
 
+function setAnalysisProgress(progress: AnalyzeResult) {
+  result.value = progress
+  status.value = progress.status === 'processing' ? 'loading' : status.value
+}
+
 defineExpose({
   updateTxHash,
   updateBlockNumber,
   setAnalyzeError,
   setAnalyzing,
   setAnalyzeSuccess,
+  setAnalysisProgress,
 })
 
-async function onSubmit() {
+function onSubmit() {
   const hash = txHash.value.trim() || EXAMPLE_TX_HASH
 
   // If using example, make it editable in the input
@@ -84,36 +89,17 @@ async function onSubmit() {
     txHash.value = EXAMPLE_TX_HASH
   }
 
+  if (!/^0x[0-9a-fA-F]{64}$/.test(hash)) {
+    status.value = 'error'
+    errorMsg.value = 'Invalid transaction hash'
+    return
+  }
+
   status.value = 'loading'
   errorMsg.value = ''
   result.value = null
 
-  try {
-    const res = await analyzeTransaction(hash, (progress) => {
-      result.value = progress
-      emit('analysis-progress', hash, progress)
-    })
-    if (res.status === 'success') {
-      status.value = 'success'
-      result.value = res
-      emit('analysis-complete', hash)
-
-      // Fetch block number for this transaction
-      try {
-        const blockNum = await fetchTransactionBlock(hash)
-        blockNumber.value = blockNum.toString()
-        emit('block-number-changed', blockNum)
-      } catch (e) {
-        console.error('Failed to fetch block number:', e)
-      }
-    } else {
-      status.value = 'error'
-      errorMsg.value = normalizeAnalyzeError(res.error)
-    }
-  } catch (e: any) {
-    status.value = 'error'
-    errorMsg.value = normalizeAnalyzeError(e.message || 'Network error')
-  }
+  emit('analysis-requested', hash)
 }
 
 async function onBlockSubmit() {
@@ -177,14 +163,12 @@ async function onBlockSubmit() {
         type="text"
         class="hash-input"
         :placeholder="EXAMPLE_TX_HASH"
-        :disabled="status === 'loading'"
       />
       <button
         type="submit"
         class="analyze-btn"
-        :disabled="status === 'loading'"
       >
-        {{ status === 'loading' ? 'Analyzing...' : 'Analyze' }}
+        {{ status === 'loading' ? 'Switch' : 'Analyze' }}
       </button>
     </form>
 

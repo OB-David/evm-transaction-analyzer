@@ -67,10 +67,10 @@ npm install
 
 ```bash
 cd backend
-uv run uvicorn server:app --port 8000
+uv run uvicorn server:app --port 8001
 ```
 
-The API server starts at `http://localhost:8000`.
+The API server starts at `http://localhost:8001`.
 
 ### Start the frontend dev server
 
@@ -92,7 +92,7 @@ cd backend
 uv run python main.py
 ```
 
-Runs the analysis pipeline on the hardcoded transaction hash in `main.py` and saves results to `backend/Result/`.
+Runs the analysis pipeline on the hardcoded transaction hash in `main.py` and saves results to `data_base/analysis/`.
 
 ## API Endpoints
 

@@ -9,6 +9,7 @@ dependencies = [
     "matplotlib>=3.10.8",
     "pyevmasm",
     "python-dotenv>=1.1.1",
+    "requests>=2.32.0",
     "web3>=7.13.0",
     "fastapi>=0.115.0",
     "uvicorn>=0.34.0",

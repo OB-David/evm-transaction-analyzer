@@ -1,9 +1,29 @@
-.venv
-__pycache__
-*.pyc
-.DS_Store
-.claude/
-.vscode/
-Result/
+# Local secrets
 .env
-backend/dune_cache.json
+
+# Python environment and caches
+/backend/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Frontend dependencies and build output
+/frontend/node_modules/
+/frontend/dist/
+
+# Local tools and operating-system files
+.DS_Store
+.idea/
+.vscode/
+.claude/
+.codex/
+*.swp
+*.swo
+
+# Runtime data and local experiments
+/data_base/
+/test_code/

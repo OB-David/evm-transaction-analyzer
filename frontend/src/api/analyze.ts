@@ -60,7 +60,7 @@ const configuredApiBase = import.meta.env.VITE_API_BASE || ''
 const API_BASE = configuredApiBase.endsWith('/') ? configuredApiBase.slice(0, -1) : configuredApiBase
 
 async function fetchTextFile(filename: string, txHash: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`)
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`, { cache: 'no-store' })
   if (!res.ok) {
     throw new Error(`Failed to fetch ${filename}: ${res.status}`)
   }
@@ -68,33 +68,49 @@ async function fetchTextFile(filename: string, txHash: string): Promise<string> 
 }
 
 async function fetchJsonFile<T>(filename: string, txHash: string): Promise<T> {
-  const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`)
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`, { cache: 'no-store' })
   if (!res.ok) {
     throw new Error(`Failed to fetch ${filename}: ${res.status}`)
   }
   return res.json()
 }
 
-async function fetchAnalysisStatus(txHash: string): Promise<AnalyzeResult> {
-  const res = await fetch(`${API_BASE}/api/analyze/${txHash}/status`)
+async function fetchAnalysisStatus(txHash: string, signal?: AbortSignal): Promise<AnalyzeResult> {
+  const res = await fetch(`${API_BASE}/api/analyze/${txHash}/status`, { signal, cache: 'no-store' })
   if (!res.ok) {
     throw new Error(`Failed to fetch analysis status: ${res.status}`)
   }
   return res.json()
 }
 
-function waitForPoll(milliseconds: number): Promise<void> {
-  return new Promise(resolve => window.setTimeout(resolve, milliseconds))
+function waitForPoll(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Analysis cancelled', 'AbortError'))
+      return
+    }
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, milliseconds)
+    const onAbort = () => {
+      window.clearTimeout(timer)
+      reject(new DOMException('Analysis cancelled', 'AbortError'))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 export async function analyzeTransaction(
   txHash: string,
   onProgress?: (result: AnalyzeResult) => void,
+  signal?: AbortSignal,
 ): Promise<AnalyzeResult> {
   const res = await fetch(`${API_BASE}/api/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tx_hash: txHash }),
+    signal,
   })
 
   if (!res.ok) {
@@ -105,12 +121,26 @@ export async function analyzeTransaction(
   onProgress?.(result)
 
   while (result.status === 'processing') {
-    await waitForPoll(400)
-    result = await fetchAnalysisStatus(txHash)
+    await waitForPoll(400, signal)
+    result = await fetchAnalysisStatus(txHash, signal)
     onProgress?.(result)
   }
 
   return result
+}
+
+export interface CancelAnalysisResult {
+  status: 'cancelled' | 'not_running'
+  tx_hash: string
+  cleaned: boolean
+}
+
+export async function cancelAnalysis(txHash: string): Promise<CancelAnalysisResult> {
+  const res = await fetch(`${API_BASE}/api/analyze/${txHash}`, { method: 'DELETE' })
+  if (!res.ok) {
+    throw new Error(`Failed to cancel analysis: ${res.status}`)
+  }
+  return res.json()
 }
 
 export async function fetchDotFile(txHash: string): Promise<string> {
@@ -130,11 +160,12 @@ export async function fetchEdgeLink(txHash: string, mode: CfgMode = 'folded'): P
   return fetchJsonFile<EdgeLink[]>(filename, txHash)
 }
 
-export async function fetchBlockGasData(blockNumber: number): Promise<BlockGasData> {
+export async function fetchBlockGasData(blockNumber: number, signal?: AbortSignal): Promise<BlockGasData> {
   const res = await fetch(`${API_BASE}/api/block`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ block_number: blockNumber }),
+    signal,
   })
 
   if (!res.ok) {
@@ -173,8 +204,12 @@ export interface BlocksHeatmapData {
   error?: string | null
 }
 
-export async function fetchBlocksHeatmap(offset: number = 0, count: number = 160): Promise<BlocksHeatmapData> {
-  const res = await fetch(`${API_BASE}/api/blocks?offset=${offset}&count=${count}`)
+export async function fetchBlocksHeatmap(
+  offset: number = 0,
+  count: number = 160,
+  signal?: AbortSignal,
+): Promise<BlocksHeatmapData> {
+  const res = await fetch(`${API_BASE}/api/blocks?offset=${offset}&count=${count}`, { signal })
 
   if (!res.ok) {
     throw new Error(`Failed to fetch blocks heatmap: ${res.status}`)
@@ -389,7 +424,7 @@ export interface SwapPatternResult {
 }
 
 export async function fetchArbitrageResult(txHash: string): Promise<ArbitrageResult> {
-  const res = await fetch(`${API_BASE}/api/files/${txHash}/arbitrage.json`)
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/arbitrage.json`, { cache: 'no-store' })
   if (!res.ok) {
     if (res.status === 404) {
       return { is_arbitrage: false, cycles: [], arb_edge_orders: [] }
@@ -419,7 +454,7 @@ export function normalizeAnalyzeError(message?: string | null): string {
 
 export async function fetchSwapPatternResult(txHash: string, mode: CfgMode = 'folded'): Promise<SwapPatternResult> {
   const filename = mode === 'plain' ? 'swap_in_pcfg.json' : 'swap_in_fcfg.json'
-  const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`)
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`, { cache: 'no-store' })
   if (!res.ok) {
     if (res.status === 404) {
       return { pattern_1: [], pattern_2: [] }
@@ -430,7 +465,7 @@ export async function fetchSwapPatternResult(txHash: string, mode: CfgMode = 'fo
 }
 
 export async function fetchAddressBalances(txHash: string): Promise<Record<string, Record<string, number>>> {
-  const res = await fetch(`${API_BASE}/api/files/${txHash}/address_balances.json`)
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/address_balances.json`, { cache: 'no-store' })
   if (!res.ok) {
     if (res.status === 404) return {}
     throw new Error(`Failed to fetch address balances: ${res.status}`)
@@ -458,4 +493,31 @@ export async function fetchArbitrageHashes(): Promise<ArbitrageHashesData> {
 
 export async function triggerArbitrageRefresh(): Promise<void> {
   await fetch(`${API_BASE}/api/arbitrage-hashes/refresh`, { method: 'POST' })
+}
+
+export interface ArbitrageTransactionsData {
+  transactions: Array<{
+    tx_hash: string
+    block_number: number
+  }>
+  history_start_block: number
+  max_arbitrage_block: number | null
+  initial_sync_complete: boolean
+  coverage_complete: boolean
+}
+
+export async function fetchArbitrageTransactions(
+  fromBlock: number,
+  toBlock: number,
+  signal?: AbortSignal,
+): Promise<ArbitrageTransactionsData> {
+  const params = new URLSearchParams({
+    from_block: String(fromBlock),
+    to_block: String(toBlock),
+  })
+  const res = await fetch(`${API_BASE}/api/arbitrage-transactions?${params}`, { signal })
+  if (!res.ok) {
+    throw new Error(`Failed to fetch local arbitrage markers: ${res.status}`)
+  }
+  return res.json()
 }

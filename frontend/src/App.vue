@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, onBeforeUnmount, watch } from 'vue'
 import TitleBar from './components/TitleBar.vue'
 import InputPanel from './components/InputPanel.vue'
 import CfgPanel from './components/CfgPanel.vue'
@@ -10,10 +10,10 @@ import LegendPanel from './components/LegendPanel.vue'
 import {
   analyzeTransaction,
   analysisStageReached,
+  cancelAnalysis,
   fetchEdgeStepMap,
-  fetchArbitrageHashes,
+  fetchTransactionBlock,
   normalizeAnalyzeError,
-  triggerArbitrageRefresh,
   type BlockId,
   type AnalysisStage,
   type AnalyzeResult,
@@ -22,6 +22,7 @@ import {
 } from './api/analyze'
 
 const currentTxHash = ref<string | null>(null)
+const selectedExplorerTxHash = ref<string | null>(null)
 const activeAnalysisTxHash = ref<string | null>(null)
 const analysisStage = ref<AnalysisStage>('queued')
 const currentBlockNumber = ref<number | null>(null)
@@ -30,25 +31,9 @@ const inputPanelRef = ref<InstanceType<typeof InputPanel> | null>(null)
 const isAnalyzing = ref(false)
 const currentCfgMode = ref<CfgMode>('folded')
 const exportInProgress = ref(false)
-
-// Arbitrage hashes from Dune — stored as Sets for O(1) lookup in BlockPanel
-const arbitrageTxHashes = ref<Set<string>>(new Set())
-const arbitrageBlockNumbers = ref<Set<number>>(new Set())
-
-function applyArbitrageData(data: Awaited<ReturnType<typeof fetchArbitrageHashes>>) {
-  arbitrageTxHashes.value = new Set(data.transactions.map(t => t.tx_hash))
-  arbitrageBlockNumbers.value = new Set(
-    data.transactions.map(t => t.block_number).filter((n): n is number => n !== null)
-  )
-}
-
-onMounted(async () => {
-  try {
-    applyArbitrageData(await fetchArbitrageHashes())
-  } catch (e) {
-    console.warn('Failed to load arbitrage hashes:', e)
-  }
-})
+let analysisController: AbortController | null = null
+let analysisSessionId = 0
+let edgeStepRequestId = 0
 
 // Sequence diagram state
 const sequenceStepRange = ref<{ entryStep: number; exitStep: number } | null>(null)
@@ -56,10 +41,14 @@ const edgeStepMap = ref<EdgeStepMap | null>(null)
 
 // Load edge step map when txHash changes
 watch([currentTxHash, currentCfgMode, analysisStage], async ([newHash, cfgMode, stage]) => {
+  const requestId = ++edgeStepRequestId
   edgeStepMap.value = null
   if (newHash && analysisStageReached(stage, 'folded_cfg')) {
     try {
-      edgeStepMap.value = await fetchEdgeStepMap(newHash, cfgMode)
+      const nextMap = await fetchEdgeStepMap(newHash, cfgMode)
+      if (requestId === edgeStepRequestId && currentTxHash.value === newHash) {
+        edgeStepMap.value = nextMap
+      }
     } catch (e) {
       console.warn('Failed to load edge step map:', e)
     }
@@ -76,15 +65,9 @@ const filteredEdgeIds = computed<string[] | null>(() => {
   return matched.length > 0 ? matched : null
 })
 
-function handleAnalysisProgress(txHash: string, result: AnalyzeResult) {
-  if (activeAnalysisTxHash.value !== txHash) {
-    activeAnalysisTxHash.value = txHash
-    currentTxHash.value = null
-    currentCfgMode.value = 'folded'
-    highlightedBlockId.value = null
-    sequenceStepRange.value = null
-  }
-
+function handleAnalysisProgress(txHash: string, result: AnalyzeResult, sessionId: number) {
+  if (sessionId !== analysisSessionId || activeAnalysisTxHash.value !== txHash) return
+  inputPanelRef.value?.setAnalysisProgress(result)
   if (result.stage !== 'error') {
     analysisStage.value = result.stage
   }
@@ -96,13 +79,6 @@ function handleAnalysisProgress(txHash: string, result: AnalyzeResult) {
 
 function isStageReady(stage: AnalysisStage): boolean {
   return analysisStageReached(analysisStage.value, stage)
-}
-
-function handleAnalysisComplete(txHash: string) {
-  currentTxHash.value = txHash
-  analysisStage.value = 'complete'
-  isAnalyzing.value = false
-  console.log('Analysis complete for:', txHash)
 }
 
 function handleBlockNumberChanged(blockNum: number) {
@@ -126,46 +102,79 @@ function handleLatestBlock(blockNum: number) {
   }
 }
 
-function handleLatestBlocksRefreshed() {
-  triggerArbitrageRefresh().then(() => {
-    setTimeout(async () => {
-      try {
-        applyArbitrageData(await fetchArbitrageHashes())
-      } catch (e) {
-        console.warn('Failed to refresh arbitrage hashes:', e)
-      }
-    }, 5_000)
-  }).catch(() => {})
-}
+async function startAnalysis(txHash: string) {
+  txHash = txHash.trim().toLowerCase()
+  const previousHash = activeAnalysisTxHash.value
+  const previousController = analysisController
+  const sessionId = ++analysisSessionId
 
-async function handleTransactionSelected(txHash: string) {
-  console.log('Transaction selected from heatmap:', txHash)
+  previousController?.abort()
+  analysisController = new AbortController()
+  const signal = analysisController.signal
 
-  // Sync input and immediately switch status to processing.
+  activeAnalysisTxHash.value = txHash
+  selectedExplorerTxHash.value = txHash
+  currentTxHash.value = null
+  analysisStage.value = 'queued'
+  currentCfgMode.value = 'folded'
+  highlightedBlockId.value = null
+  sequenceStepRange.value = null
+  edgeStepMap.value = null
+  isAnalyzing.value = true
   inputPanelRef.value?.setAnalyzing(txHash)
 
-  // Show loading immediately
-  isAnalyzing.value = true
-
-  // First complete the analysis, THEN update the hash to trigger panel loading
   try {
-    const res = await analyzeTransaction(txHash, progress => handleAnalysisProgress(txHash, progress))
+    if (previousHash && previousController) {
+      await cancelAnalysis(previousHash)
+    }
+    if (sessionId !== analysisSessionId) return
+
+    const res = await analyzeTransaction(
+      txHash,
+      progress => handleAnalysisProgress(txHash, progress, sessionId),
+      signal,
+    )
+    if (sessionId !== analysisSessionId) return
     if (res.status === 'success') {
-      console.log('Analysis complete for selected transaction')
       currentTxHash.value = txHash
       analysisStage.value = 'complete'
       inputPanelRef.value?.setAnalyzeSuccess()
+      try {
+        const blockNum = await fetchTransactionBlock(txHash)
+        if (sessionId === analysisSessionId) {
+          currentBlockNumber.value = blockNum
+          inputPanelRef.value?.updateBlockNumber(blockNum)
+        }
+      } catch (e) {
+        console.warn('Failed to load analyzed transaction block:', e)
+      }
     } else {
       inputPanelRef.value?.setAnalyzeError(normalizeAnalyzeError(res.error))
     }
   } catch (e) {
+    if (sessionId !== analysisSessionId || (e instanceof DOMException && e.name === 'AbortError')) return
     console.error('Failed to analyze selected transaction:', e)
     const message = e instanceof Error ? e.message : 'Network error'
     inputPanelRef.value?.setAnalyzeError(normalizeAnalyzeError(message))
   } finally {
-    isAnalyzing.value = false
+    if (sessionId === analysisSessionId) {
+      isAnalyzing.value = false
+      analysisController = null
+    }
   }
 }
+
+function handleTransactionSelected(txHash: string) {
+  void startAnalysis(txHash)
+}
+
+onBeforeUnmount(() => {
+  analysisSessionId += 1
+  analysisController?.abort()
+  if (activeAnalysisTxHash.value && analysisController) {
+    void cancelAnalysis(activeAnalysisTxHash.value).catch(() => {})
+  }
+})
 
 function handleCfgNavigate(blockIds: BlockId[] | null) {
   // Clear sequence selection when AFG navigates
@@ -972,20 +981,16 @@ function handleExportFullUiSvg() {
       <InputPanel
         ref="inputPanelRef"
         class="input-panel"
-        @analysis-progress="handleAnalysisProgress"
-        @analysis-complete="handleAnalysisComplete"
+        @analysis-requested="startAnalysis"
         @block-number-changed="handleBlockNumberChanged"
       />
       <BlockPanel
         class="block-panel"
         :block-number="currentBlockNumber"
-        :selected-tx-hash="currentTxHash"
-        :arbitrage-tx-hashes="arbitrageTxHashes"
-        :arbitrage-block-numbers="arbitrageBlockNumbers"
+        :selected-tx-hash="selectedExplorerTxHash"
         @transaction-selected="handleTransactionSelected"
         @block-selected="handleBlockSelected"
         @latest-block="handleLatestBlock"
-        @latest-blocks-refreshed="handleLatestBlocksRefreshed"
       />
     </div>
     <div class="right-col">
@@ -1067,6 +1072,8 @@ function handleExportFullUiSvg() {
 
 .block-panel {
   flex: 1;
+  width: 100%;
+  min-width: 0;
   min-height: 0;
   border-radius: 3px;
   box-shadow: 0 1px 4px rgba(0,0,0,0.07), 0 0 0 1px rgba(0,0,0,0.05);

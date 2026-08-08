@@ -1,12 +1,61 @@
 from typing import List, Dict, TypedDict, Set, Tuple, Optional
 import logging
 import json
+import time
 from web3 import Web3
 import subprocess
 from functools import lru_cache
 
+from utils.drpc_trace import (
+    DrpcTraceError,
+    _memory_words,
+    fetch_drpc_trace,
+)
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+GETH_TRACE_START_BLOCK = 25676797
+GETH_RPC_TIMEOUT_SECONDS = 600
+GETH_TRACE_RETRIES = 2
+GETH_RETRY_DELAY_SECONDS = 1.0
+DRPC_CHUNK_GAS_THRESHOLD = 2000000
+
+# Geth's native struct logger efficiently records opcode/stack data, but full
+# memory and cumulative storage make its response enormous. This second,
+# deliberately small tracer emits only memory snapshots at possible change
+# boundaries and storage deltas at SLOAD/SSTORE steps. Python merges both
+# traces by the stable step index.
+GETH_STATE_DELTA_TRACER = (
+    "{deltas:[],count:0,prevOp:'',prevDepth:0,faults:[],"
+    "fault:function(log){this.faults.push([this.count,log.getPC(),"
+    "String(log.getError())]);},"
+    "step:function(log){var index=this.count++,op=log.op.toString(),"
+    "depth=log.getDepth(),memory=null,slot=null,value=null;"
+    "var memoryOps='|MLOAD|MSTORE|MSTORE8|SHA3|KECCAK256|CALLDATACOPY|"
+    "CODECOPY|EXTCODECOPY|RETURNDATACOPY|MCOPY|LOG0|LOG1|LOG2|LOG3|LOG4|"
+    "CREATE|CREATE2|CALL|CALLCODE|DELEGATECALL|STATICCALL|RETURN|REVERT|';"
+    "if(index===0||memoryOps.indexOf('|'+this.prevOp+'|')>=0||"
+    "depth!==this.prevDepth){memory=toHex(log.memory.slice(0,"
+    "log.memory.length()));}"
+    "if((op==='SLOAD'||op==='SSTORE')&&log.stack.length()>0){"
+    "slot='0x'+log.stack.peek(0).toString(16);"
+    "if(op==='SSTORE'&&log.stack.length()>1){"
+    "value='0x'+log.stack.peek(1).toString(16);}}"
+    "if(memory!==null||slot!==null){"
+    "this.deltas.push([index,memory,slot,value]);}"
+    "this.prevOp=op;this.prevDepth=depth;},"
+    "result:function(){return {deltas:this.deltas,faults:this.faults,"
+    "totalSteps:this.count};}}"
+)
+
+
+class TraceFetchError(RuntimeError):
+    """A raw transaction trace could not be fetched or validated."""
+
+
+class NoOpcodeTraceError(TraceFetchError):
+    """The transaction completed without executing EVM opcodes."""
 
 # 标准化数据结构定义
 class StandardizedStep(TypedDict):
@@ -15,6 +64,8 @@ class StandardizedStep(TypedDict):
     opcode: str   # 操作码名称
     gascost: int  # gas消耗
     stack: List[str]  # 0x开头的十六进制字符串
+    memory: List[str]
+    storage: Dict[str, str]
 
 class StandardizedTrace(TypedDict):
     tx_hash: str
@@ -363,6 +414,249 @@ class TraceFormatter:
         s = s.lstrip("0")
         return len(s)
 
+    @staticmethod
+    def _validate_raw_trace(raw_trace: object, source: str) -> Dict:
+        if not isinstance(raw_trace, dict):
+            raise TraceFetchError(f"{source} trace 返回值不是对象")
+        struct_logs = raw_trace.get("structLogs")
+        if not isinstance(struct_logs, list):
+            raise TraceFetchError(f"{source} trace 缺少有效 structLogs")
+        if not struct_logs:
+            raise NoOpcodeTraceError(f"{source} trace 不包含 opcode")
+        return raw_trace
+
+    def _run_geth_trace_request(
+        self,
+        tx_hash: str,
+        trace_options: Dict,
+        label: str,
+    ) -> Dict:
+        cmd = [
+            "cast", "rpc",
+            "--rpc-url", self.provider_url,
+            "--rpc-timeout", str(GETH_RPC_TIMEOUT_SECONDS),
+            "debug_traceTransaction",
+            tx_hash,
+            json.dumps(trace_options, separators=(",", ":")),
+        ]
+        for attempt in range(GETH_TRACE_RETRIES + 1):
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                response = json.loads(result.stdout)
+                if not isinstance(response, dict):
+                    raise TraceFetchError(f"Geth {label}返回值不是对象")
+                return response
+            except OSError as exc:
+                raise TraceFetchError(f"Geth {label}请求失败: {exc}") from exc
+            except (
+                subprocess.SubprocessError,
+                json.JSONDecodeError,
+                TraceFetchError,
+            ) as exc:
+                stderr = getattr(exc, "stderr", "") or ""
+                detail = str(stderr).strip() or str(exc)
+                normalized_detail = detail.lower()
+                historical_state_missing = any(
+                    marker in normalized_detail
+                    for marker in (
+                        "historical state is not available",
+                        "historical state unavailable",
+                        "missing trie node",
+                    )
+                )
+                if historical_state_missing or attempt >= GETH_TRACE_RETRIES:
+                    raise TraceFetchError(
+                        f"Geth {label}请求失败（尝试 {attempt + 1}/"
+                        f"{GETH_TRACE_RETRIES + 1}）: {detail}"
+                    ) from exc
+
+                wait_seconds = min(
+                    GETH_RETRY_DELAY_SECONDS * (attempt + 1),
+                    3.0,
+                )
+                logger.warning(
+                    "Geth %s临时失败，%s 秒后重试 (%d/%d): tx=%s error=%s",
+                    label,
+                    f"{wait_seconds:g}",
+                    attempt + 1,
+                    GETH_TRACE_RETRIES,
+                    tx_hash,
+                    detail,
+                )
+                time.sleep(wait_seconds)
+
+        raise AssertionError("unreachable Geth request retry state")
+
+    @staticmethod
+    def _merge_geth_state_deltas(
+        native_trace: Dict,
+        delta_trace: Dict,
+    ) -> Dict:
+        native_logs = native_trace.get("structLogs")
+        total_steps = delta_trace.get("totalSteps")
+        raw_deltas = delta_trace.get("deltas")
+        faults = delta_trace.get("faults", [])
+        if not isinstance(native_logs, list):
+            raise TraceFetchError("Geth 原生 trace 缺少 structLogs")
+        if not native_logs:
+            raise NoOpcodeTraceError("Geth trace 不包含 opcode")
+        if total_steps != len(native_logs) or not isinstance(raw_deltas, list):
+            raise TraceFetchError(
+                "Geth 状态增量与原生 trace 步数不一致: "
+                f"native={len(native_logs)}, delta={total_steps}"
+            )
+        if not isinstance(faults, list):
+            raise TraceFetchError("Geth 状态增量 faults 元数据无效")
+        if faults:
+            logger.debug("Geth 状态增量观察到 EVM faults: %s", faults[:3])
+
+        deltas_by_step: Dict[int, Tuple[object, object, object]] = {}
+        for raw_delta in raw_deltas:
+            if not isinstance(raw_delta, list) or len(raw_delta) != 4:
+                raise TraceFetchError("Geth 状态增量记录格式无效")
+            step_index, memory, slot, value = raw_delta
+            if (
+                not isinstance(step_index, int)
+                or step_index < 0
+                or step_index >= len(native_logs)
+                or step_index in deltas_by_step
+            ):
+                raise TraceFetchError("Geth 状态增量 step 索引无效")
+            if memory is not None and not isinstance(memory, str):
+                raise TraceFetchError("Geth memory 增量不是十六进制字符串")
+            if slot is not None and not isinstance(slot, str):
+                raise TraceFetchError("Geth storage 增量 slot 无效")
+            if value is not None and not isinstance(value, str):
+                raise TraceFetchError("Geth storage 增量 value 无效")
+            deltas_by_step[step_index] = (memory, slot, value)
+
+        current_memory: List[str] = []
+        merged_logs: List[Dict] = []
+        for index, native_step in enumerate(native_logs):
+            if not isinstance(native_step, dict):
+                raise TraceFetchError(f"Geth 原生 trace step {index} 不是对象")
+            memory, slot, value = deltas_by_step.get(index, (None, None, None))
+            if isinstance(memory, str):
+                try:
+                    current_memory = _memory_words(memory)
+                except DrpcTraceError as exc:
+                    raise TraceFetchError(
+                        f"Geth memory 增量 step {index} 无效: {exc}"
+                    ) from exc
+
+            storage_delta: Dict[str, str] = {}
+            if isinstance(slot, str):
+                resolved_value = value
+                if resolved_value is None and index + 1 < len(native_logs):
+                    next_step = native_logs[index + 1]
+                    next_stack = (
+                        next_step.get("stack")
+                        if isinstance(next_step, dict)
+                        else None
+                    )
+                    if isinstance(next_stack, list) and next_stack:
+                        resolved_value = str(next_stack[-1])
+                if isinstance(resolved_value, str):
+                    storage_delta[slot] = resolved_value
+
+            merged_step = dict(native_step)
+            merged_step["memory"] = current_memory
+            merged_step["storage"] = storage_delta
+            merged_logs.append(merged_step)
+
+        merged_trace = dict(native_trace)
+        merged_trace["structLogs"] = merged_logs
+        return merged_trace
+
+    def _fetch_geth_trace(self, tx_hash: str) -> Dict:
+        native_trace = self._run_geth_trace_request(
+            tx_hash,
+            {
+                "enableMemory": False,
+                "disableStack": False,
+                "disableStorage": True,
+                "enableReturnData": False,
+            },
+            "原生 trace",
+        )
+        self._validate_raw_trace(native_trace, "Geth")
+
+        delta_trace = self._run_geth_trace_request(
+            tx_hash,
+            {
+                "tracer": GETH_STATE_DELTA_TRACER,
+                "timeout": f"{GETH_RPC_TIMEOUT_SECONDS}s",
+            },
+            "状态增量 trace",
+        )
+        merged_trace = self._merge_geth_state_deltas(native_trace, delta_trace)
+        return self._validate_raw_trace(merged_trace, "Geth")
+
+    def _fetch_raw_trace(
+        self,
+        tx_hash: str,
+        block_number: int,
+        gas_used: Optional[int] = None,
+    ) -> Dict:
+        prefer_drpc_chunks = (
+            gas_used is not None and gas_used >= DRPC_CHUNK_GAS_THRESHOLD
+        )
+        if block_number < GETH_TRACE_START_BLOCK:
+            logger.info(
+                "交易 %s 位于区块 %d（早于 %d），直接使用 dRPC trace",
+                tx_hash,
+                block_number,
+                GETH_TRACE_START_BLOCK,
+            )
+            try:
+                drpc_trace = (
+                    fetch_drpc_trace(tx_hash, prefer_chunks=True)
+                    if prefer_drpc_chunks
+                    else fetch_drpc_trace(tx_hash)
+                )
+                return self._validate_raw_trace(
+                    drpc_trace,
+                    "dRPC",
+                )
+            except NoOpcodeTraceError:
+                raise
+            except (DrpcTraceError, TraceFetchError) as exc:
+                raise TraceFetchError(f"dRPC trace 请求失败: {exc}") from exc
+
+        try:
+            raw_trace = self._fetch_geth_trace(tx_hash)
+            logger.info("成功从 Geth 获取 trace: %s", tx_hash)
+            return raw_trace
+        except NoOpcodeTraceError:
+            raise
+        except TraceFetchError as geth_error:
+            logger.warning(
+                "Geth trace 获取失败，回退 dRPC: tx=%s block=%d error=%s",
+                tx_hash,
+                block_number,
+                geth_error,
+            )
+            try:
+                drpc_trace = (
+                    fetch_drpc_trace(tx_hash, prefer_chunks=True)
+                    if prefer_drpc_chunks
+                    else fetch_drpc_trace(tx_hash)
+                )
+                return self._validate_raw_trace(
+                    drpc_trace,
+                    "dRPC",
+                )
+            except (DrpcTraceError, TraceFetchError) as drpc_error:
+                raise TraceFetchError(
+                    f"Geth 和 dRPC trace 均失败；Geth: {geth_error}；"
+                    f"dRPC: {drpc_error}"
+                ) from drpc_error
+
     # 获取并标准化trace,计算contract address，并在遍历 CALL 时分类 addresses
     # 改用 foundry 的 cast 方法
     def get_standardized_trace(self, tx_hash: str) -> Dict:
@@ -383,16 +677,21 @@ class TraceFormatter:
             tx_sender_address, initial_address = self._get_tx_from_to(tx_hash)
             logger.info(f"交易 {tx_hash} 的发起者地址: {tx_sender_address}")
 
-            cmd = [
-                "cast", "rpc",
-                "debug_traceTransaction",
+            transaction = self.web3.eth.get_transaction(tx_hash)
+            block_number = transaction.get("blockNumber")
+            if block_number is None:
+                raise TraceFetchError("交易尚未打包，无法获取 trace")
+            gas_used: Optional[int] = None
+            try:
+                receipt = self.web3.eth.get_transaction_receipt(tx_hash)
+                gas_used = int(receipt.get("gasUsed", 0))
+            except Exception as exc:
+                logger.warning("无法获取 gasUsed，将由 dRPC 自动选择请求方式: %s", exc)
+            raw_trace = self._fetch_raw_trace(
                 tx_hash,
-                '{"enableStack":true,"enableMemory":true,"enableStorage":false,"enableReturnData":false}',
-                "-r", self.provider_url
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            raw_trace = json.loads(result.stdout)
-            logger.info(f"成功获取 trace: {tx_hash}")
+                int(block_number),
+                gas_used,
+            )
 
             struct_logs = raw_trace.get("structLogs", [])
             steps: List[StandardizedStep] = []
@@ -422,11 +721,17 @@ class TraceFormatter:
                 opcode = step.get("op", "").upper()
                 raw_stack = step.get("stack", [])
                 raw_memory = step.get("memory",[])
+                raw_storage = step.get("storage", {})
                 depth = step.get("depth",[])
                 # 单独处理CALL合约时的gascost计算
                 # 执行CALL时会向合约预支付一笔gas，在trace中记录为CALL的gasCost
                 # CALL本身的gascost是预支付的gasCost减去CALL下一步剩下的gasleft。
-                if opcode in {"CALL", "CALLCODE", "DELEGATECALL", "STATICCALL"} and struct_logs[i + 1].get("address","") != step.get("address",""):
+                entered_child_call = (
+                    opcode in {"CALL", "CALLCODE", "DELEGATECALL", "STATICCALL"}
+                    and i + 1 < len(struct_logs)
+                    and int(struct_logs[i + 1].get("depth", depth)) > int(depth)
+                )
+                if entered_child_call:
                     next_gasleft = struct_logs[i + 1].get("gas", 0)
                     gasCost = step.get("gasCost", 0)
                     gascost = gasCost - next_gasleft
@@ -534,7 +839,9 @@ class TraceFormatter:
                     "opcode": opcode,
                     "gascost": gascost,
                     "stack": self._normalize_stack(raw_stack),
-                    "memory": raw_memory
+                    "memory": raw_memory,
+                    # Per-step SLOAD/SSTORE delta from the incremental tracer.
+                    "storage": raw_storage if isinstance(raw_storage, dict) else {},
                 })
 
                 current_address = next_address

@@ -3,8 +3,11 @@ import asyncio
 import mimetypes
 import json, os
 import re
+import shutil
+import signal
 import subprocess
 import threading
+from dataclasses import dataclass
 from concurrent.futures import Future, ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,8 +15,21 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from dotenv import load_dotenv
 from pydantic import BaseModel, field_validator
 from typing import Any, Literal
-from utils.block_exploration import fetch_block_gas_data, get_transaction_block_number, fetch_blocks_gas_summary, start_prefetch
-from utils.arbitrage_crawler import fetch_arbitrage_hashes, get_cached_hashes
+from utils.block_exploration import (
+    fetch_block_gas_data,
+    get_latest_block_number,
+    get_transaction_block_number,
+    fetch_blocks_gas_summary,
+    start_prefetch,
+)
+from utils.analysis_paths import ANALYSIS_ROOT, analysis_directory
+from labels.dune.sync import DUNE_QUERY_ID
+from labels.geth.sync import start_background_sync
+from labels.coordinator import (
+    HISTORY_START_BLOCK,
+    LabelCoordinator,
+    MAX_API_BLOCK_RANGE,
+)
 from utils.plain_cfg_llm import (
     PlainCfgLlmServiceError,
     analyze_plain_cfg_block,
@@ -23,17 +39,29 @@ from utils.plain_cfg_llm import (
 load_dotenv()
 
 app = FastAPI(title="EVM Transaction Analyzer")
+label_coordinator = LabelCoordinator()
 
 
 @app.on_event("startup")
 def startup_prefetch():
-    """Start background block prefetch and arbitrage crawl on server startup."""
+    """Start block prefetch and the isolated local-index updater."""
     start_prefetch()
-    threading.Thread(target=fetch_arbitrage_hashes, daemon=True).start()
+    label_coordinator.initialize()
+    start_background_sync(get_latest_block_number, store=label_coordinator.geth)
 
-# Thread pool for running subprocesses on Windows
+# Thread pool for waiting on analysis subprocesses and serving blocking helpers.
 executor = ThreadPoolExecutor(max_workers=4)
-analysis_jobs: dict[str, Future[subprocess.CompletedProcess[str]]] = {}
+
+
+@dataclass
+class AnalysisJob:
+    tx_hash: str
+    process: subprocess.Popen[str]
+    future: Future[subprocess.CompletedProcess[str]] | None = None
+    cancel_requested: bool = False
+
+
+analysis_jobs: dict[str, AnalysisJob] = {}
 analysis_jobs_lock = threading.Lock()
 
 app.add_middleware(
@@ -79,7 +107,7 @@ class AnalyzeRequest(BaseModel):
     def validate_tx_hash(cls, v: str) -> str:
         if not TX_HASH_RE.match(v):
             raise ValueError("tx_hash must be 0x followed by 64 hex characters")
-        return v
+        return v.lower()
 
 
 class AnalyzeResponse(BaseModel):
@@ -89,6 +117,12 @@ class AnalyzeResponse(BaseModel):
     files: list[str]
     error: str | None = None
     updated_at: str | None = None
+
+
+class CancelAnalysisResponse(BaseModel):
+    status: Literal["cancelled", "not_running"]
+    tx_hash: str
+    cleaned: bool
 
 
 class BlockRequest(BaseModel):
@@ -118,6 +152,19 @@ class BlockGasResponse(BaseModel):
 
 class BlockNumberResponse(BaseModel):
     block_number: int
+
+
+class ArbitrageTransactionInfo(BaseModel):
+    tx_hash: str
+    block_number: int
+
+
+class ArbitrageTransactionsResponse(BaseModel):
+    transactions: list[ArbitrageTransactionInfo]
+    history_start_block: int
+    max_arbitrage_block: int | None
+    initial_sync_complete: bool
+    coverage_complete: bool
 
 
 class BlockSummaryInfo(BaseModel):
@@ -171,11 +218,30 @@ class PlainBlockAnalysisResponse(BaseModel):
 
 
 def _analysis_result_dir(tx_hash: str) -> str:
-    return os.path.join("Result", tx_hash.lstrip("0x"))
+    return str(analysis_directory(tx_hash))
 
 
 def _analysis_status_path(tx_hash: str) -> str:
     return os.path.join(_analysis_result_dir(tx_hash), "analysis_status.json")
+
+
+def _cleanup_incomplete_analysis(tx_hash: str) -> bool:
+    """Remove only the validated result directory belonging to one transaction."""
+    if not TX_HASH_RE.fullmatch(tx_hash):
+        raise ValueError("Invalid transaction hash")
+
+    result_root = os.path.realpath(ANALYSIS_ROOT)
+    result_dir = os.path.realpath(_analysis_result_dir(tx_hash))
+    expected_parent = result_root + os.sep
+    if not result_dir.startswith(expected_parent) or os.path.dirname(result_dir) != result_root:
+        raise RuntimeError("Refusing to clean an unexpected result path")
+    if not os.path.exists(result_dir):
+        return False
+    if os.path.islink(result_dir) or not os.path.isdir(result_dir):
+        raise RuntimeError("Refusing to clean a non-directory analysis result")
+
+    shutil.rmtree(result_dir)
+    return True
 
 
 def _write_server_analysis_status(tx_hash: str, stage: str, error: str | None = None) -> None:
@@ -205,28 +271,90 @@ def _read_analysis_status(tx_hash: str) -> AnalyzeResponse | None:
         return None
 
 
-def _run_analysis_subprocess(tx_hash: str) -> subprocess.CompletedProcess[str]:
-    proc = subprocess.run(
-        ["uv", "run", "python", "main_api.py", tx_hash],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
+def _wait_for_analysis(job: AnalysisJob) -> subprocess.CompletedProcess[str]:
+    stdout, stderr = job.process.communicate()
+    completed = subprocess.CompletedProcess(
+        job.process.args,
+        job.process.returncode,
+        stdout,
+        stderr,
     )
-    if proc.returncode != 0:
-        current = _read_analysis_status(tx_hash)
-        if current is None or current.status != "error":
-            _write_server_analysis_status(
-                tx_hash,
-                "error",
-                extract_analysis_error(proc.stdout, proc.stderr) or "Analysis failed.",
-            )
-    return proc
+
+    if job.cancel_requested:
+        _cleanup_incomplete_analysis(job.tx_hash)
+    elif completed.returncode != 0:
+        current = _read_analysis_status(job.tx_hash)
+        error = (
+            current.error
+            if current is not None and current.status == "error" and current.error
+            else extract_analysis_error(completed.stdout, completed.stderr) or "Analysis failed."
+        )
+        _cleanup_incomplete_analysis(job.tx_hash)
+        _write_server_analysis_status(job.tx_hash, "error", error)
+    return completed
 
 
-def _cleanup_analysis_job(tx_hash: str, completed: Future[subprocess.CompletedProcess[str]]) -> None:
+def _cleanup_analysis_job(tx_hash: str, job: AnalysisJob) -> None:
     with analysis_jobs_lock:
-        if analysis_jobs.get(tx_hash) is completed:
+        if analysis_jobs.get(tx_hash) is job:
             analysis_jobs.pop(tx_hash, None)
+
+
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+
+    if os.name == "nt":
+        process.send_signal(signal.CTRL_BREAK_EVENT)
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+
+    try:
+        process.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+    process.wait(timeout=5)
+
+
+def _cancel_analysis_job(tx_hash: str) -> CancelAnalysisResponse:
+    with analysis_jobs_lock:
+        job = analysis_jobs.get(tx_hash)
+        if job is None:
+            return CancelAnalysisResponse(status="not_running", tx_hash=tx_hash, cleaned=False)
+        current = _read_analysis_status(tx_hash)
+        if job.process.poll() is not None and current is not None and current.status == "success":
+            return CancelAnalysisResponse(status="not_running", tx_hash=tx_hash, cleaned=False)
+        job.cancel_requested = True
+
+    result_existed = os.path.isdir(_analysis_result_dir(tx_hash))
+    _terminate_process_tree(job.process)
+    if job.future is not None:
+        try:
+            job.future.result(timeout=10)
+        except Exception:
+            # Cleanup below is still safe because the process tree has exited.
+            pass
+
+    _cleanup_incomplete_analysis(tx_hash)
+    cleaned = result_existed and not os.path.exists(_analysis_result_dir(tx_hash))
+    _cleanup_analysis_job(tx_hash, job)
+    return CancelAnalysisResponse(status="cancelled", tx_hash=tx_hash, cleaned=cleaned)
 
 
 @app.post("/api/analyze", response_model=AnalyzeResponse)
@@ -236,17 +364,38 @@ async def analyze(req: AnalyzeRequest):
     with analysis_jobs_lock:
         existing_job = analysis_jobs.get(req.tx_hash)
         current = _read_analysis_status(req.tx_hash)
-        if existing_job is not None and not existing_job.done():
+        if existing_job is not None and existing_job.process.poll() is None:
             return current or AnalyzeResponse(status="processing", stage="queued", result_dir="", files=[])
         if current is not None and current.status == "success":
             return current
 
+        # A failed server or cancelled client may have left an incomplete directory.
+        _cleanup_incomplete_analysis(req.tx_hash)
         _write_server_analysis_status(req.tx_hash, "queued")
-        submitted_job = executor.submit(_run_analysis_subprocess, req.tx_hash)
-        analysis_jobs[req.tx_hash] = submitted_job
+        popen_kwargs: dict[str, Any] = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "encoding": "utf-8",
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["start_new_session"] = True
+        try:
+            process = subprocess.Popen(
+                ["uv", "run", "python", "main_api.py", req.tx_hash],
+                **popen_kwargs,
+            )
+        except Exception as exc:
+            _cleanup_incomplete_analysis(req.tx_hash)
+            raise HTTPException(status_code=500, detail=f"Failed to start analysis: {exc}") from exc
+        job = AnalysisJob(tx_hash=req.tx_hash, process=process)
+        analysis_jobs[req.tx_hash] = job
+        job.future = executor.submit(_wait_for_analysis, job)
 
-    submitted_job.add_done_callback(
-        lambda completed, tx_hash=req.tx_hash: _cleanup_analysis_job(tx_hash, completed)
+    job.future.add_done_callback(
+        lambda _completed, tx_hash=req.tx_hash, active_job=job: _cleanup_analysis_job(tx_hash, active_job)
     )
 
     return _read_analysis_status(req.tx_hash) or AnalyzeResponse(
@@ -254,11 +403,19 @@ async def analyze(req: AnalyzeRequest):
     )
 
 
+@app.delete("/api/analyze/{tx_hash}", response_model=CancelAnalysisResponse)
+async def cancel_analysis(tx_hash: str):
+    if not TX_HASH_RE.fullmatch(tx_hash):
+        raise HTTPException(status_code=400, detail="Invalid tx_hash format")
+    tx_hash = tx_hash.lower()
+    return await asyncio.to_thread(_cancel_analysis_job, tx_hash)
+
+
 @app.get("/api/analyze/{tx_hash}/status", response_model=AnalyzeResponse)
 async def analyze_status(tx_hash: str):
     if not TX_HASH_RE.match(tx_hash):
         raise HTTPException(status_code=400, detail="Invalid tx_hash format")
-    current = _read_analysis_status(tx_hash)
+    current = _read_analysis_status(tx_hash.lower())
     if current is None:
         raise HTTPException(status_code=404, detail="Analysis not found")
     return current
@@ -266,7 +423,7 @@ async def analyze_status(tx_hash: str):
 
 @app.get("/api/files/{tx_hash}/{filename}")
 async def get_file(tx_hash: str, filename: str):
-    """Serve files from Result directory."""
+    """Serve files from the transaction analysis directory."""
     # Validate tx_hash format
     if not TX_HASH_RE.match(tx_hash):
         raise HTTPException(status_code=400, detail="Invalid tx_hash format")
@@ -281,8 +438,7 @@ async def get_file(tx_hash: str, filename: str):
         raise HTTPException(status_code=400, detail="File type not allowed")
 
     # Build file path
-    tx_dir_name = tx_hash.lstrip("0x")
-    file_path = os.path.join("Result", tx_dir_name, filename)
+    file_path = os.path.join(_analysis_result_dir(tx_hash), filename)
 
     # Check file exists
     if not os.path.isfile(file_path):
@@ -330,20 +486,47 @@ async def get_transaction_block(tx_hash: str):
 
 @app.get("/api/arbitrage-hashes")
 async def get_arbitrage_hashes():
-    """Return the cached list of arbitrage tx hashes fetched from Dune."""
-    return get_cached_hashes()
+    """Compatibility endpoint: return the newest local SQLite records."""
+    return {
+        "transactions": label_coordinator.recent_transactions(500),
+        "fetched_at": None,
+        "source": "local_sqlite",
+        "query_id": DUNE_QUERY_ID,
+    }
 
 
 @app.post("/api/arbitrage-hashes/refresh")
 async def refresh_arbitrage_hashes():
-    """Trigger a fresh Dune query execution in the background."""
-    threading.Thread(target=fetch_arbitrage_hashes, daemon=True).start()
-    return {"status": "refresh started"}
+    """Compatibility endpoint; synchronization is managed in the background."""
+    return {"status": "managed by Geth local-index sync"}
+
+
+@app.get("/api/arbitrage-transactions", response_model=ArbitrageTransactionsResponse)
+async def get_arbitrage_transactions(from_block: int, to_block: int):
+    """Read local arbitrage markers for one bounded block-explorer page."""
+    if from_block < 0 or to_block < 0:
+        raise HTTPException(status_code=400, detail="Block numbers must be non-negative")
+    if from_block > to_block:
+        raise HTTPException(status_code=400, detail="from_block must not exceed to_block")
+    if to_block - from_block + 1 > MAX_API_BLOCK_RANGE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Block range may contain at most {MAX_API_BLOCK_RANGE} blocks",
+        )
+    return ArbitrageTransactionsResponse(
+        transactions=label_coordinator.query_transactions(from_block, to_block),
+        history_start_block=HISTORY_START_BLOCK,
+        max_arbitrage_block=label_coordinator.max_arbitrage_block(),
+        initial_sync_complete=label_coordinator.dune.initial_sync_complete(),
+        coverage_complete=label_coordinator.coverage_complete(from_block, to_block),
+    )
 
 
 @app.get("/api/arbitrage/{tx_hash}")
 async def get_arbitrage(tx_hash: str):
-    path = os.path.join("Result", tx_hash.lstrip("0x"), "arbitrage.json")
+    if not TX_HASH_RE.fullmatch(tx_hash):
+        raise HTTPException(status_code=400, detail="Invalid tx_hash format")
+    path = os.path.join(_analysis_result_dir(tx_hash), "arbitrage.json")
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Not found")
     with open(path, encoding="utf-8") as f:

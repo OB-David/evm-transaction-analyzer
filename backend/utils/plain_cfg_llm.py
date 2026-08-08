@@ -7,6 +7,7 @@ import threading
 from typing import Any
 
 from openai import APITimeoutError, OpenAI
+from utils.analysis_paths import analysis_directory
 
 PROMPT_VERSION = "plain_cfg_opcode_objective_v4"
 DEFAULT_MODEL = "gpt-5.4-nano"
@@ -123,8 +124,7 @@ def build_plain_cfg_context_preview(
 
 
 def _resolve_result_dir(tx_hash: str) -> str:
-    tx_dir_name = tx_hash.lower().lstrip("0x")
-    result_dir = os.path.join("Result", tx_dir_name)
+    result_dir = str(analysis_directory(tx_hash))
     if not os.path.isdir(result_dir):
         raise PlainCfgLlmServiceError(404, "Transaction result directory not found")
     return result_dir

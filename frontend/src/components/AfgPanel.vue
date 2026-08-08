@@ -23,6 +23,8 @@ const errorMsg = ref('')
 
 const graphContainer = ref<HTMLElement | null>(null)
 let graphvizInstance: any = null
+let loadRequestId = 0
+let linkRequestId = 0
 
 // 套利相关状态
 const isArbitrage = ref(false)
@@ -45,11 +47,33 @@ const tooltipY = ref(0)
 const tooltipName = ref('')
 const tooltipBalances = ref<Record<string, number>>({})
 
-watch([() => props.txHash, () => props.cfgMode], ([newHash, newMode]) => {
+watch(() => props.txHash, (newHash) => {
+  loadRequestId += 1
+  graphvizInstance?.destroy?.()
+  graphvizInstance = null
   if (newHash) {
-    loadAfgData(newHash, newMode)
+    loadAfgData(newHash, props.cfgMode)
+  } else {
+    status.value = 'idle'
+    dotContent.value = ''
+    edgeLinks.value = []
+    if (graphContainer.value) graphContainer.value.innerHTML = ''
   }
 }, { immediate: true })
+
+watch(() => props.cfgMode, async (newMode) => {
+  const txHash = props.txHash
+  if (!txHash || status.value !== 'success') return
+  const requestId = ++linkRequestId
+  try {
+    const links = await fetchEdgeLink(txHash, newMode)
+    if (requestId === linkRequestId && props.txHash === txHash && props.cfgMode === newMode) {
+      edgeLinks.value = links
+    }
+  } catch (e) {
+    if (requestId === linkRequestId) console.warn('Failed to update AFG edge mapping:', e)
+  }
+})
 
 watch(() => props.highlightedBlockId, (newBlockIds) => {
   if (!newBlockIds || newBlockIds.length === 0) {
@@ -58,6 +82,7 @@ watch(() => props.highlightedBlockId, (newBlockIds) => {
 })
 
 async function loadAfgData(txHash: string, cfgMode: CfgMode) {
+  const requestId = loadRequestId
   status.value = 'loading'
   errorMsg.value = ''
   selectedEdgeId.value = null
@@ -80,9 +105,13 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
       fetchAddressBalances(txHash),
       fetchLegendData(txHash),
     ])
+    if (requestId !== loadRequestId || props.txHash !== txHash) return
 
     dotContent.value = dot
-    edgeLinks.value = links
+    edgeLinks.value = props.cfgMode === cfgMode
+      ? links
+      : await fetchEdgeLink(txHash, props.cfgMode)
+    if (requestId !== loadRequestId || props.txHash !== txHash) return
 
     isArbitrage.value = arb.is_arbitrage
     arbCycles.value = arb.cycles
@@ -112,18 +141,18 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
     nameToAddress.value = nameMap
     nameToColor.value = colorMap
 
-    status.value = 'success'
-
     await nextTick()
-    await renderGraph()
+    await renderGraph(dot, requestId)
+    if (requestId === loadRequestId) status.value = 'success'
   } catch (e: any) {
+    if (requestId !== loadRequestId) return
     status.value = 'error'
     errorMsg.value = e.message || 'Failed to load AFG data'
   }
 }
 
-async function renderGraph() {
-  if (!graphContainer.value || !dotContent.value) return
+async function renderGraph(dot: string, requestId: number) {
+  if (!graphContainer.value || !dot) return
 
   try {
     const container = graphContainer.value
@@ -139,9 +168,9 @@ async function renderGraph() {
     await new Promise<void>((resolve, reject) => {
       try {
         graphvizInstance
-          .renderDot(dotContent.value)
+          .renderDot(dot)
           .on('end', () => {
-            attachInteractivity()
+            if (requestId === loadRequestId) attachInteractivity()
             resolve()
           })
       } catch (e) {
@@ -200,7 +229,7 @@ function attachInteractivity() {
     textEls.forEach(t => {
       if (edgeId !== null) return
       const m = (t.textContent || '').match(/\((\d+)\)/)
-      if (m) edgeId = parseInt(m[1])
+      if (m) edgeId = parseInt(m[1]!, 10)
     })
 
     if (edgeId !== null && arbOrders.value.has(edgeId)) {
@@ -311,7 +340,7 @@ function getDarkAccentForName(name: string | null) {
 }
 
 function getThemeDarkTextColor(name: string | null) {
-  if (!name) return THEME_DARK_COLORS[THEME_DARK_COLORS.length - 1]
+  if (!name) return THEME_DARK_COLORS[THEME_DARK_COLORS.length - 1] ?? '#6B7280'
 
   const lower = name.toLowerCase()
   const mappedColor = nameToColor.value[lower]
@@ -323,7 +352,7 @@ function getThemeDarkTextColor(name: string | null) {
     hash = ((hash << 5) - hash + lower.charCodeAt(i)) | 0
   }
 
-  return THEME_DARK_COLORS[Math.abs(hash) % THEME_DARK_COLORS.length]
+  return THEME_DARK_COLORS[Math.abs(hash) % THEME_DARK_COLORS.length] ?? '#6B7280'
 }
 
 // 根据节点 DOT 名查找余额
@@ -402,11 +431,13 @@ function handleEdgeClick(edgeId: number) {
   const hasActiveFilter = !!(props.highlightedBlockId && props.highlightedBlockId.length > 0)
   if (selectedEdgeId.value === edgeId && hasActiveFilter) {
     selectedEdgeId.value = null
+    applySelectedEdgeStyle()
     emit('cfg-navigate', null)
     return
   }
 
   selectedEdgeId.value = edgeId
+  applySelectedEdgeStyle()
 
   const link = edgeLinks.value.find(l => l.edge_id === edgeId)
   if (!link) {
@@ -432,6 +463,17 @@ function handleEdgeClick(edgeId: number) {
     emit('cfg-navigate', uniqueBlockIds)
   }
 }
+
+function applySelectedEdgeStyle() {
+  const svg = graphContainer.value?.querySelector('svg')
+  svg?.querySelectorAll('.edge').forEach((edge) => {
+    const match = Array.from(edge.querySelectorAll('text'))
+      .map(text => text.textContent || '')
+      .join(' ')
+      .match(/\((\d+)\)/)
+    edge.classList.toggle('selected', Number(match?.[1]) === selectedEdgeId.value)
+  })
+}
 </script>
 
 <template>
@@ -453,8 +495,8 @@ function handleEdgeClick(edgeId: number) {
       {{ errorMsg }}
     </div>
 
-    <div v-else-if="status === 'success'" class="afg-container">
-      <div ref="graphContainer" class="graph-viewport"></div>
+    <div v-show="status === 'success' || status === 'loading'" class="afg-container">
+      <div :key="txHash || 'idle'" ref="graphContainer" class="graph-viewport"></div>
 
       <!-- 节点余额悬浮卡片 -->
       <div
@@ -478,7 +520,7 @@ function handleEdgeClick(edgeId: number) {
       </div>
     </div>
 
-    <div v-else class="placeholder">
+    <div v-if="status === 'idle' && !isAnalyzing" class="placeholder">
       <span class="placeholder-text">Enter a transaction hash to view asset flow</span>
     </div>
   </div>
@@ -588,6 +630,16 @@ function handleEdgeClick(edgeId: number) {
 
 .graph-viewport :deep(.edge) {
   transition: opacity 0.15s;
+}
+
+.graph-viewport :deep(.edge.selected path:not(.hit-area)) {
+  stroke-width: 4px !important;
+  filter: drop-shadow(0 0 2px rgba(59, 89, 152, 0.75));
+}
+
+.graph-viewport :deep(.edge.selected polygon) {
+  stroke-width: 2.5px !important;
+  filter: drop-shadow(0 0 2px rgba(59, 89, 152, 0.75));
 }
 
 .graph-viewport :deep(.hit-area) {

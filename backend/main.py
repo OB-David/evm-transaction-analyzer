@@ -10,6 +10,7 @@ from utils.render_cfg import get_valid_nodes_and_colors, render_transaction
 from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_fcfg, afg_to_pcfg, edge_link_to_json, detect_arbitrage, compute_address_balances
 from utils.sequence_diagram import build_refined_hierarchical_trace, render_puml_to_svg, tree_to_puml
 from utils.indentify_swap import filter_to_file
+from utils.analysis_paths import analysis_directory
 
 CONTRACT_COLORS = [
     "#F4B9B9",
@@ -44,7 +45,7 @@ except Exception:
 def main():
     # 配置参数
     PROVIDER_URL = os.environ.get("GETH_API")
-    TX_HASH = "0x1223227c2a196f0ba0c8b700f8972e8bf45d3252b5f79c20873bbb088cd45a8c"
+    TX_HASH = "0x2a0eea5a8c34b9fb296b69f38e78d47f22bb808ede04032876732860e27dac77"
 
     try:
         # ========== 前置检查 ==========
@@ -206,14 +207,10 @@ def main():
         traceback.print_exc()
 
 def create_result_directory(tx_hash: str) -> str:
-    """创建结果目录结构: Result/交易哈希/"""
-    # 移除交易哈希中的0x前缀
-    tx_dir_name = tx_hash.lstrip('0x')
-    # 构建完整目录路径
-    result_dir = os.path.join("Result", tx_dir_name)
-    # 创建目录（如果不存在）
-    os.makedirs(result_dir, exist_ok=True)
-    return result_dir
+    """创建结果目录结构: data_base/analysis/交易哈希/。"""
+    result_dir = analysis_directory(tx_hash)
+    result_dir.mkdir(parents=True, exist_ok=True)
+    return str(result_dir)
 
 def save_graphs(result_dir: str, plain_cfg: object,folded_cfg:object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]], tree_data, arb_result, progress_callback: Optional[Callable[[str], None]] = None):
     '''渲染并保存所有图：交易级CFG图、CFG图例、代币交易流图'''
