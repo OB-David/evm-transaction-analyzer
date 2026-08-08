@@ -1,4 +1,0 @@
-interface:
-  display_name: "EVM 套利检测可视化"
-  short_description: "从 EVM 交易执行证据构建可审计的套利检测与交互可视化"
-  default_prompt: "使用 $evm-arbitrage-visualizer 分析一笔 EVM 交易并构建可审计的套利证据可视化。"
