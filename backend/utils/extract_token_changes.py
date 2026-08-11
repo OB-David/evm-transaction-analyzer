@@ -4,7 +4,7 @@
 from collections import defaultdict
 from graphviz import Digraph
 from utils.cfg_structure import CFG
-from typing import List, Dict
+from typing import Any, Dict, List, Optional, Tuple
 import json
 
 THEME_FILLS = [
@@ -72,6 +72,8 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
     """
     paired = []
     node_annotations = defaultdict(list)
+    original_value = int(original_transfer[2])
+    # order=0 专用于非零的顶层 ETH 转移；其余资产变化始终从 order=1 开始。
     order_counter = 0
     pending_erc20 = []  # ✅ 改成列表
     token_queues = defaultdict(list)
@@ -140,18 +142,19 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
             eth_mirror_pool[best_idx]["used"] = True
         return best_idx
 
-    # 交易发起时ETH Transfer
-    paired.append({
-        "order": order_counter,
-        "codecontract_address": None,
-        "from": original_transfer[0],
-        "to": original_transfer[1],
-        "amount": original_transfer[2] / (10 ** 18),
-        "token": "ETH",
-        "token_addr": "ETH",
-        "source_pcs": None,
-        "source_steps": None,
-    })
+    # 交易发起时的 ETH Transfer。零 value 只是一次普通合约调用，不应生成资产流边。
+    if original_value != 0:
+        paired.append({
+            "order": order_counter,
+            "codecontract_address": None,
+            "from": original_transfer[0],
+            "to": original_transfer[1],
+            "amount": original_value / (10 ** 18),
+            "token": "ETH",
+            "token_addr": "ETH",
+            "source_pcs": None,
+            "source_steps": None,
+        })
 
     for c in all_changes:
         # -------- ETH --------
@@ -267,7 +270,8 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
 
     combined.sort(key=lambda x: (x[0], x[1]))
 
-    next_order = 0
+    # order=0 只属于非零顶层 ETH 转移；不存在该边时保留 0 号空位。
+    next_order = 0 if original_value != 0 else 1
     for _, _, item, _ in combined:
         item["order"] = next_order
         next_order += 1
@@ -382,6 +386,37 @@ def compute_address_balances(paired: list, pending_erc20: list = None) -> dict:
     # 转成普通 dict 方便序列化
     return {addr: dict(tokens) for addr, tokens in balances.items()}
 
+
+def collect_asset_flow_addresses(paired, pending_erc20):
+    """Collect the exact node addresses represented in the asset-flow graph."""
+    addresses = set()
+    for transfer in paired:
+        for field in ("from", "to"):
+            address = transfer.get(field)
+            if address:
+                addresses.add(address)
+    for change in pending_erc20:
+        for field in ("user", "token_addr"):
+            address = change.get(field)
+            if address:
+                addresses.add(address)
+    return addresses
+
+
+def filter_asset_flow_user_addresses(users_addresses, paired, pending_erc20):
+    """Keep only standardized users that are actual asset-flow graph nodes."""
+    asset_flow_addresses = {
+        address.lower()
+        for address in collect_asset_flow_addresses(paired, pending_erc20)
+        if isinstance(address, str)
+    }
+    return [
+        address
+        for address in users_addresses
+        if isinstance(address, str) and address.lower() in asset_flow_addresses
+    ]
+
+
 def render_asset_flow(paired, node_annotations, users_addresses,
                       full_address_name_map, pending_erc20, addr_color_map,
                       output_file="asset_flow.dot",
@@ -411,14 +446,8 @@ def render_asset_flow(paired, node_annotations, users_addresses,
     users_set = set(users_addresses)
     user_alias_map = {addr: full_address_name_map.get(addr) for addr in users_set}
 
-    # 收集所有相关地址
-    addresses = set()
-    for p in paired:
-        addresses.add(p["from"])
-        addresses.add(p["to"])
-    for v in pending_erc20:
-        addresses.add(v["user"])
-        addresses.add(v["token_addr"]) # 确保代币合约本身也被作为节点
+    # 和 legend 共用同一套 TFG 节点收集语义。
+    addresses = collect_asset_flow_addresses(paired, pending_erc20)
 
     # 建立地址到地址的映射（不去重：节点数量与地址数量一致）
     name_to_addrs = {}
@@ -520,85 +549,141 @@ def render_asset_flow(paired, node_annotations, users_addresses,
     return dot
 
 
-def find_node_by_pc_address(original_cfg: CFG, folded_node_map: Dict[str, List[str]], address: str, pc: str):
-    def pc_to_int(v):
-        if v is None:
-            return None
-        try:
-            if isinstance(v, int):
-                return v
-            s = str(v)
-            if s.startswith("0x"):
-                return int(s, 16)
-            return int(s)
-        except Exception:
-            return None
-        
-    pc_int = pc_to_int(pc)
-    if pc_int is None:
-        return None
-    # 第一步：在原始图中精确定位该 PC 属于哪一个原始块
-    target_original_id = None
-    for node in original_cfg.nodes:
-        if node.address == address:
-            s_int = pc_to_int(node.start_pc)
-            e_int = pc_to_int(node.end_pc)
-            
-            if s_int is not None and e_int is not None:
-                if s_int <= pc_int <= e_int:
-                    target_original_id = node.id
-                    break
-    
-    if not target_original_id:
-        return None
+FoldedStepIndex = List[Tuple[int, int, Any]]
 
-    # 第二步：在映射表中查找该原始 ID 属于哪一个折叠后的根节点
-    # folded_node_map 的 key 是根节点 ID，value 是被它吞并的所有原始节点 ID 列表
-    for root_id, original_ids in folded_node_map.items():
-        if target_original_id in original_ids:
-            return root_id
-    
-    return None
 
-# --- 后续的 afg_to_cfg 和序列化函数保持不变 ---
-def afg_to_fcfg(paired, pending_erc20, tx_cfg: CFG, folded_node_map):
+def build_folded_step_index(folded_cfg: CFG) -> FoldedStepIndex:
+    """Return inclusive execution intervals that point directly to final folded nodes."""
+    index: FoldedStepIndex = []
+    for node in folded_cfg.nodes:
+        fold_info = getattr(node, "fold_info", {})
+        for step_range in fold_info.get("step_ranges", []):
+            if not isinstance(step_range, dict):
+                continue
+            try:
+                start = int(step_range["start_step"])
+                end = int(step_range["end_step"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if start <= end:
+                index.append((start, end, node.id))
+    index.sort(key=lambda item: (item[0], item[1], str(item[2])))
+    return index
+
+
+def find_folded_node_by_step(
+    step_index: FoldedStepIndex,
+    step: Any,
+) -> Tuple[Optional[Any], str, Optional[int]]:
+    try:
+        step_value = int(step)
+    except (TypeError, ValueError):
+        return None, "unmatched", None
+
+    matches = list(dict.fromkeys(
+        node_id
+        for start, end, node_id in step_index
+        if start <= step_value <= end
+    ))
+    if len(matches) == 1:
+        return matches[0], "matched", step_value
+    if len(matches) > 1:
+        return None, "ambiguous", step_value
+    return None, "unmatched", step_value
+
+
+def _build_folded_evidence(
+    step_index: FoldedStepIndex,
+    role: str,
+    step: Any,
+) -> Dict[str, Any]:
+    block_id, status, source_step = find_folded_node_by_step(step_index, step)
+    return {
+        "role": role,
+        "source_step": source_step,
+        "block_id": block_id,
+        "status": status,
+    }
+
+
+def _mapping_status(evidence: List[Dict[str, Any]]) -> str:
+    statuses = [entry["status"] for entry in evidence]
+    if "ambiguous" in statuses:
+        return "ambiguous"
+    matched_count = statuses.count("matched")
+    if matched_count == len(statuses) and statuses:
+        return "complete"
+    if matched_count > 0:
+        return "partial"
+    return "unmatched"
+
+
+def _unique_matched_blocks(evidence: List[Dict[str, Any]]) -> List[Any]:
+    return list(dict.fromkeys(
+        entry["block_id"]
+        for entry in evidence
+        if entry.get("status") == "matched" and entry.get("block_id") is not None
+    ))
+
+
+def afg_to_fcfg(paired, pending_erc20, folded_cfg: CFG):
+    step_index = build_folded_step_index(folded_cfg)
     edge_link = []
     for p in paired:
         if p["order"] == 0:
             continue
         if p["token"] == "ETH":
-            matched_block = find_node_by_pc_address(tx_cfg, folded_node_map, p["codecontract_address"], p["source_pcs"][0])
-            if matched_block:
-               edge_link.append({"edge_id": p["order"], "type": "ETH_TRANSFER", "matched_blocks": matched_block})
+            source_steps = p.get("source_steps") or []
+            evidence = [_build_folded_evidence(
+                step_index,
+                "eth_transfer",
+                source_steps[0] if source_steps else None,
+            )]
+            matched = _unique_matched_blocks(evidence)
+            edge_link.append({
+                "schema_version": 2,
+                "edge_id": p["order"],
+                "type": "ETH_TRANSFER",
+                "mapping_status": _mapping_status(evidence),
+                "matched_blocks": matched[0] if len(matched) == 1 else matched,
+                "evidence": evidence,
+            })
         else:
-            # ERC20 Transfer 配对
-            # from_codecontract_address 对应的 sload/sstore
-            s_l = find_node_by_pc_address(tx_cfg, folded_node_map, p["from_codecontract"], p["source_pcs"]["sender_sload_pc"])
-            s_s = find_node_by_pc_address(tx_cfg, folded_node_map, p["from_codecontract"], p["source_pcs"]["sender_sstore_pc"])
-            r_l = find_node_by_pc_address(tx_cfg, folded_node_map, p["to_codecontract"], p["source_pcs"]["receiver_sload_pc"])
-            r_s = find_node_by_pc_address(tx_cfg, folded_node_map, p["to_codecontract"], p["source_pcs"]["receiver_sstore_pc"])
-            blocks = {
-                "s_l": next((rid for rid, nids in folded_node_map.items() if s_l in nids), s_l),
-                "s_s": next((rid for rid, nids in folded_node_map.items() if s_s in nids), s_s),
-                "r_l": next((rid for rid, nids in folded_node_map.items() if r_l in nids), r_l),
-                "r_s": next((rid for rid, nids in folded_node_map.items() if r_s in nids), r_s),
-            }
-            if all(blocks.values()):
-                edge_link.append({
-                    "edge_id": p["order"], "type": "ERC20_TOKEN_TRANSFER",
-                    "matched_blocks": {"sender": (blocks["s_l"], blocks["s_s"]), "receiver": (blocks["r_l"], blocks["r_s"])}
-                })  
+            source_steps = p.get("source_steps") or {}
+            sender_evidence = [
+                _build_folded_evidence(step_index, "sender_sload", source_steps.get("sender_sload_step")),
+                _build_folded_evidence(step_index, "sender_sstore", source_steps.get("sender_sstore_step")),
+            ]
+            receiver_evidence = [
+                _build_folded_evidence(step_index, "receiver_sload", source_steps.get("receiver_sload_step")),
+                _build_folded_evidence(step_index, "receiver_sstore", source_steps.get("receiver_sstore_step")),
+            ]
+            evidence = sender_evidence + receiver_evidence
+            edge_link.append({
+                "schema_version": 2,
+                "edge_id": p["order"],
+                "type": "ERC20_TOKEN_TRANSFER",
+                "mapping_status": _mapping_status(evidence),
+                "matched_blocks": {
+                    "sender": _unique_matched_blocks(sender_evidence),
+                    "receiver": _unique_matched_blocks(receiver_evidence),
+                },
+                "evidence": evidence,
+            })
 
     for v in pending_erc20:
-        sload_block = find_node_by_pc_address(tx_cfg, folded_node_map, v["token_addr"], v["source_pcs"][0])
-        sload_block = next((rid for rid, nids in folded_node_map.items() if sload_block in nids), sload_block)
-        sstore_block = find_node_by_pc_address(tx_cfg, folded_node_map, v["token_addr"], v["source_pcs"][1])
-        sstore_block = next((rid for rid, nids in folded_node_map.items() if sstore_block in nids), sstore_block)
-        if sload_block is None or sstore_block is None:
-            continue
+        source_steps = v.get("source_steps") or []
+        evidence = [
+            _build_folded_evidence(step_index, "balance_sload", source_steps[0] if len(source_steps) > 0 else None),
+            _build_folded_evidence(step_index, "balance_sstore", source_steps[1] if len(source_steps) > 1 else None),
+        ]
         edge_link.append({
-            "edge_id": v["order"], "type": "ERC20_BALANCE_CHANGE",
-            "matched_blocks": [sload_block, sstore_block]
+            "schema_version": 2,
+            "edge_id": v["order"],
+            "type": "ERC20_BALANCE_CHANGE",
+            "mapping_status": _mapping_status(evidence),
+            "matched_blocks": _unique_matched_blocks(evidence),
+            "evidence": evidence,
         })
 
     edge_link.sort(key=lambda x: x["edge_id"])
@@ -719,10 +804,180 @@ def afg_to_pcfg(paired, pending_erc20, plain_cfg):
     edge_link.sort(key=lambda x: x["edge_id"])
     return edge_link
 
-def edge_link_to_json(edge_link):
-    return json.dumps(
-        edge_link,
-        indent=4,        # 缩进4格，美观易读
-        ensure_ascii=False,  # 支持特殊字符（如合约地址）
-        sort_keys=False  # 保持原有字段顺序，不打乱edge_id/type等
-    )
+
+def _build_call_tree_step_index(trace_tree: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
+    """Build the same preorder call IDs used by ``build_call_tree_payload``."""
+    root_address = str(trace_tree.get("contract") or "").strip()
+    frames: List[Dict[str, Any]] = []
+
+    def visit(node: Dict[str, Any], depth: int) -> None:
+        call_id = len(frames) + 1
+        try:
+            entry_step = int(node.get("entry_step", 0))
+            exit_step = int(node.get("exit_step", 0))
+        except (TypeError, ValueError):
+            entry_step = 0
+            exit_step = -1
+        frames.append({
+            "call_id": call_id,
+            "depth": depth,
+            "entry_step": entry_step,
+            "exit_step": exit_step,
+            "contract_address": str(node.get("contract") or "").strip(),
+        })
+        children = node.get("calls", [])
+        if isinstance(children, list):
+            for child in children:
+                if isinstance(child, dict):
+                    visit(child, depth + 1)
+
+    children = trace_tree.get("calls", [])
+    if isinstance(children, list):
+        for child in children:
+            if isinstance(child, dict):
+                visit(child, 1)
+    return root_address, frames
+
+
+def _build_call_tree_evidence(
+    root_address: str,
+    frames: List[Dict[str, Any]],
+    role: str,
+    step: Any,
+) -> Dict[str, Any]:
+    try:
+        source_step = int(step)
+    except (TypeError, ValueError):
+        return {
+            "role": role,
+            "source_step": None,
+            "call_id": None,
+            "contract_address": None,
+            "status": "unmatched",
+        }
+
+    containing = [
+        frame for frame in frames
+        if frame["entry_step"] <= source_step <= frame["exit_step"]
+    ]
+    if containing:
+        deepest = max(frame["depth"] for frame in containing)
+        matches = [frame for frame in containing if frame["depth"] == deepest]
+        if len(matches) != 1:
+            return {
+                "role": role,
+                "source_step": source_step,
+                "call_id": None,
+                "contract_address": None,
+                "status": "ambiguous",
+            }
+        match = matches[0]
+        return {
+            "role": role,
+            "source_step": source_step,
+            "call_id": match["call_id"],
+            "contract_address": match["contract_address"],
+            "status": "matched",
+        }
+
+    # Steps not enclosed by a child call execute in the transaction root contract.
+    if root_address:
+        return {
+            "role": role,
+            "source_step": source_step,
+            "call_id": None,
+            "contract_address": root_address,
+            "status": "matched",
+        }
+    return {
+        "role": role,
+        "source_step": source_step,
+        "call_id": None,
+        "contract_address": None,
+        "status": "unmatched",
+    }
+
+
+def _unique_matched_calls(evidence: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    matched: List[Dict[str, Any]] = []
+    seen = set()
+    for entry in evidence:
+        if entry.get("status") != "matched" or not entry.get("contract_address"):
+            continue
+        key = (entry.get("call_id"), str(entry["contract_address"]).lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        matched.append({
+            "call_id": entry.get("call_id"),
+            "contract_address": entry["contract_address"],
+        })
+    return matched
+
+
+def afg_to_call_tree(paired, pending_erc20, trace_tree: Dict[str, Any]):
+    """Map each TFG transfer edge's source steps to its deepest call frames."""
+    root_address, frames = _build_call_tree_step_index(trace_tree)
+    edge_links = []
+
+    def append_link(edge_id: int, edge_type: str, role_steps: List[Tuple[str, Any]]) -> None:
+        evidence = [
+            _build_call_tree_evidence(root_address, frames, role, step)
+            for role, step in role_steps
+        ]
+        matched_calls = _unique_matched_calls(evidence)
+        matched_contracts = list(dict.fromkeys(
+            str(call["contract_address"]).lower() for call in matched_calls
+        ))
+        edge_links.append({
+            "schema_version": 1,
+            "edge_id": edge_id,
+            "type": edge_type,
+            "mapping_status": _mapping_status(evidence),
+            "matched_calls": matched_calls,
+            "matched_contracts": matched_contracts,
+            "evidence": evidence,
+        })
+
+    for transfer in paired:
+        if transfer["order"] == 0:
+            continue
+        if transfer["token"] == "ETH":
+            steps = transfer.get("source_steps") or []
+            append_link(
+                transfer["order"],
+                "ETH_TRANSFER",
+                [("eth_transfer", steps[0] if steps else None)],
+            )
+        else:
+            steps = transfer.get("source_steps") or {}
+            append_link(transfer["order"], "ERC20_TOKEN_TRANSFER", [
+                ("sender_sload", steps.get("sender_sload_step")),
+                ("sender_sstore", steps.get("sender_sstore_step")),
+                ("receiver_sload", steps.get("receiver_sload_step")),
+                ("receiver_sstore", steps.get("receiver_sstore_step")),
+            ])
+
+    for change in pending_erc20:
+        steps = change.get("source_steps") or []
+        append_link(change["order"], "ERC20_BALANCE_CHANGE", [
+            ("balance_sload", steps[0] if len(steps) > 0 else None),
+            ("balance_sstore", steps[1] if len(steps) > 1 else None),
+        ])
+
+    edge_links.sort(key=lambda item: item["edge_id"])
+    return edge_links
+
+LINK_ARTIFACT_SCHEMA_VERSION = 1
+
+
+def build_link_artifact(folded_links, plain_links, call_tree_links=None):
+    """Build the single persisted TFG-to-CFG/call-tree linkage contract."""
+    return {
+        "schema_version": LINK_ARTIFACT_SCHEMA_VERSION,
+        "edge_links": {
+            "folded": folded_links,
+            "plain": plain_links,
+            "call_tree": call_tree_links or [],
+        },
+    }

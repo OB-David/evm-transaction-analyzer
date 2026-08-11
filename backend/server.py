@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from concurrent.futures import Future, ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from dotenv import load_dotenv
 from pydantic import BaseModel, field_validator
 from typing import Any, Literal
@@ -59,6 +59,8 @@ class AnalysisJob:
     process: subprocess.Popen[str]
     future: Future[subprocess.CompletedProcess[str]] | None = None
     cancel_requested: bool = False
+    stage: str = "queued"
+    error: str | None = None
 
 
 analysis_jobs: dict[str, AnalysisJob] = {}
@@ -116,7 +118,6 @@ class AnalyzeResponse(BaseModel):
     result_dir: str
     files: list[str]
     error: str | None = None
-    updated_at: str | None = None
 
 
 class CancelAnalysisResponse(BaseModel):
@@ -207,7 +208,7 @@ class PlainBlockAnalysisRequest(BaseModel):
 
 class LlmAnalysisResult(BaseModel):
     title: str
-    description: str
+    description: str = ""
 
 
 class PlainBlockAnalysisResponse(BaseModel):
@@ -219,10 +220,6 @@ class PlainBlockAnalysisResponse(BaseModel):
 
 def _analysis_result_dir(tx_hash: str) -> str:
     return str(analysis_directory(tx_hash))
-
-
-def _analysis_status_path(tx_hash: str) -> str:
-    return os.path.join(_analysis_result_dir(tx_hash), "analysis_status.json")
 
 
 def _cleanup_incomplete_analysis(tx_hash: str) -> bool:
@@ -244,53 +241,118 @@ def _cleanup_incomplete_analysis(tx_hash: str) -> bool:
     return True
 
 
-def _write_server_analysis_status(tx_hash: str, stage: str, error: str | None = None) -> None:
+def _completed_analysis_response(tx_hash: str) -> AnalyzeResponse | None:
     result_dir = _analysis_result_dir(tx_hash)
-    os.makedirs(result_dir, exist_ok=True)
-    payload = {
-        "status": "error" if error else "processing",
-        "stage": stage,
-        "result_dir": os.path.abspath(result_dir),
-        "files": sorted(os.listdir(result_dir)),
-        "error": error,
+    required_files = {
+        "analysis_timing.json",
+        "arbitrage.json",
+        "call_tree.json",
+        "edge_id-step.json",
+        "folded_blocks_information.json",
+        "folded_cfg.dot",
+        "link.json",
+        "plain_blocks_information.json",
+        "plain_cfg.dot",
+        "plain_semantics.json.gz",
+        "swap_in_fcfg.json",
+        "swap_in_pcfg.json",
     }
-    status_path = _analysis_status_path(tx_hash)
-    temp_path = f"{status_path}.tmp"
-    with open(temp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    os.replace(temp_path, status_path)
-
-
-def _read_analysis_status(tx_hash: str) -> AnalyzeResponse | None:
-    status_path = _analysis_status_path(tx_hash)
-    try:
-        with open(status_path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-        return AnalyzeResponse(**payload)
-    except (FileNotFoundError, json.JSONDecodeError, TypeError, ValueError):
+    if not os.path.isdir(result_dir):
         return None
+    files = sorted(
+        name for name in os.listdir(result_dir)
+        if os.path.isfile(os.path.join(result_dir, name))
+    )
+    if not required_files.issubset(files):
+        return None
+    try:
+        with open(os.path.join(result_dir, "link.json"), "r", encoding="utf-8") as handle:
+            link_artifact = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    edge_links = link_artifact.get("edge_links", {})
+    if (
+        link_artifact.get("schema_version") != 1
+        or not isinstance(edge_links, dict)
+        or not all(isinstance(edge_links.get(name), list) for name in ("folded", "plain", "call_tree"))
+    ):
+        # Older cached analyses must be regenerated so a TFG selection can
+        # drive both CFG modes and the contract call tree.
+        return None
+    return AnalyzeResponse(
+        status="success",
+        stage="complete",
+        result_dir=os.path.abspath(result_dir),
+        files=files,
+    )
+
+
+def _job_response(job: AnalysisJob) -> AnalyzeResponse:
+    result_dir = _analysis_result_dir(job.tx_hash)
+    files = sorted(
+        name for name in os.listdir(result_dir)
+        if os.path.isfile(os.path.join(result_dir, name))
+    ) if os.path.isdir(result_dir) else []
+    if job.future is None or not job.future.done():
+        return AnalyzeResponse(
+            status="processing",
+            stage=job.stage,
+            result_dir=os.path.abspath(result_dir),
+            files=files,
+        )
+    if job.cancel_requested:
+        return AnalyzeResponse(
+            status="error",
+            stage="error",
+            result_dir=os.path.abspath(result_dir),
+            files=[],
+            error="Analysis cancelled",
+        )
+    if job.error:
+        return AnalyzeResponse(
+            status="error",
+            stage="error",
+            result_dir=os.path.abspath(result_dir),
+            files=[],
+            error=job.error,
+        )
+    return _completed_analysis_response(job.tx_hash) or AnalyzeResponse(
+        status="error",
+        stage="error",
+        result_dir=os.path.abspath(result_dir),
+        files=files,
+        error="Analysis completed without required artifacts",
+    )
 
 
 def _wait_for_analysis(job: AnalysisJob) -> subprocess.CompletedProcess[str]:
-    stdout, stderr = job.process.communicate()
+    output_lines: list[str] = []
+    if job.process.stdout is not None:
+        for line in job.process.stdout:
+            output_lines.append(line)
+            stripped = line.strip()
+            if stripped.startswith("ANALYSIS_STAGE="):
+                stage = stripped.removeprefix("ANALYSIS_STAGE=")
+                with analysis_jobs_lock:
+                    if analysis_jobs.get(job.tx_hash) is job:
+                        job.stage = stage
+    job.process.wait()
+    stdout = "".join(output_lines)
     completed = subprocess.CompletedProcess(
         job.process.args,
         job.process.returncode,
         stdout,
-        stderr,
+        "",
     )
 
     if job.cancel_requested:
         _cleanup_incomplete_analysis(job.tx_hash)
     elif completed.returncode != 0:
-        current = _read_analysis_status(job.tx_hash)
-        error = (
-            current.error
-            if current is not None and current.status == "error" and current.error
-            else extract_analysis_error(completed.stdout, completed.stderr) or "Analysis failed."
-        )
+        job.error = extract_analysis_error(completed.stdout, completed.stderr) or "Analysis failed."
+        job.stage = "error"
         _cleanup_incomplete_analysis(job.tx_hash)
-        _write_server_analysis_status(job.tx_hash, "error", error)
+    else:
+        job.stage = "complete"
     return completed
 
 
@@ -337,8 +399,8 @@ def _cancel_analysis_job(tx_hash: str) -> CancelAnalysisResponse:
         job = analysis_jobs.get(tx_hash)
         if job is None:
             return CancelAnalysisResponse(status="not_running", tx_hash=tx_hash, cleaned=False)
-        current = _read_analysis_status(tx_hash)
-        if job.process.poll() is not None and current is not None and current.status == "success":
+        if job.process.poll() is not None:
+            analysis_jobs.pop(tx_hash, None)
             return CancelAnalysisResponse(status="not_running", tx_hash=tx_hash, cleaned=False)
         job.cancel_requested = True
 
@@ -362,45 +424,42 @@ async def analyze(req: AnalyzeRequest):
     clear_plain_cfg_runtime_cache(req.tx_hash)
 
     with analysis_jobs_lock:
-        existing_job = analysis_jobs.get(req.tx_hash)
-        current = _read_analysis_status(req.tx_hash)
-        if existing_job is not None and existing_job.process.poll() is None:
-            return current or AnalyzeResponse(status="processing", stage="queued", result_dir="", files=[])
-        if current is not None and current.status == "success":
-            return current
-
-        # A failed server or cancelled client may have left an incomplete directory.
-        _cleanup_incomplete_analysis(req.tx_hash)
-        _write_server_analysis_status(req.tx_hash, "queued")
-        popen_kwargs: dict[str, Any] = {
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.PIPE,
-            "text": True,
-            "encoding": "utf-8",
-        }
-        if os.name == "nt":
-            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        job = analysis_jobs.get(req.tx_hash)
+        if job is not None:
+            response = _job_response(job)
+            if response.status != "processing":
+                analysis_jobs.pop(req.tx_hash, None)
+            return response
         else:
-            popen_kwargs["start_new_session"] = True
-        try:
-            process = subprocess.Popen(
-                ["uv", "run", "python", "main_api.py", req.tx_hash],
-                **popen_kwargs,
-            )
-        except Exception as exc:
+            completed_response = _completed_analysis_response(req.tx_hash)
+            if completed_response is not None:
+                return completed_response
+
+            # A failed server or cancelled client may have left an incomplete directory.
             _cleanup_incomplete_analysis(req.tx_hash)
-            raise HTTPException(status_code=500, detail=f"Failed to start analysis: {exc}") from exc
-        job = AnalysisJob(tx_hash=req.tx_hash, process=process)
-        analysis_jobs[req.tx_hash] = job
-        job.future = executor.submit(_wait_for_analysis, job)
+            popen_kwargs: dict[str, Any] = {
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "text": True,
+                "encoding": "utf-8",
+            }
+            if os.name == "nt":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                popen_kwargs["start_new_session"] = True
+            try:
+                process = subprocess.Popen(
+                    ["uv", "run", "python", "main_api.py", req.tx_hash],
+                    **popen_kwargs,
+                )
+            except Exception as exc:
+                _cleanup_incomplete_analysis(req.tx_hash)
+                raise HTTPException(status_code=500, detail=f"Failed to start analysis: {exc}") from exc
+            job = AnalysisJob(tx_hash=req.tx_hash, process=process)
+            analysis_jobs[req.tx_hash] = job
+            job.future = executor.submit(_wait_for_analysis, job)
 
-    job.future.add_done_callback(
-        lambda _completed, tx_hash=req.tx_hash, active_job=job: _cleanup_analysis_job(tx_hash, active_job)
-    )
-
-    return _read_analysis_status(req.tx_hash) or AnalyzeResponse(
-        status="processing", stage="queued", result_dir="", files=[]
-    )
+    return _job_response(job)
 
 
 @app.delete("/api/analyze/{tx_hash}", response_model=CancelAnalysisResponse)
@@ -411,14 +470,22 @@ async def cancel_analysis(tx_hash: str):
     return await asyncio.to_thread(_cancel_analysis_job, tx_hash)
 
 
-@app.get("/api/analyze/{tx_hash}/status", response_model=AnalyzeResponse)
-async def analyze_status(tx_hash: str):
-    if not TX_HASH_RE.match(tx_hash):
+@app.get("/api/analyze/{tx_hash}/progress", response_model=AnalyzeResponse)
+async def analyze_progress(tx_hash: str):
+    if not TX_HASH_RE.fullmatch(tx_hash):
         raise HTTPException(status_code=400, detail="Invalid tx_hash format")
-    current = _read_analysis_status(tx_hash.lower())
-    if current is None:
+    tx_hash = tx_hash.lower()
+    with analysis_jobs_lock:
+        job = analysis_jobs.get(tx_hash)
+        if job is not None:
+            response = _job_response(job)
+            if response.status != "processing":
+                analysis_jobs.pop(tx_hash, None)
+            return response
+    completed = _completed_analysis_response(tx_hash)
+    if completed is None:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    return current
+    return completed
 
 
 @app.get("/api/files/{tx_hash}/{filename}")
@@ -433,7 +500,7 @@ async def get_file(tx_hash: str, filename: str):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
     # Whitelist allowed file extensions
-    allowed_extensions = {".dot", ".json", ".svg"}
+    allowed_extensions = {".dot", ".json"}
     if not any(filename.endswith(ext) for ext in allowed_extensions):
         raise HTTPException(status_code=400, detail="File type not allowed")
 
@@ -454,6 +521,41 @@ async def get_file(tx_hash: str, filename: str):
     else:
         content_type, _ = mimetypes.guess_type(filename)
         return FileResponse(path=file_path, media_type=content_type)
+
+
+@app.get("/api/cfg/{tx_hash}/{mode}.svg")
+async def render_cfg_svg(tx_hash: str, mode: str):
+    """Render a persisted CFG DOT source without writing an SVG artifact."""
+    if not TX_HASH_RE.match(tx_hash):
+        raise HTTPException(status_code=400, detail="Invalid tx_hash format")
+    if mode not in {"folded", "plain"}:
+        raise HTTPException(status_code=400, detail="Invalid CFG mode")
+
+    dot_path = os.path.join(_analysis_result_dir(tx_hash), f"{mode}_cfg.dot")
+    if not os.path.isfile(dot_path):
+        raise HTTPException(status_code=404, detail="CFG DOT source not found")
+
+    def run_graphviz() -> bytes:
+        completed = subprocess.run(
+            ["dot", "-Tsvg", dot_path],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+        return completed.stdout
+
+    try:
+        svg = await asyncio.to_thread(run_graphviz)
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="CFG rendering timed out") from exc
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise HTTPException(status_code=500, detail="CFG rendering failed") from exc
+
+    return Response(
+        content=svg,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.post("/api/block", response_model=BlockGasResponse)

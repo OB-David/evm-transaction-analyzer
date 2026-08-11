@@ -6,7 +6,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterable
 
-from labels.coordinator import DATA_DIR, TX_HASH_RE
+from labels.coordinator import DATA_DIR, TX_HASH_RE, encode_tx_hash
 
 if TYPE_CHECKING:
     from labels.coordinator import LabelCoordinator
@@ -148,7 +148,7 @@ class GethStore:
         *,
         minimum_block: int,
         maximum_block: int,
-    ) -> list[tuple[str, int]]:
+    ) -> list[tuple[int, bytes]]:
         by_hash: dict[str, int] = {}
         for transaction in transactions:
             tx_hash = str(transaction["tx_hash"]).lower()
@@ -163,27 +163,20 @@ class GethStore:
             prior_block = by_hash.setdefault(tx_hash, block_number)
             if prior_block != block_number:
                 raise ValueError(f"transaction {tx_hash} appears in multiple blocks")
-        return sorted(by_hash.items())
+        return sorted(
+            (block_number, encode_tx_hash(tx_hash))
+            for tx_hash, block_number in by_hash.items()
+        )
 
     @staticmethod
     def _insert_transactions(
         connection: sqlite3.Connection,
-        transactions: list[tuple[str, int]],
+        transactions: list[tuple[int, bytes]],
     ) -> int:
-        for tx_hash, block_number in transactions:
-            existing = connection.execute(
-                "SELECT block_number FROM arbitrage_transactions WHERE tx_hash = ?",
-                (tx_hash,),
-            ).fetchone()
-            if existing is not None and int(existing["block_number"]) != block_number:
-                raise RuntimeError(
-                    f"transaction {tx_hash} is already stored at block "
-                    f"{existing['block_number']}, not {block_number}"
-                )
         before = connection.total_changes
         connection.executemany(
             """
-            INSERT OR IGNORE INTO arbitrage_transactions(tx_hash, block_number)
+            INSERT OR IGNORE INTO arbitrage_transactions(block_number, tx_hash)
             VALUES (?, ?)
             """,
             transactions,

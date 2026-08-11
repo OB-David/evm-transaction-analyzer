@@ -127,11 +127,11 @@ THEME_DARKS = {
 }
 
 EDGE_STYLE_MAP = {
-    "NORMAL": {"color": "#C2CAD7", "penwidth": "3.6", "arrowsize": "0.52"},
-    "JUMP": {"color": "#D8D2CA", "penwidth": "2.2", "arrowsize": "0.44"},
-    "CALL": {"color": "#A9C7AE", "penwidth": "3.1", "arrowsize": "0.5"},
-    "DELEGATECALL": {"color": "#ABC0D9", "penwidth": "3.0", "arrowsize": "0.5"},
-    "TERMINATE": {"color": "#DABAAE", "penwidth": "2.8", "arrowsize": "0.46"},
+    "NORMAL": {"color": "#64748B", "penwidth": "3.6", "arrowsize": "0.52"},
+    "JUMP": {"color": "#6B5B73", "penwidth": "2.2", "arrowsize": "0.44"},
+    "CALL": {"color": "#4D7C61", "penwidth": "3.1", "arrowsize": "0.5"},
+    "DELEGATECALL": {"color": "#4F78A0", "penwidth": "3.0", "arrowsize": "0.5"},
+    "TERMINATE": {"color": "#9A6658", "penwidth": "2.8", "arrowsize": "0.46"},
 }
 
 def escape_dot(s: Any) -> str:

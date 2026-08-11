@@ -1,4 +1,5 @@
 import copy
+import gzip
 import hashlib
 import json
 import os
@@ -21,6 +22,8 @@ MIN_DESCRIPTION_SENTENCES = 2
 MAX_DESCRIPTION_SENTENCES = 3
 _RUNTIME_CACHE_LOCK = threading.Lock()
 _RUNTIME_CACHE_BY_TX: dict[str, dict[str, Any]] = {}
+PLAIN_SEMANTICS_FILENAME = "plain_semantics.json.gz"
+PLAIN_SEMANTICS_SCHEMA_VERSION = 1
 
 
 class PlainCfgLlmServiceError(Exception):
@@ -143,12 +146,26 @@ def _load_json_file(file_path: str) -> dict[str, Any]:
     return data
 
 
-def _load_plain_cfg_context_inputs(tx_hash: str) -> tuple[list[dict[str, Any]], list[Any]]:
+def _load_plain_cfg_context_inputs(
+    tx_hash: str,
+) -> tuple[list[dict[str, Any]], list[Any] | dict[str, Any]]:
     result_dir = _resolve_result_dir(tx_hash)
     plain_info_path = os.path.join(result_dir, "plain_blocks_information.json")
+    semantics_path = os.path.join(result_dir, PLAIN_SEMANTICS_FILENAME)
     trace_path = os.path.join(result_dir, "trace.json")
 
     plain_info = _load_json_file(plain_info_path)
+    if os.path.isfile(semantics_path):
+        semantics = _load_gzip_json_file(semantics_path)
+        blocks = semantics.get("blocks")
+        if not isinstance(blocks, dict):
+            raise PlainCfgLlmServiceError(
+                400,
+                f"{PLAIN_SEMANTICS_FILENAME} does not contain valid block semantics",
+            )
+        return _build_ordered_plain_blocks(plain_info), blocks
+
+    # Compatibility for analyses created before compact semantics were introduced.
     trace_data = _load_json_file(trace_path)
     steps = trace_data.get("steps")
     if not isinstance(steps, list):
@@ -157,8 +174,28 @@ def _load_plain_cfg_context_inputs(tx_hash: str) -> tuple[list[dict[str, Any]], 
     return _build_ordered_plain_blocks(plain_info), steps
 
 
+def _load_gzip_json_file(file_path: str) -> dict[str, Any]:
+    try:
+        with gzip.open(file_path, "rt", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception as exc:
+        raise PlainCfgLlmServiceError(
+            400,
+            f"Failed to parse {os.path.basename(file_path)}: {exc}",
+        ) from exc
+    if not isinstance(data, dict):
+        raise PlainCfgLlmServiceError(
+            400,
+            f"{os.path.basename(file_path)} must be a JSON object",
+        )
+    return data
+
+
 def _build_context_for_index(
-    tx_hash: str, steps: list[Any], ordered_blocks: list[dict[str, Any]], target_idx: int
+    tx_hash: str,
+    steps: list[Any] | dict[str, Any],
+    ordered_blocks: list[dict[str, Any]],
+    target_idx: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     prev_block = ordered_blocks[target_idx - 1] if target_idx > 0 else None
     target_block = ordered_blocks[target_idx]
@@ -218,7 +255,19 @@ def _normalize_actions(raw_actions: Any) -> list[dict[str, Any]]:
     return [copy.deepcopy(item) for item in raw_actions if isinstance(item, dict)]
 
 
-def _extract_block_steps(steps: list[Any], block: dict[str, Any]) -> list[Any]:
+def _extract_block_steps(
+    steps: list[Any] | dict[str, Any],
+    block: dict[str, Any],
+) -> list[Any]:
+    if isinstance(steps, dict):
+        block_steps = steps.get(str(block["block_id"]))
+        if not isinstance(block_steps, list):
+            raise PlainCfgLlmServiceError(
+                404,
+                f"Compact semantics are missing for block {block['block_id']}",
+            )
+        return copy.deepcopy(block_steps)
+
     start = block["start_step"]
     end = block["end_step"]
     if start < 0 or end < start:
@@ -234,7 +283,7 @@ def _extract_block_steps(steps: list[Any], block: dict[str, Any]) -> list[Any]:
 
 def _build_context_payload(
     tx_hash: str,
-    steps: list[Any],
+    steps: list[Any] | dict[str, Any],
     target_block: dict[str, Any],
     prev_block: dict[str, Any] | None,
     next_block: dict[str, Any] | None,
@@ -555,6 +604,57 @@ def _build_opcode_step_context(steps: list[Any], idx: int) -> dict[str, Any]:
         context["memory"] = memory_context
 
     return context
+
+
+def build_plain_semantics_payload(
+    steps: list[Any],
+    plain_blocks: dict[str, Any],
+) -> dict[str, Any]:
+    """Project full trace steps into the compact contexts consumed by the LLM."""
+    if not isinstance(steps, list):
+        raise TypeError("steps must be a list")
+    if not isinstance(plain_blocks, dict):
+        raise TypeError("plain_blocks must be an object")
+
+    block_semantics: dict[str, list[dict[str, Any]]] = {}
+    for key, raw_block in plain_blocks.items():
+        if not isinstance(raw_block, dict):
+            continue
+        try:
+            block_id = str(raw_block.get("block_id", key))
+            start_step = int(raw_block["start_step"])
+            end_step = int(raw_block["end_step"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid plain block range for {key}") from exc
+        if start_step >= 0 and end_step == -1:
+            end_step = len(steps) - 1
+        if start_step < 0 or end_step < start_step or end_step >= len(steps):
+            raise ValueError(
+                f"Plain block {block_id} range {start_step}..{end_step} exceeds trace bounds"
+            )
+        block_semantics[block_id] = [
+            _build_opcode_step_context(steps, index)
+            for index in range(start_step, end_step + 1)
+        ]
+
+    return {
+        "schema_version": PLAIN_SEMANTICS_SCHEMA_VERSION,
+        "trace_step_count": len(steps),
+        "blocks": block_semantics,
+    }
+
+
+def write_plain_semantics_artifact(
+    output_path: str,
+    steps: list[Any],
+    plain_blocks: dict[str, Any],
+) -> dict[str, Any]:
+    payload = build_plain_semantics_payload(steps, plain_blocks)
+    temp_path = f"{output_path}.tmp"
+    with gzip.open(temp_path, "wt", encoding="utf-8", compresslevel=6) as handle:
+        json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+    os.replace(temp_path, output_path)
+    return payload
 
 
 def _as_str_list(value: Any) -> list[str]:

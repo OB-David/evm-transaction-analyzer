@@ -94,6 +94,41 @@ uv run python main.py
 
 Runs the analysis pipeline on the hardcoded transaction hash in `main.py` and saves results to `data_base/analysis/`.
 
+### Build the local function-signature database
+
+Sequence rendering reads function names only from a complete local SQLite
+mirror; it never calls 4byte.directory in the rendering path. Build or refresh
+the mirror before analyzing transactions:
+
+```bash
+cd backend
+uv run python signature/sync.py
+```
+
+The command mirrors every API record, resumes an interrupted `.partial` build,
+and publishes `data_base/signatures/function_signatures.sqlite3` only after the
+local row count matches a stable source snapshot. The current 1.179-million-row
+compact snapshot occupies about 99 MiB.
+
+To migrate an existing schema-v1 database to the compact schema without
+downloading the dataset again:
+
+```bash
+cd backend
+uv run python signature/sync.py --compact-existing
+```
+
+### Inspect analysis performance
+
+Each API analysis writes `analysis_timing.json` beside its graph artifacts. It
+contains total wall time, per-phase durations, and artifact sizes, and is
+updated throughout the run so an interrupted analysis still leaves useful
+profiling data.
+
+```bash
+jq . data_base/analysis/<tx-hash-without-0x>/analysis_timing.json
+```
+
 ## API Endpoints
 
 | Method | Path | Description |

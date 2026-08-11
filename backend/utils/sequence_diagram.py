@@ -3,51 +3,32 @@ import os
 import re
 import subprocess
 from typing import Any
-from urllib.parse import quote, urljoin
-from urllib.request import Request, urlopen
 
+from signature.store import (
+    FunctionSignatureStore,
+    PRIORITY_SIGNATURE_RANK,
+    extract_function_name,
+)
 
-FOURBYTE_SIGNATURE_API = "https://www.4byte.directory/api/v1/signatures/"
-FOURBYTE_MAX_PAGES = 50
-FOURBYTE_TIMEOUT_SECONDS = 8
 SELECTOR_PATTERN = re.compile(r"^0x[0-9a-f]{8}$")
-FUNCTION_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+CALL_TREE_SCHEMA_VERSION = 1
 
-PRIORITY_FUNCTION_NAMES = [
-    "transfer",
-    "transferFrom",
-    "approve",
-    "safeTransfer",
-    "safeTransferFrom",
-    "swapExactTokensForTokens",
-    "swapTokensForExactTokens",
-    "swapExactETHForTokens",
-    "swapTokensForExactETH",
-    "swapExactTokensForETH",
-    "swap",
-    "exactInputSingle",
-    "exactOutputSingle",
-    "multicall",
-    "flashLoan",
-    "flashSwap",
-    "executeOperation",
-    "flashLoanSimple",
-    "getReserves",
-    "getAmountOut",
-    "getAmountIn",
-    "balanceOf",
-    "decimals",
-    "factory",
-    "pairFor",
-    "getPool",
-    "deposit",
-    "withdraw",
-    "safeApprove",
-    "pull",
-    "call",
-]
-PRIORITY_SIGNATURES = [f"{name}()" for name in PRIORITY_FUNCTION_NAMES]
-PRIORITY_SIGNATURE_RANK = {name: idx for idx, name in enumerate(PRIORITY_SIGNATURES)}
+
+def _flatten_memory_words(memory_value: Any) -> str:
+    """Join trace memory words into canonical hex without per-word prefixes."""
+    if not isinstance(memory_value, (list, tuple)):
+        return ""
+
+    words: list[str] = []
+    for raw_word in memory_value:
+        if not isinstance(raw_word, str):
+            continue
+        word = raw_word.strip()
+        if word.startswith(("0x", "0X")):
+            word = word[2:]
+        if word:
+            words.append(word)
+    return "".join(words)
 
 
 def _extract_selector(calldata_value: Any) -> str | None:
@@ -63,94 +44,20 @@ def _extract_selector(calldata_value: Any) -> str | None:
 
 
 def _extract_function_name(text_signature: Any) -> str | None:
-    if not isinstance(text_signature, str):
-        return None
-    cleaned = text_signature.strip()
-    if not cleaned:
-        return None
-    left_paren_idx = cleaned.find("(")
-    if left_paren_idx <= 0:
-        return None
-    fn_name = cleaned[:left_paren_idx].strip()
-    if not FUNCTION_NAME_PATTERN.match(fn_name):
-        return None
-    return f"{fn_name}()"
-
-
-def _fetch_4byte_results(hex_selector: str) -> list[dict]:
-    all_results: list[dict] = []
-    next_url = f"{FOURBYTE_SIGNATURE_API}?hex_signature={quote(hex_selector)}"
-    seen_urls: set[str] = set()
-    pages = 0
-
-    while next_url and pages < FOURBYTE_MAX_PAGES:
-        if next_url in seen_urls:
-            break
-        seen_urls.add(next_url)
-
-        try:
-            req = Request(
-                next_url,
-                headers={
-                    "User-Agent": "evm-transaction-analyzer/1.0",
-                    "Accept": "application/json",
-                },
-            )
-            with urlopen(req, timeout=FOURBYTE_TIMEOUT_SECONDS) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:
-            print(f"WARNING: 4byte lookup failed for selector {hex_selector}: {exc}")
-            return []
-
-        results = payload.get("results", [])
-        if isinstance(results, list):
-            all_results.extend(item for item in results if isinstance(item, dict))
-
-        next_link = payload.get("next")
-        next_url = urljoin(next_url, next_link) if isinstance(next_link, str) and next_link else ""
-        pages += 1
-
-    if next_url:
-        print(f"WARNING: 4byte pagination truncated at {FOURBYTE_MAX_PAGES} pages for selector {hex_selector}")
-    return all_results
-
-
-def _safe_int(value: Any, fallback: int) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return fallback
+    function_name = extract_function_name(text_signature)
+    return f"{function_name}()" if function_name else None
 
 
 def _resolve_probable_signatures(
     selector: str,
     selector_signature_cache: dict[str, list[str]],
+    signature_store: FunctionSignatureStore,
 ) -> list[str]:
     cached = selector_signature_cache.get(selector)
     if cached is not None:
         return cached
 
-    results = _fetch_4byte_results(selector)
-    signature_to_min_id: dict[str, int] = {}
-    for item in results:
-        fn = _extract_function_name(item.get("text_signature"))
-        if not fn:
-            continue
-        item_id = _safe_int(item.get("id"), fallback=2**31 - 1)
-        prev = signature_to_min_id.get(fn)
-        if prev is None or item_id < prev:
-            signature_to_min_id[fn] = item_id
-
-    sorted_signatures = sorted(
-        signature_to_min_id.items(),
-        key=lambda item: (
-            0 if item[0] in PRIORITY_SIGNATURE_RANK else 1,
-            PRIORITY_SIGNATURE_RANK.get(item[0], 10**9),
-            item[1],
-            item[0],
-        ),
-    )
-    ordered = [item[0] for item in sorted_signatures]
+    ordered = signature_store.lookup_display_names(selector)
     selector_signature_cache[selector] = ordered
     return ordered
 
@@ -171,9 +78,8 @@ def build_refined_hierarchical_trace(steps):
     """
     calldata断点切片:
     Primary Breakpoints (首断点): CALLDATALOAD 传入的 offset。
-    Hidden Breakpoints (隐藏断点) 分两类：
-       - 起点=0：读取8个16进制字符（4字节）
-       - 起点≠0：读取64个16进制字符（32字节）
+    offset 0 的前 4 字节是函数 selector，单独保存，不计入 calldata 参数切片。
+    其余每个断点最多读取 32 字节。
     自动截断: 段终点 = min(下一个首断点, 隐藏断点, 数据总长)。
     """
     if not steps:
@@ -199,7 +105,7 @@ def build_refined_hierarchical_trace(steps):
             last_step_op = prev_step.get("opcode", "OUTSIDECALL")  # 适配opcode字段
             stack = prev_step.get("stack", [])
             memory = prev_step.get("memory", [])
-            full_mem = "".join([m for m in memory if m])
+            full_mem = _flatten_memory_words(memory)
             
             try:
                 if last_step_op in ["CALL", "CALLCODE"]:
@@ -236,6 +142,7 @@ def build_refined_hierarchical_trace(steps):
             "entry_op": last_step_op,
             "entry_step": start_index - 1,
             "calldata_raw": "0x" + raw_calldata if raw_calldata else "",
+            "calldata_selector": _extract_selector("0x" + raw_calldata),
             "calldata_active_segments": [],
             "calls": [],
             "exit_op": "PENDING", 
@@ -284,22 +191,15 @@ def build_refined_hierarchical_trace(steps):
             global_gas_counter += int(gas_cost) if str(gas_cost).isdigit() else 0
             i += 1
 
-        # --- 3. 按起点类型区分切片长度 ---
+        # --- 3. 计算参数切片（排除 4-byte selector） ---
         if raw_calldata:
-            # 强制将 0 加入首断点（确保选择器等起始位被识别）
-            primary_breakpoints.add(0)
+            primary_breakpoints.discard(0)
             sorted_p = sorted(list(primary_breakpoints))
             segments = []
             
             num_bytes = len(raw_calldata) // 2  # 总字节数
             for idx, p_start in enumerate(sorted_p):
-                # 隐藏断点规则：
-                # 1. 起点=0 → 读取4字节（8个16进制字符）
-                # 2. 起点≠0 → 读取32字节（64个16进制字符）
-                if p_start == 0:
-                    hidden_end = p_start + 4  # 4字节（函数选择器）
-                else:
-                    hidden_end = p_start + 32  # 32字节（标准EVM数据）
+                hidden_end = p_start + 32
                 
                 # 定义“逻辑终点”：
                 # 1. 如果有下一个首断点，则不能超过它
@@ -319,6 +219,7 @@ def build_refined_hierarchical_trace(steps):
                     seg_hex = raw_calldata[hex_start:hex_end]
                     segments.append({
                         "count": idx,
+                        "offset": p_start,
                         "val": f"0x{seg_hex}"
                     })
             
@@ -334,6 +235,170 @@ def build_refined_hierarchical_trace(steps):
     # 从根节点开始构建
     root_tree, _ = process_level(0)
     return root_tree
+
+
+def _display_contract_name(
+    address: Any,
+    erc20_token_map: dict[str, Any],
+    full_address_name_map: dict[str, Any],
+) -> str:
+    raw_address = str(address or "").strip()
+    if not raw_address:
+        return "UNKNOWN"
+
+    normalized = raw_address.lower()
+    mapped_name = full_address_name_map.get(normalized)
+    if mapped_name:
+        return str(mapped_name).strip() or raw_address
+
+    token_info = erc20_token_map.get(normalized)
+    if isinstance(token_info, dict):
+        token_name = token_info.get("name") or token_info.get("symbol")
+    else:
+        token_name = token_info
+    if token_name:
+        return str(token_name).strip() or raw_address
+
+    return f"{raw_address[:12]}..." if len(raw_address) > 12 else raw_address
+
+
+def _call_calldata(node: dict[str, Any]) -> tuple[str | None, list[str]]:
+    selector = node.get("calldata_selector") or _extract_selector(node.get("calldata_raw"))
+    calldata: list[str] = []
+    segments = node.get("calldata_active_segments", [])
+    if not isinstance(segments, list):
+        return selector, calldata
+
+    for index, segment in enumerate(segments):
+        if not isinstance(segment, dict) or "val" not in segment:
+            continue
+        value = str(segment["val"])
+        # Legacy trees included the selector as the first active segment.
+        if index == 0 and selector and len(value) == 10 and _extract_selector(value) == selector:
+            continue
+        calldata.append(value)
+    return selector, calldata
+
+
+def build_call_tree_payload(
+    trace_tree: dict[str, Any],
+    erc20_token_map: dict[str, Any],
+    full_address_name_map: dict[str, Any],
+    signature_db_path: Any = None,
+) -> dict[str, Any]:
+    """Build the persisted call-tree contract without any PlantUML representation."""
+    if not isinstance(trace_tree, dict) or not trace_tree:
+        return {
+            "schema_version": CALL_TREE_SCHEMA_VERSION,
+            "root": {"address": "", "name": "Transaction root"},
+            "calls": [],
+        }
+
+    root_address = str(trace_tree.get("contract") or "").strip()
+    root_name = _display_contract_name(root_address, erc20_token_map, full_address_name_map)
+    calls: list[dict[str, Any]] = []
+    selector_signature_cache: dict[str, list[str]] = {}
+
+    def visit(
+        node: dict[str, Any],
+        *,
+        parent_call_id: int | None,
+        parent_address: str,
+        parent_name: str,
+        depth: int,
+        signature_store: FunctionSignatureStore,
+    ) -> None:
+        current_address = str(node.get("contract") or "").strip()
+        current_name = _display_contract_name(
+            current_address,
+            erc20_token_map,
+            full_address_name_map,
+        )
+        call_id = len(calls) + 1
+        selector, calldata = _call_calldata(node)
+        probable_signatures: list[str] = []
+        if selector:
+            probable_signatures = _resolve_probable_signatures(
+                selector,
+                selector_signature_cache,
+                signature_store,
+            )
+
+        entry: dict[str, Any] = {
+            "call_id": call_id,
+            "parent_call_id": parent_call_id,
+            "depth": depth,
+            "entry_step": int(node.get("entry_step", 0)),
+            "exit_step": int(node.get("exit_step", 0)),
+            "entry_op": str(node.get("entry_op") or "UNKNOWN"),
+            "exit_op": str(node.get("exit_op") or "STOP"),
+            "from_address": parent_address,
+            "to_address": current_address,
+            # Names are display metadata; addresses remain the canonical identity.
+            "from_name": parent_name,
+            "to_name": current_name,
+            "calldata": calldata,
+        }
+        if selector:
+            entry["selector"] = selector
+        if probable_signatures:
+            entry["probable_text_signatures"] = probable_signatures
+        calls.append(entry)
+
+        child_nodes = node.get("calls", [])
+        if not isinstance(child_nodes, list):
+            return
+        for child in child_nodes:
+            if isinstance(child, dict):
+                visit(
+                    child,
+                    parent_call_id=call_id,
+                    parent_address=current_address,
+                    parent_name=current_name,
+                    depth=depth + 1,
+                    signature_store=signature_store,
+                )
+
+    store_args = (signature_db_path,) if signature_db_path is not None else ()
+    with FunctionSignatureStore(*store_args) as signature_store:
+        root_children = trace_tree.get("calls", [])
+        if isinstance(root_children, list):
+            for child in root_children:
+                if isinstance(child, dict):
+                    visit(
+                        child,
+                        parent_call_id=None,
+                        parent_address=root_address,
+                        parent_name=root_name,
+                        depth=1,
+                        signature_store=signature_store,
+                    )
+
+    return {
+        "schema_version": CALL_TREE_SCHEMA_VERSION,
+        "root": {"address": root_address, "name": root_name},
+        "calls": calls,
+    }
+
+
+def write_call_tree_json(
+    trace_tree: dict[str, Any],
+    output_file: str,
+    erc20_token_map: dict[str, Any],
+    full_address_name_map: dict[str, Any],
+    signature_db_path: Any = None,
+) -> dict[str, Any]:
+    payload = build_call_tree_payload(
+        trace_tree,
+        erc20_token_map,
+        full_address_name_map,
+        signature_db_path,
+    )
+    temp_file = f"{output_file}.tmp"
+    with open(temp_file, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+    os.replace(temp_file, output_file)
+    return payload
 
 def _build_message_link(call_id, from_name, to_name, entry_op):
     tooltip = f"{entry_op}: {from_name} -> {to_name}"
@@ -381,7 +446,14 @@ def render_puml_to_svg(puml_path):
     return True
 
 
-def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map, addr_color_map):
+def tree_to_puml(
+    trace_tree,
+    output_file,
+    erc20_token_map,
+    full_address_name_map,
+    addr_color_map,
+    signature_db_path=None,
+):
     
     # 新增：初始化calldata映射字典（
     call_data_mapping = {
@@ -533,20 +605,27 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
         indent = "    " * indent_level
 
         if parent_instance:
-            # 1. 提取完整calldata数组
+            # 1. selector 与参数切片分开。兼容旧 trace tree：旧数据会将 selector
+            #    放在 calldata_active_segments[0]。
+            selector = node.get("calldata_selector") or _extract_selector(node.get("calldata_raw"))
             full_calldata = []
             for idx, seg in enumerate(segments):
                 if seg and "val" in seg:
-                    full_calldata.append(seg["val"])
+                    segment_value = seg["val"]
+                    if idx == 0 and selector and _extract_selector(segment_value) == selector and len(segment_value) == 10:
+                        continue
+                    full_calldata.append(segment_value)
                 else:
                     full_calldata.append("无Calldata")
-            calldata0 = segments[0]["val"] if (segments and len(segments) > 0) else "无Calldata"
             probable_text_signatures: list[str] = []
-            selector = _extract_selector(calldata0)
             if selector:
-                probable_text_signatures = _resolve_probable_signatures(selector, selector_signature_cache)
+                probable_text_signatures = _resolve_probable_signatures(
+                    selector,
+                    selector_signature_cache,
+                    signature_store,
+                )
             compact_signatures = _format_compact_signatures(probable_text_signatures, max_items=2)
-            call_label = compact_signatures if compact_signatures else calldata0
+            call_label = compact_signatures or selector or "无Calldata"
             
             call_id = call_data_mapping["total_calls"] + 1
             message_link = _build_message_link(
@@ -584,6 +663,8 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
                 "to_name": current_instance["name"],
                 "calldata": full_calldata,
             }
+            if selector:
+                call_entry["selector"] = selector
             if probable_text_signatures:
                 call_entry["probable_text_signatures"] = probable_text_signatures
             call_data_mapping["calls"].append(call_entry)
@@ -600,7 +681,9 @@ def tree_to_puml(trace_tree, output_file, erc20_token_map, full_address_name_map
 
     # -------------------------- 构建PUML --------------------------
     # 递归遍历调用树
-    _traverse_call_tree(trace_tree)
+    store_args = (signature_db_path,) if signature_db_path is not None else ()
+    with FunctionSignatureStore(*store_args) as signature_store:
+        _traverse_call_tree(trace_tree)
 
     # 按深度分组生成合约实例
     depth_groups = {}

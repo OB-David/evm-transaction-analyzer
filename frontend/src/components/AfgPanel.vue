@@ -1,30 +1,106 @@
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { graphviz } from 'd3-graphviz'
-import { fetchDotFile, fetchEdgeLink, fetchArbitrageResult, fetchAddressBalances, fetchLegendData, type BlockId, type CfgMode, type EdgeLink } from '../api/analyze'
+import {
+  fetchAddressBalances,
+  fetchArbitrageResult,
+  fetchCallTreeEdgeLink,
+  fetchBlockInformation,
+  fetchCallTreeData,
+  fetchDotFile,
+  fetchEdgeLink,
+  fetchLegendData,
+  type AfgNavigationTarget,
+  type BlockId,
+  type CallTreeEdgeLink,
+  type CallTreeEntry,
+  type CfgMode,
+  type EdgeLink,
+  type BlockInformation,
+} from '../api/analyze'
 import { THEME_DARK_COLORS, getDarkAccentForColor, getFillColorForColor } from '../visualTheme'
+import GraphExpandButton from './GraphExpandButton.vue'
+import GraphFitButton from './GraphFitButton.vue'
 
 const props = defineProps<{
   txHash: string | null
   cfgMode: CfgMode
-  highlightedBlockId: BlockId[] | null
+  linkedCallTreeTarget: AfgNavigationTarget | null
   isAnalyzing: boolean
+  playbackReady: boolean
+  expanded: boolean
 }>()
 
 const emit = defineEmits<{
-  'cfg-navigate': [blockIds: BlockId[] | null]
+  'graph-navigate': [target: AfgNavigationTarget | null]
+  'playback-change': [state: {
+    cutoffStep: number | null
+    active: boolean
+    visibleBlockIds: BlockId[] | null
+    visibleCallIds: number[] | null
+    currentBlockId: BlockId | null
+  }]
+  'toggle-expanded': []
 }>()
+
+type PlaybackStep = {
+  kind: 'cfg' | 'call' | 'transfer'
+  cutoffStep: number
+  visibleBlockIds: BlockId[]
+  visibleCallIds: number[]
+  visibleTransferOrder: number
+  currentBlockId: BlockId | null
+}
 
 const dotContent = ref<string>('')
 const edgeLinks = ref<EdgeLink[]>([])
+const callTreeLinks = ref<CallTreeEdgeLink[]>([])
+const plainBlocks = ref<BlockInformation[]>([])
+const callTreeEntries = ref<CallTreeEntry[]>([])
 const selectedEdgeId = ref<number | null>(null)
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
+const linksLoading = ref(false)
+const mappingNotice = ref('')
 
 const graphContainer = ref<HTMLElement | null>(null)
 let graphvizInstance: any = null
 let loadRequestId = 0
 let linkRequestId = 0
+let playbackTimer: number | null = null
+let playbackRunId = 0
+let playbackTargetIndex: number | null = null
+const AUTO_PLAY_INTERVAL_MS = 90
+
+const playbackSteps = ref<PlaybackStep[]>([])
+const playbackIndex = ref(0)
+const isPlaybackRunning = ref(false)
+const isPlaybackActivated = ref(false)
+const currentPlaybackStep = computed(() => playbackSteps.value[playbackIndex.value] ?? null)
+const transferStepIndexes = computed(() => playbackSteps.value.flatMap(
+  (step, index) => step.kind === 'transfer' ? [index] : [],
+))
+const completedTransferCount = computed(() => (
+  transferStepIndexes.value.filter(index => index <= playbackIndex.value).length
+))
+const previousTransferIndex = computed(() => (
+  [...transferStepIndexes.value].reverse().find(index => index < playbackIndex.value) ?? null
+))
+const nextTransferIndex = computed(() => (
+  transferStepIndexes.value.find(index => index > playbackIndex.value) ?? null
+))
+const playbackPhaseLabel = computed(() => {
+  if (currentPlaybackStep.value?.kind === 'cfg') return 'CFG'
+  if (currentPlaybackStep.value?.kind === 'call') return 'CFG+CALL'
+  if (currentPlaybackStep.value?.kind === 'transfer') return 'TFG'
+  return ''
+})
+const playbackPosition = computed(() => playbackSteps.value.length > 0
+  ? `${playbackPhaseLabel.value} ${completedTransferCount.value}/${transferStepIndexes.value.length}`
+  : '0/0')
+const playbackUnavailable = computed(() => (
+  !props.playbackReady || status.value !== 'success' || playbackSteps.value.length <= 1
+))
 
 // 套利相关状态
 const isArbitrage = ref(false)
@@ -49,14 +125,19 @@ const tooltipBalances = ref<Record<string, number>>({})
 
 watch(() => props.txHash, (newHash) => {
   loadRequestId += 1
+  linkRequestId += 1
   graphvizInstance?.destroy?.()
   graphvizInstance = null
+  resetPlayback()
   if (newHash) {
     loadAfgData(newHash, props.cfgMode)
   } else {
     status.value = 'idle'
     dotContent.value = ''
     edgeLinks.value = []
+    callTreeLinks.value = []
+    plainBlocks.value = []
+    callTreeEntries.value = []
     if (graphContainer.value) graphContainer.value.innerHTML = ''
   }
 }, { immediate: true })
@@ -65,19 +146,34 @@ watch(() => props.cfgMode, async (newMode) => {
   const txHash = props.txHash
   if (!txHash || status.value !== 'success') return
   const requestId = ++linkRequestId
+  linksLoading.value = true
+  mappingNotice.value = ''
   try {
     const links = await fetchEdgeLink(txHash, newMode)
     if (requestId === linkRequestId && props.txHash === txHash && props.cfgMode === newMode) {
       edgeLinks.value = links
+      linksLoading.value = false
+      if (selectedEdgeId.value !== null) {
+        navigateToCfgForEdge(selectedEdgeId.value)
+      }
     }
   } catch (e) {
-    if (requestId === linkRequestId) console.warn('Failed to update AFG edge mapping:', e)
+    if (requestId === linkRequestId) {
+      linksLoading.value = false
+      mappingNotice.value = `Failed to load ${newMode} CFG mapping.`
+      selectedEdgeId.value = null
+      applySelectedEdgeStyle()
+      emit('graph-navigate', null)
+      console.warn('Failed to update AFG edge mapping:', e)
+    }
   }
 })
 
-watch(() => props.highlightedBlockId, (newBlockIds) => {
-  if (!newBlockIds || newBlockIds.length === 0) {
+watch(() => props.linkedCallTreeTarget, (target) => {
+  if (!target && !linksLoading.value) {
     selectedEdgeId.value = null
+    mappingNotice.value = ''
+    applySelectedEdgeStyle()
   }
 })
 
@@ -85,6 +181,8 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
   const requestId = loadRequestId
   status.value = 'loading'
   errorMsg.value = ''
+  linksLoading.value = false
+  mappingNotice.value = ''
   selectedEdgeId.value = null
   tooltipVisible.value = false
 
@@ -98,12 +196,15 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
   nameToColor.value = {}
 
   try {
-    const [dot, links, arb, balances, legend] = await Promise.all([
+    const [dot, links, callLinks, arb, balances, legend, blockInformation, callTree] = await Promise.all([
       fetchDotFile(txHash),
       fetchEdgeLink(txHash, cfgMode),
+      fetchCallTreeEdgeLink(txHash),
       fetchArbitrageResult(txHash),
       fetchAddressBalances(txHash),
       fetchLegendData(txHash),
+      fetchBlockInformation(txHash, 'plain'),
+      fetchCallTreeData(txHash),
     ])
     if (requestId !== loadRequestId || props.txHash !== txHash) return
 
@@ -111,6 +212,9 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
     edgeLinks.value = props.cfgMode === cfgMode
       ? links
       : await fetchEdgeLink(txHash, props.cfgMode)
+    callTreeLinks.value = callLinks
+    plainBlocks.value = Object.values(blockInformation)
+    callTreeEntries.value = callTree.calls
     if (requestId !== loadRequestId || props.txHash !== txHash) return
 
     isArbitrage.value = arb.is_arbitrage
@@ -281,6 +385,330 @@ function attachInteractivity() {
   })
 
   applyArbShowFilter()
+  initializePlayback()
+}
+
+function getEdgeOrder(edge: Element): number | null {
+  const label = Array.from(edge.querySelectorAll('text'))
+    .map(text => text.textContent || '')
+    .join(' ')
+  const match = label.match(/\((\d+)\)/)
+  if (!match?.[1]) return null
+  const order = Number(match[1])
+  return Number.isFinite(order) ? order : null
+}
+
+function getTransferCutoff(order: number, previousCutoff: number): number {
+  if (order === 0) return 0
+  const link = callTreeLinks.value.find(item => item.edge_id === order)
+    ?? edgeLinks.value.find(item => item.edge_id === order)
+  const evidenceSteps = (link?.evidence || [])
+    .map(item => Number(item.source_step))
+    .filter(Number.isFinite)
+  return evidenceSteps.length > 0 ? Math.max(previousCutoff, ...evidenceSteps) : previousCutoff
+}
+
+function finiteStep(value: unknown, fallback = 0): number {
+  const step = Number(value)
+  return Number.isFinite(step) ? step : fallback
+}
+
+function getCallRevealStep(call: CallTreeEntry, blocks: BlockInformation[]): number {
+  const entryStep = finiteStep(call.entry_step)
+  const exitStep = finiteStep(call.exit_step, entryStep)
+  const firstChildEntry = callTreeEntries.value
+    .filter(candidate => candidate.parent_call_id === call.call_id)
+    .reduce(
+      (earliest, child) => Math.min(earliest, finiteStep(child.entry_step, exitStep)),
+      exitStep,
+    )
+  const initialContractSegmentEnd = Math.min(exitStep, firstChildEntry)
+  const targetAddress = call.to_address.toLowerCase()
+  const blocksInCall = blocks.filter(block => {
+    const startStep = finiteStep(block.start_step, Number.POSITIVE_INFINITY)
+    return startStep >= entryStep
+      && startStep <= initialContractSegmentEnd
+      && block.address.toLowerCase() === targetAddress
+  })
+  const fallbackBlocks = blocks.filter(block => {
+    const startStep = finiteStep(block.start_step, Number.POSITIVE_INFINITY)
+    return startStep >= entryStep && startStep <= initialContractSegmentEnd
+  })
+  const candidates = blocksInCall.length > 0 ? blocksInCall : fallbackBlocks
+  const matchingBlock = candidates[0]
+  return matchingBlock ? finiteStep(matchingBlock.start_step, entryStep) : entryStep
+}
+
+function buildPlaybackTimeline(orders: number[]): PlaybackStep[] {
+  const blocks = [...plainBlocks.value]
+    .filter(block => Number.isFinite(Number(block.start_step)))
+    .sort((left, right) => (
+      finiteStep(left.start_step) - finiteStep(right.start_step)
+      || String(left.block_id).localeCompare(String(right.block_id), undefined, { numeric: true })
+    ))
+  const calls = [...callTreeEntries.value]
+    .map(call => ({ call, revealStep: getCallRevealStep(call, blocks) }))
+    .sort((left, right) => left.revealStep - right.revealStep || left.call.call_id - right.call.call_id)
+
+  const visibleBlocks = new Set<BlockId>()
+  const visibleCalls = new Set<number>()
+  const timeline: PlaybackStep[] = []
+  let visibleTransferOrder = -1
+  let previousCutoff = -1
+  let currentBlockId: BlockId | null = null
+
+  const appendStep = (kind: PlaybackStep['kind'], cutoffStep: number) => {
+    timeline.push({
+      kind,
+      cutoffStep,
+      visibleBlockIds: [...visibleBlocks],
+      visibleCallIds: [...visibleCalls],
+      visibleTransferOrder,
+      currentBlockId,
+    })
+  }
+
+  const transactionEndStep = Math.max(
+    0,
+    ...blocks.map(block => Math.max(
+      finiteStep(block.start_step),
+      finiteStep(block.end_step, finiteStep(block.start_step)),
+    )),
+    ...callTreeEntries.value.map(call => finiteStep(call.exit_step)),
+  )
+
+  orders.forEach((order, orderIndex) => {
+    const transferCutoff = getTransferCutoff(order, Math.max(0, previousCutoff))
+    const callLink = callTreeLinks.value.find(link => link.edge_id === order)
+    const matchedCallIds = new Set(
+      (callLink?.matched_calls || [])
+        .map(match => match.call_id)
+        .filter((callId): callId is number => callId !== null),
+    )
+    const matchedCallExit = callTreeEntries.value
+      .filter(call => matchedCallIds.has(call.call_id))
+      .reduce((latest, call) => Math.max(latest, finiteStep(call.exit_step)), transferCutoff)
+    const linkedCompletionStep = Math.max(transferCutoff, matchedCallExit)
+    const completionStep = orderIndex === orders.length - 1
+      ? Math.max(linkedCompletionStep, transactionEndStep)
+      : linkedCompletionStep
+
+    const actions: Array<{
+      kind: 'cfg' | 'call'
+      step: number
+      block?: BlockInformation
+      call?: CallTreeEntry
+    }> = []
+    blocks.forEach(block => {
+      const step = finiteStep(block.start_step)
+      if (!visibleBlocks.has(block.block_id) && step <= completionStep) {
+        actions.push({ kind: 'cfg', step, block })
+      }
+    })
+    calls.forEach(({ call, revealStep }) => {
+      if (!visibleCalls.has(call.call_id) && revealStep <= completionStep) {
+        actions.push({ kind: 'call', step: revealStep, call })
+      }
+    })
+    actions.sort((left, right) => (
+      left.step - right.step
+      || (left.kind === right.kind ? 0 : left.kind === 'cfg' ? -1 : 1)
+    ))
+
+    for (let actionIndex = 0; actionIndex < actions.length;) {
+      const step = actions[actionIndex]!.step
+      const actionsAtStep: typeof actions = []
+      while (actionIndex < actions.length && actions[actionIndex]!.step === step) {
+        actionsAtStep.push(actions[actionIndex]!)
+        actionIndex += 1
+      }
+
+      let revealsCall = false
+      actionsAtStep.forEach(action => {
+        if (action.kind === 'cfg' && action.block) {
+          visibleBlocks.add(action.block.block_id)
+          currentBlockId = action.block.block_id
+        } else if (action.call) {
+          visibleCalls.add(action.call.call_id)
+          revealsCall = true
+        }
+      })
+      appendStep(revealsCall ? 'call' : 'cfg', step)
+    }
+
+    visibleTransferOrder = order
+    appendStep('transfer', completionStep)
+    previousCutoff = completionStep
+  })
+
+  return timeline
+}
+
+function initializePlayback() {
+  const svg = graphContainer.value?.querySelector('svg')
+  if (!svg) return
+
+  const orders = [...new Set(
+    Array.from(svg.querySelectorAll('.edge'))
+      .map(edge => {
+        const order = getEdgeOrder(edge)
+        if (order !== null) (edge as HTMLElement).dataset.playbackOrder = String(order)
+        return order
+      })
+      .filter((order): order is number => order !== null),
+  )].sort((left, right) => left - right)
+
+  playbackSteps.value = buildPlaybackTimeline(orders)
+  playbackIndex.value = Math.max(0, playbackSteps.value.length - 1)
+  applyPlaybackVisibility()
+  emitPlaybackChange()
+}
+
+function resetPlayback() {
+  stopPlayback()
+  playbackSteps.value = []
+  playbackIndex.value = 0
+  isPlaybackActivated.value = false
+  emit('playback-change', {
+    cutoffStep: null,
+    active: false,
+    visibleBlockIds: null,
+    visibleCallIds: null,
+    currentBlockId: null,
+  })
+}
+
+function emitPlaybackChange() {
+  emit('playback-change', {
+    cutoffStep: currentPlaybackStep.value?.cutoffStep ?? null,
+    active: isPlaybackActivated.value,
+    visibleBlockIds: isPlaybackActivated.value ? currentPlaybackStep.value?.visibleBlockIds ?? [] : null,
+    visibleCallIds: isPlaybackActivated.value ? currentPlaybackStep.value?.visibleCallIds ?? [] : null,
+    currentBlockId: isPlaybackActivated.value ? currentPlaybackStep.value?.currentBlockId ?? null : null,
+  })
+}
+
+function clearLinkedSelectionForPlayback() {
+  if (selectedEdgeId.value === null && !props.linkedCallTreeTarget) return
+  selectedEdgeId.value = null
+  mappingNotice.value = ''
+  applySelectedEdgeStyle()
+  emit('graph-navigate', null)
+}
+
+function setPlaybackIndex(nextIndex: number, stopAutomatic = false) {
+  if (playbackSteps.value.length === 0) return
+  if (stopAutomatic) stopPlayback()
+  const boundedIndex = Math.min(playbackSteps.value.length - 1, Math.max(0, nextIndex))
+  isPlaybackActivated.value = true
+  playbackIndex.value = boundedIndex
+  clearLinkedSelectionForPlayback()
+  applyPlaybackVisibility()
+  emitPlaybackChange()
+  if (currentPlaybackStep.value?.kind === 'transfer') {
+    nextTick(() => fitVisibleGraphToViewport())
+  }
+}
+
+function stepBackward() {
+  if (previousTransferIndex.value !== null) {
+    setPlaybackIndex(previousTransferIndex.value, true)
+  }
+}
+
+function stepForward() {
+  if (isPlaybackRunning.value && playbackTargetIndex !== null) {
+    const targetIndex = playbackTargetIndex
+    setPlaybackIndex(targetIndex, true)
+    return
+  }
+  if (nextTransferIndex.value !== null) {
+    animatePlaybackTo(nextTransferIndex.value)
+  }
+}
+
+function animatePlaybackTo(targetIndex: number) {
+  stopPlayback()
+  const direction = Math.sign(targetIndex - playbackIndex.value)
+  if (direction === 0) return
+
+  playbackTargetIndex = targetIndex
+  const runId = playbackRunId
+  isPlaybackRunning.value = true
+  const scheduleNextFrame = () => {
+    playbackTimer = window.setTimeout(() => {
+      playbackTimer = null
+      if (runId !== playbackRunId) return
+
+      const nextIndex = playbackIndex.value + direction
+      setPlaybackIndex(nextIndex)
+      if (nextIndex === targetIndex) {
+        stopPlayback()
+        return
+      }
+
+      nextTick(() => {
+        window.requestAnimationFrame(() => {
+          if (runId === playbackRunId) scheduleNextFrame()
+        })
+      })
+    }, AUTO_PLAY_INTERVAL_MS)
+  }
+  scheduleNextFrame()
+}
+
+function togglePlayback() {
+  if (playbackUnavailable.value) return
+  if (isPlaybackRunning.value) {
+    stopPlayback()
+    return
+  }
+  if (playbackIndex.value >= playbackSteps.value.length - 1) {
+    setPlaybackIndex(0)
+  }
+  animatePlaybackTo(playbackSteps.value.length - 1)
+}
+
+function stopPlayback() {
+  playbackRunId += 1
+  playbackTargetIndex = null
+  if (playbackTimer !== null) {
+    window.clearTimeout(playbackTimer)
+    playbackTimer = null
+  }
+  isPlaybackRunning.value = false
+}
+
+function applyPlaybackVisibility() {
+  const svg = graphContainer.value?.querySelector('svg')
+  const currentOrder = currentPlaybackStep.value?.visibleTransferOrder
+  if (!svg || currentOrder === undefined) return
+
+  const visibleNodeTitles = new Set<string>()
+  svg.querySelectorAll('.edge').forEach(edge => {
+    const order = Number((edge as HTMLElement).dataset.playbackOrder)
+    const isVisible = Number.isFinite(order) && order <= currentOrder
+    edge.classList.toggle('playback-hidden', !isVisible)
+    edge.setAttribute('aria-hidden', String(!isVisible))
+    if (!isVisible) return
+    const title = edge.querySelector('title')?.textContent?.trim() || ''
+    title.split('->').forEach(nodeTitle => {
+      const normalized = nodeTitle.trim()
+      if (normalized) visibleNodeTitles.add(normalized)
+    })
+  })
+
+  svg.querySelectorAll('.node').forEach(node => {
+    const title = node.querySelector('title')?.textContent?.trim() || ''
+    const isVisible = visibleNodeTitles.has(title)
+    node.classList.toggle('playback-hidden', !isVisible)
+    node.setAttribute('aria-hidden', String(!isVisible))
+  })
+  hideTooltip()
+}
+
+function fitVisibleGraphToViewport() {
+  fitGraphToViewport()
 }
 
 function harmonizeNodeAppearance(nodeEl: SVGElement) {
@@ -428,40 +856,64 @@ function applyArbShowFilter() {
 }
 
 function handleEdgeClick(edgeId: number) {
-  const hasActiveFilter = !!(props.highlightedBlockId && props.highlightedBlockId.length > 0)
-  if (selectedEdgeId.value === edgeId && hasActiveFilter) {
+  if (linksLoading.value) return
+
+  if (selectedEdgeId.value === edgeId) {
     selectedEdgeId.value = null
+    mappingNotice.value = ''
     applySelectedEdgeStyle()
-    emit('cfg-navigate', null)
+    emit('graph-navigate', null)
     return
   }
 
   selectedEdgeId.value = edgeId
   applySelectedEdgeStyle()
+  navigateToCfgForEdge(edgeId)
+}
 
+function navigateToCfgForEdge(edgeId: number) {
   const link = edgeLinks.value.find(l => l.edge_id === edgeId)
-  if (!link) {
-    console.warn(`No CFG mapping found for edge ${edgeId}`)
-    return
-  }
+  const callTreeLink = callTreeLinks.value.find(l => l.edge_id === edgeId)
+  const notices: string[] = []
+  if (!link) notices.push(`No ${props.cfgMode} CFG mapping is available for edge ${edgeId}.`)
+  else if (link.mapping_status === 'partial') notices.push('Only part of this transfer evidence could be mapped to the CFG.')
+  else if (link.mapping_status === 'ambiguous') notices.push('This transfer matched multiple CFG nodes at the same step.')
+  else if (link.mapping_status === 'unmatched') notices.push('This transfer could not be mapped to a CFG execution step.')
+
+  if (!callTreeLink) notices.push(`No Call Tree mapping is available for edge ${edgeId}.`)
+  else if (callTreeLink.mapping_status === 'partial') notices.push('Only part of this transfer evidence could be mapped to the Call Tree.')
+  else if (callTreeLink.mapping_status === 'ambiguous') notices.push('This transfer matched ambiguous Call Tree frames.')
+  else if (callTreeLink.mapping_status === 'unmatched') notices.push('This transfer could not be mapped to a Call Tree contract.')
+  mappingNotice.value = notices.join(' ')
 
   const blockIds: BlockId[] = []
 
-  if (typeof link.matched_blocks === 'number' || typeof link.matched_blocks === 'string') {
+  if (typeof link?.matched_blocks === 'number' || typeof link?.matched_blocks === 'string') {
     blockIds.push(link.matched_blocks)
-  } else if (Array.isArray(link.matched_blocks)) {
+  } else if (Array.isArray(link?.matched_blocks)) {
     blockIds.push(...link.matched_blocks)
-  } else if (typeof link.matched_blocks === 'object') {
+  } else if (link && typeof link.matched_blocks === 'object') {
     if (link.matched_blocks.sender) blockIds.push(...link.matched_blocks.sender)
     if (link.matched_blocks.receiver) blockIds.push(...link.matched_blocks.receiver)
   }
 
   const uniqueBlockIds = [...new Set(blockIds)]
+  const callIds = [...new Set(
+    (callTreeLink?.matched_calls || [])
+      .map(match => match.call_id)
+      .filter((callId): callId is number => callId !== null),
+  )]
+  const contractAddresses = [...new Set(
+    (callTreeLink?.matched_contracts || []).map(address => address.toLowerCase()),
+  )]
+  const includesRootCall = (callTreeLink?.matched_calls || []).some(match => match.call_id === null)
 
-  if (uniqueBlockIds.length > 0) {
-    console.log(`Navigating to CFG blocks ${uniqueBlockIds.join(', ')} from AFG edge ${edgeId}`)
-    emit('cfg-navigate', uniqueBlockIds)
-  }
+  emit('graph-navigate', {
+    blockIds: uniqueBlockIds,
+    callIds,
+    contractAddresses,
+    includesRootCall,
+  })
 }
 
 function applySelectedEdgeStyle() {
@@ -474,11 +926,73 @@ function applySelectedEdgeStyle() {
     edge.classList.toggle('selected', Number(match?.[1]) === selectedEdgeId.value)
   })
 }
+
+function fitGraphToViewport() {
+  graphvizInstance?.resetZoom?.('fit-graph')
+}
+
+onBeforeUnmount(() => {
+  stopPlayback()
+})
 </script>
 
 <template>
   <div class="afg-panel">
     <span class="panel-label">(C) Token Flow Graph</span>
+    <div class="graph-actions">
+      <div class="playback-controls" role="group" aria-label="Execution playback controls">
+        <button
+          type="button"
+          class="playback-button"
+          aria-label="Previous execution step"
+          title="Previous execution step"
+          :disabled="playbackUnavailable || isPlaybackRunning || previousTransferIndex === null"
+          @click="stepBackward"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M7 5v14M18 6l-8 6 8 6z" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="playback-button playback-toggle"
+          :class="{ active: isPlaybackRunning }"
+          :aria-label="isPlaybackRunning ? 'Pause execution playback' : 'Play execution automatically'"
+          :title="isPlaybackRunning ? 'Pause playback' : 'Auto play execution'"
+          :disabled="playbackUnavailable"
+          @click="togglePlayback"
+        >
+          <svg v-if="isPlaybackRunning" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M8 5v14M16 5v14" />
+          </svg>
+          <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M8 5l11 7-11 7z" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="playback-button"
+          :aria-label="isPlaybackRunning ? 'Skip to target transfer' : 'Next execution step'"
+          :title="isPlaybackRunning ? 'Skip animation' : 'Next execution step'"
+          :disabled="playbackUnavailable || (!isPlaybackRunning && nextTransferIndex === null)"
+          @click="stepForward"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M17 5v14M6 6l8 6-8 6z" />
+          </svg>
+        </button>
+        <span class="playback-position" aria-live="polite">{{ playbackPosition }}</span>
+      </div>
+      <GraphFitButton
+        graph-name="token flow graph"
+        @fit="fitGraphToViewport"
+      />
+      <GraphExpandButton
+        graph-name="token flow graph"
+        :expanded="props.expanded"
+        @toggle="emit('toggle-expanded')"
+      />
+    </div>
 
     <!-- 套利 badge -->
     <div v-if="status === 'success' && isArbitrage" class="arb-badge">
@@ -495,8 +1009,16 @@ function applySelectedEdgeStyle() {
       {{ errorMsg }}
     </div>
 
-    <div v-show="status === 'success' || status === 'loading'" class="afg-container">
+    <div
+      v-show="status === 'success' || status === 'loading'"
+      class="afg-container"
+      :class="{ 'links-loading': linksLoading }"
+    >
       <div :key="txHash || 'idle'" ref="graphContainer" class="graph-viewport"></div>
+
+      <div v-if="mappingNotice" class="mapping-notice" role="status">
+        {{ mappingNotice }}
+      </div>
 
       <!-- 节点余额悬浮卡片 -->
       <div
@@ -549,8 +1071,8 @@ function applySelectedEdgeStyle() {
 /* 套利 badge */
 .arb-badge {
   position: absolute;
-  top: 6px;
-  right: 12px;
+  top: 36px;
+  right: 8px;
   z-index: 20;
   display: flex;
   align-items: center;
@@ -562,6 +1084,82 @@ function applySelectedEdgeStyle() {
   font-size: 11px;
   color: #dc501e;
   white-space: nowrap;
+}
+
+.graph-actions {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.playback-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.playback-button {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid rgba(148, 163, 184, 0.55);
+  border-radius: 4px;
+  color: #475569;
+  background: rgba(255, 255, 255, 0.94);
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: color 180ms ease, border-color 180ms ease, background 180ms ease;
+}
+
+.playback-button::before {
+  content: '';
+  position: absolute;
+  inset: -8px;
+}
+
+.playback-button:hover:not(:disabled),
+.playback-button.active {
+  color: #334155;
+  border-color: var(--accent);
+  background: #f1f5f9;
+}
+
+.playback-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.playback-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+}
+
+.playback-button svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.playback-position {
+  min-width: 28px;
+  color: #64748b;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
 }
 
 .arb-icon {
@@ -596,6 +1194,26 @@ function applySelectedEdgeStyle() {
   overflow: hidden;
 }
 
+.afg-container.links-loading .graph-viewport {
+  cursor: progress;
+}
+
+.mapping-notice {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  z-index: 25;
+  max-width: calc(100% - 24px);
+  padding: 6px 9px;
+  border: 1px solid #d7a24a;
+  border-radius: 4px;
+  color: #7c4a03;
+  background: rgba(255, 248, 230, 0.96);
+  font-size: 10px;
+  line-height: 1.35;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
+}
+
 .graph-viewport {
   flex: 1;
   min-width: 0;
@@ -617,7 +1235,7 @@ function applySelectedEdgeStyle() {
 }
 
 .graph-viewport :deep(.node) {
-  transition: opacity 0.15s;
+  transition: none;
 }
 
 .graph-viewport :deep(.node.hovered ellipse),
@@ -629,7 +1247,13 @@ function applySelectedEdgeStyle() {
 }
 
 .graph-viewport :deep(.edge) {
-  transition: opacity 0.15s;
+  transition: none;
+}
+
+.graph-viewport :deep(.node.playback-hidden),
+.graph-viewport :deep(.edge.playback-hidden) {
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 
 .graph-viewport :deep(.edge.selected path:not(.hit-area)) {
@@ -746,5 +1370,13 @@ function applySelectedEdgeStyle() {
 .placeholder-text {
   color: var(--muted);
   font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .playback-button,
+  .graph-viewport :deep(.node),
+  .graph-viewport :deep(.edge) {
+    transition: none;
+  }
 }
 </style>

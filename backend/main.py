@@ -1,5 +1,7 @@
 import json
 import os
+from contextlib import contextmanager
+from time import perf_counter
 from web3 import Web3
 from typing import Callable, Dict, List, Any, Optional
 from dotenv import load_dotenv
@@ -7,9 +9,10 @@ from utils.evm_information import TraceFormatter
 from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
 from utils.render_cfg import get_valid_nodes_and_colors, render_transaction
-from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_fcfg, afg_to_pcfg, edge_link_to_json, detect_arbitrage, compute_address_balances
-from utils.sequence_diagram import build_refined_hierarchical_trace, render_puml_to_svg, tree_to_puml
+from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_fcfg, afg_to_pcfg, afg_to_call_tree, build_link_artifact, detect_arbitrage, compute_address_balances, filter_asset_flow_user_addresses
+from utils.sequence_diagram import build_refined_hierarchical_trace, write_call_tree_json
 from utils.indentify_swap import filter_to_file
+from utils.plain_cfg_llm import PLAIN_SEMANTICS_FILENAME, write_plain_semantics_artifact
 from utils.analysis_paths import analysis_directory
 
 CONTRACT_COLORS = [
@@ -28,11 +31,11 @@ CONTRACT_COLORS = [
 ]
 
 EDGE_COLOR_MAP = {
-    "NORMAL": "#C2CAD7",
-    "JUMP": "#D8D2CA",
-    "CALL": "#A9C7AE",
-    "DELEGATECALL": "#ABC0D9",
-    "TERMINATE": "#DABAAE",
+    "NORMAL": "#64748B",
+    "JUMP": "#6B5B73",
+    "CALL": "#4D7C61",
+    "DELEGATECALL": "#4F78A0",
+    "TERMINATE": "#9A6658",
 }
 
 # 加载环境变量
@@ -133,28 +136,28 @@ def main():
         original_transfer = [from_address.lower(),to_address.lower(), int(amount)]
         print(int(amount))
         pairs, annotations, pending_erc20 = pair_transactions(original_transfer,all_changes, token_decimals_map)
-        edge_link1 = afg_to_fcfg(pairs, pending_erc20, original_cfg, folded_node_map)
+        edge_link1 = afg_to_fcfg(pairs, pending_erc20, folded_cfg)
         edge_link2 = afg_to_pcfg(pairs, pending_erc20, plain_cfg)
+        edge_link_call_tree = afg_to_call_tree(pairs, pending_erc20, tree_data)
         
-        json_output1 = edge_link_to_json(edge_link1)
-        json_output2 = edge_link_to_json(edge_link2)
         print(f"共提取到 {len(all_changes)} 条资产变更事件，配对成功 {len(pairs)} 对交易流,存在孤立变动{len(annotations)}条\n")
         arb_result = detect_arbitrage(pairs, pending_erc20)
         addr_balances = compute_address_balances(pairs, pending_erc20)
 
-        # 8. 保存轨迹数据
-        trace_path = os.path.join(result_dir, "trace.json")
-        with open(trace_path, "w", encoding="utf-8") as f:
-            json.dump(standardized_trace, f, indent=2, ensure_ascii=False)
-        print(f"轨迹数据（含 addresses 与 slot_map）已保存到: {trace_path}")
-
-        # 9. 保存折叠后Block ID与Instructions映射数据
+        # 8. 保存折叠后Block ID与Instructions映射数据
         print("正在导出可见Block ID与Instructions映射...")
         folded_blocks_path = os.path.join(result_dir, "folded_blocks_information.json")
         cfg_constructor.export_fcfg_blocks_information(folded_cfg, folded_blocks_path)
 
         plain_blocks_path = os.path.join(result_dir, "plain_blocks_information.json")
-        cfg_constructor.export_pcfg_blocks_information(plain_cfg, standardized_trace, plain_blocks_path)
+        plain_blocks_map = cfg_constructor.build_pcfg_blocks_information(plain_cfg, standardized_trace)
+        with open(plain_blocks_path, "w", encoding="utf-8") as f:
+            json.dump(plain_blocks_map, f, ensure_ascii=False, indent=2)
+        write_plain_semantics_artifact(
+            os.path.join(result_dir, PLAIN_SEMANTICS_FILENAME),
+            standardized_trace["steps"],
+            plain_blocks_map,
+        )
 
 
         swap_fcfg_path = os.path.join(result_dir, "swap_in_fcfg.json")
@@ -165,20 +168,21 @@ def main():
 
         print(f"blcokid-information映射数据已保存到: {folded_blocks_path}")
 
-        # 10. 保存资产变更数据
+        # 9. 保存资产变更数据
         changes_path = os.path.join(result_dir, "balance_and_eth_changes.json") 
         with open(changes_path, "w", encoding="utf-8") as f:
             json.dump(all_changes, f, indent=2, ensure_ascii=False)
         print(f"资产变更数据已保存到: {changes_path}")
 
-        # 11. 保存边映射JSON文件
-        edge_link_path1 = os.path.join(result_dir, "TFG_link_FCFG.json")
-        edge_link_path2 = os.path.join(result_dir, "TFG_link_PCFG.json")
-        with open(edge_link_path1, "w", encoding="utf-8") as f:
-            f.write(json_output1)
-        print(f"边映射数据已保存到: {edge_link_path1}")
-        with open(edge_link_path2, "w", encoding="utf-8") as f:
-            f.write(json_output2)
+        # 11. 折叠/普通 CFG 关联只保存为一个版本化文件。
+        link_path = os.path.join(result_dir, "link.json")
+        with open(link_path, "w", encoding="utf-8") as f:
+            json.dump(build_link_artifact(edge_link1, edge_link2, edge_link_call_tree), f, ensure_ascii=False)
+        for legacy_name in ("TFG_link_FCFG.json", "TFG_link_PCFG.json"):
+            legacy_path = os.path.join(result_dir, legacy_name)
+            if os.path.isfile(legacy_path):
+                os.remove(legacy_path)
+        print(f"图关联数据已保存到: {link_path}")
 
         arb_json_path = os.path.join(result_dir, "arbitrage.json")
         with open(arb_json_path, "w", encoding="utf-8") as f:
@@ -212,27 +216,61 @@ def create_result_directory(tx_hash: str) -> str:
     result_dir.mkdir(parents=True, exist_ok=True)
     return str(result_dir)
 
-def save_graphs(result_dir: str, plain_cfg: object,folded_cfg:object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]], tree_data, arb_result, progress_callback: Optional[Callable[[str], None]] = None):
-    '''渲染并保存所有图：交易级CFG图、CFG图例、代币交易流图'''
+def save_graphs(result_dir: str, plain_cfg: object,folded_cfg:object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]], tree_data, arb_result, progress_callback: Optional[Callable[[str], None]] = None, timing_callback: Optional[Callable[[str, float], None]] = None):
+    '''保存可重建图源；SVG 只按请求渲染，不进入分析目录。'''
+
+    # Re-analysis may reuse a result directory created by an older version.
+    for name in os.listdir(result_dir):
+        path = os.path.join(result_dir, name)
+        if name.lower().endswith(".svg") and os.path.isfile(path):
+            os.remove(path)
 
     def report(stage: str) -> None:
         if progress_callback is not None:
             progress_callback(stage)
 
+    @contextmanager
+    def measure(name: str):
+        started = perf_counter()
+        try:
+            yield
+        finally:
+            if timing_callback is not None:
+                timing_callback(name, perf_counter() - started)
+
     # AFG needs the shared contract palette, but not a rendered CFG yet.
-    _, _, addr_color_map = get_valid_nodes_and_colors(plain_cfg, CONTRACT_COLORS)
+    with measure("prepare_graph_color_map"):
+        _, _, addr_color_map = get_valid_nodes_and_colors(plain_cfg, CONTRACT_COLORS)
 
-    # 保存legend.json供前端使用
+    # 保存代币交易流图的DOT文件
+    arb_orders  = arb_result["arb_edge_orders"]
+    token_flow_dot_path = os.path.join(result_dir, "asset_flow.dot")
+    tfg_user_addresses = filter_asset_flow_user_addresses(
+        users_addresses, pairs, pending_erc20
+    )
+    with measure("render_afg_dot"):
+        render_asset_flow(pairs, annotations, tfg_user_addresses,
+                      full_address_name_map, pending_erc20,
+                      addr_color_map, token_flow_dot_path,
+                      arb_edge_orders=arb_orders)
+    print(f"代币交易流图DOT文件已保存到: {token_flow_dot_path}.dot")
+
+    # TFG 完成后再构建 legend，只保留真实参与 TFG 的用户地址。
     legend_data: Dict[str, Any] = {"user_addresses": [], "erc20_tokens": [], "normal_contracts": []}
-
-    # User addresses (same sorting as render_legend)
-    if users_addresses:
-        user_items = [(addr, full_address_name_map.get(addr, f"User_{addr[:6]}")) for addr in users_addresses]
-        user_items.sort(key=lambda item: (0, item[1].lower()) if item[1] == "User_From" else (1, item[1].lower()))
+    if tfg_user_addresses:
+        user_items = [
+            (addr, full_address_name_map.get(addr, f"User_{addr[:6]}"))
+            for addr in tfg_user_addresses
+        ]
+        user_items.sort(
+            key=lambda item: (0, item[1].lower())
+            if item[1] == "User_From"
+            else (1, item[1].lower())
+        )
         for addr, name in user_items:
             legend_data["user_addresses"].append({"name": name, "address": addr})
 
-    # Split contracts into ERC20 and normal
+    # Contract entries retain the shared CFG palette used across visualizations.
     for contract_addr, color in addr_color_map.items():
         contract_addr_lower = contract_addr.lower()
         contract_name = full_address_name_map.get(contract_addr_lower, contract_addr[:10])
@@ -246,87 +284,55 @@ def save_graphs(result_dir: str, plain_cfg: object,folded_cfg:object, full_addre
     legend_data["normal_contracts"].sort(key=lambda x: x["name"].lower())
 
     legend_json_path = os.path.join(result_dir, "legend.json")
-    with open(legend_json_path, "w", encoding="utf-8") as f:
-        json.dump(legend_data, f, indent=2, ensure_ascii=False)
+    with measure("write_legend_json"):
+        with open(legend_json_path, "w", encoding="utf-8") as f:
+            json.dump(legend_data, f, indent=2, ensure_ascii=False)
     print(f"图例JSON已保存到: {legend_json_path}")
-    
-    # 保存代币交易流图的DOT文件
-    arb_orders  = arb_result["arb_edge_orders"]
-    token_flow_dot_path = os.path.join(result_dir, "asset_flow.dot")
-    render_asset_flow(pairs, annotations, users_addresses,
-                  full_address_name_map, pending_erc20,
-                  addr_color_map, token_flow_dot_path,
-                  arb_edge_orders=arb_orders)
-    print(f"代币交易流图DOT文件已保存到: {token_flow_dot_path}.dot")
     report("afg")
 
 
-    # 生成时序图
-    print("正在生成时序图PUML文件...")
-    resolved_tree_data = tree_data() if callable(tree_data) else tree_data
-    puml_path = os.path.join(result_dir, "trace_sequence.puml")
-    tree_to_puml(
-        trace_tree=resolved_tree_data,
-        output_file=puml_path,
-        erc20_token_map=erc20_token_map,
-        full_address_name_map=full_address_name_map,
-        addr_color_map=addr_color_map
-    )
-    print(f"时序图PUML已保存到: {puml_path}")
-    render_puml_to_svg(puml_path)
+    # Persist the semantic call tree directly; the frontend renders it as SVG.
+    with measure("build_sequence_tree"):
+        resolved_tree_data = tree_data() if callable(tree_data) else tree_data
+    call_tree_path = os.path.join(result_dir, "call_tree.json")
+    with measure("write_call_tree_json"):
+        write_call_tree_json(
+            trace_tree=resolved_tree_data,
+            output_file=call_tree_path,
+            erc20_token_map=erc20_token_map,
+            full_address_name_map=full_address_name_map,
+        )
+    print(f"调用树 JSON 已保存到: {call_tree_path}")
     report("sequence")
 
-    # Folded CFG is the first control-flow view exposed to the frontend.
-    tx_dot_path = os.path.join(result_dir, "folded_cfg")
-    render_transaction(
-        contract_colors=CONTRACT_COLORS,
-        edge_color_map=EDGE_COLOR_MAP,
-        cfg=folded_cfg,
-        output_path=tx_dot_path,
-        full_address_name_map=full_address_name_map,
-        erc20_token_map=erc20_token_map,
-        rankdir="LR",
-        show_priority_opcode=False,
-    )
-    print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
-
-    import subprocess
-    cfg_dot_file = f"{tx_dot_path}.dot"
-    cfg_svg_file = os.path.join(result_dir, "folded_cfg.svg")
-    try:
-        subprocess.run(
-            ["dot", "-Tsvg", cfg_dot_file, "-o", cfg_svg_file],
-            check=True, capture_output=True, text=True, timeout=120
+    # Persist graph source, not rendered SVG. The API renders SVG on demand.
+    folded_dot_path = os.path.join(result_dir, "folded_cfg.dot")
+    with measure("render_folded_cfg_dot"):
+        render_transaction(
+            contract_colors=CONTRACT_COLORS,
+            edge_color_map=EDGE_COLOR_MAP,
+            cfg=folded_cfg,
+            output_path=folded_dot_path,
+            full_address_name_map=full_address_name_map,
+            erc20_token_map=erc20_token_map,
+            rankdir="LR",
+            show_priority_opcode=False,
         )
-        print(f"CFG SVG已生成: {cfg_svg_file}")
-    except Exception as e:
-        print(f"WARNING: CFG SVG生成失败: {e}")
     report("folded_cfg")
 
     # Plain CFG is intentionally last because it is usually the largest view.
-    tx_dot_path = os.path.join(result_dir, "plain_cfg")
-    render_transaction(
-        contract_colors=CONTRACT_COLORS,
-        edge_color_map=EDGE_COLOR_MAP,
-        cfg=plain_cfg,
-        output_path=tx_dot_path,
-        full_address_name_map=full_address_name_map,
-        erc20_token_map=erc20_token_map,
-        rankdir="LR",
-        show_priority_opcode=True,
-    )
-    print(f"交易级CFG DOT文件已保存到: {tx_dot_path}.dot")
-
-    cfg_dot_file = f"{tx_dot_path}.dot"
-    cfg_svg_file = os.path.join(result_dir, "plain_cfg.svg")
-    try:
-        subprocess.run(
-            ["dot", "-Tsvg", cfg_dot_file, "-o", cfg_svg_file],
-            check=True, capture_output=True, text=True, timeout=120
+    plain_dot_path = os.path.join(result_dir, "plain_cfg.dot")
+    with measure("render_plain_cfg_dot"):
+        render_transaction(
+            contract_colors=CONTRACT_COLORS,
+            edge_color_map=EDGE_COLOR_MAP,
+            cfg=plain_cfg,
+            output_path=plain_dot_path,
+            full_address_name_map=full_address_name_map,
+            erc20_token_map=erc20_token_map,
+            rankdir="LR",
+            show_priority_opcode=True,
         )
-        print(f"CFG SVG已生成: {cfg_svg_file}")
-    except Exception as e:
-        print(f"WARNING: CFG SVG生成失败: {e}")
     report("plain_cfg")
 
 

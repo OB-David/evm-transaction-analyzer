@@ -7,7 +7,7 @@ import {
   fetchCfgViewData,
   fetchLegendData,
   fetchPlainBlockLlmAnalysis,
-  fetchSequenceCalldataMapping,
+  fetchCallTreeData,
   fetchSwapPatternResult,
   type BlockAction,
   type BlockInformation,
@@ -16,24 +16,37 @@ import {
   type CfgViewData,
   type EdgeStepMap,
   type PlainBlockLlmAnalysisResponse,
-  type SequenceCalldataMapping,
+  type CallTreePayload,
+  type StepRange,
   type SwapPatternResult,
+  fetchBlockInformation,
 } from '../api/analyze'
 import { CFG_EDGE_COLORS, getDarkAccentForColor, getFillColorForColor } from '../visualTheme'
+import GraphExpandButton from './GraphExpandButton.vue'
+import GraphFitButton from './GraphFitButton.vue'
 
 const props = defineProps<{
   txHash: string | null
   highlightedBlockId: BlockId[] | null
   filteredEdgeIds: string[] | null
+  selectedStepRange: { entryStep: number; exitStep: number } | null
   isAnalyzing: boolean
   edgeStepMap: EdgeStepMap | null
+  playbackCutoffStep: number | null
+  playbackActive: boolean
+  playbackVisibleBlockIds: BlockId[] | null
+  playbackCurrentBlockId: BlockId | null
   preferredMode: CfgMode
   plainReady: boolean
+  foldedInformationReady: boolean
+  plainInformationReady: boolean
+  expanded: boolean
 }>()
 
 const emit = defineEmits<{
   'cfg-navigate': [blockIds: BlockId[] | null]
   'mode-change': [mode: CfgMode]
+  'toggle-expanded': []
 }>()
 
 type CfgEdgeType = 'NORMAL' | 'JUMP' | 'CALL' | 'DELEGATECALL' | 'TERMINATE'
@@ -93,9 +106,14 @@ const errorMsg = ref('')
 const cfgMode = ref<CfgMode>('folded')
 const cfgViews = ref<Partial<Record<CfgMode, CfgViewData>>>({})
 const plainLoading = ref(false)
+const informationLoadedByMode = ref<Record<CfgMode, boolean>>({ folded: false, plain: false })
+const informationLoadingByMode = ref<Record<CfgMode, boolean>>({ folded: false, plain: false })
+const informationErrorByMode = ref<Record<CfgMode, string>>({ folded: '', plain: '' })
 const blockInformation = ref<BlockInformationMap>({})
+const blockInformationByMode = ref<Record<CfgMode, BlockInformationMap>>({ folded: {}, plain: {} })
 const selectedNodeName = ref<string | null>(null)
 const selectedBlockInfo = ref<BlockInformation | null>(null)
+const stepRangesExpanded = ref(false)
 const graphContainer = ref<HTMLElement | null>(null)
 const addressNameMap = ref<Map<string, string>>(new Map())
 const highlightedNodes = ref<Set<string>>(new Set())
@@ -104,12 +122,13 @@ const visibleEdges = ref<Set<string>>(new Set())
 const edgeConnections = ref<Map<string, { source: string, target: string }>>(new Map())
 const nodeNameToEl = ref<Map<string, Element>>(new Map())
 const edgeIdToSvgTitle = ref<Map<string, string>>(new Map())
+const edgeFirstStepByTitle = ref<Map<string, number>>(new Map())
 const activeEdgeType = ref<CfgEdgeType | null>(null)
 const showEdgeTypes = ref(false)
 const llmAnalysisState = ref<LlmAnalysisState>('idle')
 const llmAnalysisResponse = ref<PlainBlockLlmAnalysisResponse | null>(null)
 const llmAnalysisError = ref('')
-const sequenceCallMapping = ref<SequenceCalldataMapping | null>(null)
+const sequenceCallMapping = ref<CallTreePayload | null>(null)
 const swapSeedNodesByMode = ref<Record<CfgMode, Set<string>>>({
   folded: new Set(),
   plain: new Set(),
@@ -122,11 +141,22 @@ const PLAIN_VIEW_PADDING = 20
 let zoomBehavior: ZoomBehavior<SVGSVGElement, unknown> | null = null
 let resizeObserver: ResizeObserver | null = null
 let edgeTooltipHideTimer: number | null = null
+let focusFrameId: number | null = null
 let cfgLoadRequestId = 0
 
 const cfgModeBadge = computed(() => cfgMode.value === 'folded' ? 'Folded CFG' : 'Plain CFG')
 const toggleButtonLabel = computed(() => cfgMode.value === 'folded' ? 'Plain CFG' : 'Folded CFG')
 const hasSelection = computed(() => Boolean(selectedBlockInfo.value))
+const currentInformationReady = computed(() => informationLoadedByMode.value[cfgMode.value])
+const currentInformationError = computed(() => informationErrorByMode.value[cfgMode.value])
+const selectedFoldedStepRanges = computed<StepRange[]>(
+  () => selectedBlockInfo.value?.step_ranges ?? [],
+)
+const visibleFoldedStepRanges = computed<StepRange[]>(() => (
+  stepRangesExpanded.value
+    ? selectedFoldedStepRanges.value
+    : selectedFoldedStepRanges.value.slice(0, 1)
+))
 const selectedActionDisplays = computed<ActionDisplay[]>(() => {
   const actions = selectedBlockInfo.value?.actions ?? []
   return actions.flatMap((action, index) => buildActionDisplays(action, index))
@@ -142,6 +172,10 @@ watch(() => props.txHash, (newHash) => {
     cfgViews.value = {}
     sequenceCallMapping.value = null
     blockInformation.value = {}
+    blockInformationByMode.value = { folded: {}, plain: {} }
+    informationLoadedByMode.value = { folded: false, plain: false }
+    informationLoadingByMode.value = { folded: false, plain: false }
+    informationErrorByMode.value = { folded: '', plain: '' }
     resetSwapSeedNodes()
     clearFilterState()
     if (graphContainer.value) {
@@ -151,7 +185,8 @@ watch(() => props.txHash, (newHash) => {
 }, { immediate: true })
 
 watch(() => props.highlightedBlockId, (newBlockIds) => {
-  if (cfgMode.value === 'folded' && props.filteredEdgeIds && props.filteredEdgeIds.length > 0) return
+  if (cfgMode.value === 'folded' && props.filteredEdgeIds?.length) return
+  if (cfgMode.value === 'plain' && props.selectedStepRange) return
 
   if (newBlockIds && newBlockIds.length > 0) {
     calculateVisibleElements(newBlockIds)
@@ -167,6 +202,20 @@ watch(() => props.edgeStepMap, () => {
   buildEdgeIdToTitleMap()
   if (status.value === 'success') {
     syncFilterStateWithProps()
+  }
+})
+
+watch([
+  () => props.playbackCutoffStep,
+  () => props.playbackActive,
+  () => props.playbackCurrentBlockId,
+], ([cutoffStep, active, currentBlockId]) => {
+  if (selectedNodeName.value && !isPlaybackNodeVisible(selectedNodeName.value)) {
+    resetSelection()
+  }
+  applyFilter()
+  if (active && cfgMode.value === 'plain') {
+    nextTick(() => followPlainPlaybackBlock(currentBlockId, cutoffStep))
   }
 })
 
@@ -189,14 +238,22 @@ watch(hasSelection, () => {
 })
 
 watch(() => props.filteredEdgeIds, (edgeIds) => {
-  if (cfgMode.value !== 'folded') {
-    clearFilterState()
-    applyFilter()
-    return
-  }
+  if (cfgMode.value !== 'folded') return
 
   if (edgeIds && edgeIds.length > 0) {
     applyEdgeFilter(edgeIds)
+  } else if (!props.highlightedBlockId || props.highlightedBlockId.length === 0) {
+    clearFilterState()
+    applyFilter()
+    nextTick(() => resetZoom())
+  }
+})
+
+watch(() => props.selectedStepRange, (stepRange) => {
+  if (cfgMode.value !== 'plain') return
+
+  if (stepRange) {
+    applyPlainStepFilter(stepRange)
   } else if (!props.highlightedBlockId || props.highlightedBlockId.length === 0) {
     clearFilterState()
     applyFilter()
@@ -213,6 +270,14 @@ watch(() => props.plainReady, (ready) => {
   if (ready && props.txHash && status.value === 'success') {
     void ensureCfgView('plain')
   }
+})
+
+watch(() => props.foldedInformationReady, (ready) => {
+  if (ready) void loadCfgInformation('folded')
+})
+
+watch(() => props.plainInformationReady, (ready) => {
+  if (ready) void loadCfgInformation('plain')
 })
 
 watch(
@@ -232,24 +297,27 @@ async function loadCfgData(txHash: string) {
   errorMsg.value = ''
   activeEdgeType.value = null
   cfgViews.value = {}
+  informationLoadedByMode.value = { folded: false, plain: false }
+  informationLoadingByMode.value = { folded: false, plain: false }
+  informationErrorByMode.value = { folded: '', plain: '' }
   sequenceCallMapping.value = null
   blockInformation.value = {}
+  blockInformationByMode.value = { folded: {}, plain: {} }
   clearFilterState()
   resetSelection()
 
   try {
-    const [foldedView, legend, foldedSwapPatterns, callMapping] = await Promise.all([
+    const [foldedView, legend, callMapping] = await Promise.all([
       fetchCfgViewData(txHash, 'folded'),
       fetchLegendData(txHash),
-      fetchSwapPatternResult(txHash, 'folded'),
-      fetchSequenceCalldataMapping(txHash).catch(() => null),
+      fetchCallTreeData(txHash).catch(() => null),
     ])
     if (requestId !== cfgLoadRequestId || props.txHash !== txHash) return
 
     cfgViews.value = { folded: foldedView }
     sequenceCallMapping.value = callMapping
     swapSeedNodesByMode.value = {
-      folded: collectSwapSeedNodes(foldedSwapPatterns),
+      folded: new Set(),
       plain: new Set(),
     }
 
@@ -261,6 +329,7 @@ async function loadCfgData(txHash: string) {
     status.value = 'success'
     await switchCfgMode('folded')
     if (requestId !== cfgLoadRequestId) return
+    if (props.foldedInformationReady) void loadCfgInformation('folded')
     if (props.plainReady) void ensureCfgView('plain')
   } catch (e: any) {
     if (requestId !== cfgLoadRequestId) return
@@ -281,7 +350,14 @@ async function switchCfgMode(mode: CfgMode) {
   if (!nextView || requestId !== cfgLoadRequestId) return
 
   cfgMode.value = mode
-  blockInformation.value = nextView.blockInformation
+  const cachedInformation = blockInformationByMode.value[mode]
+  const nextInformation = Object.keys(cachedInformation).length > 0
+    ? cachedInformation
+    : nextView.blockInformation ?? {}
+  blockInformation.value = nextInformation
+  if (Object.keys(cachedInformation).length === 0 && Object.keys(nextInformation).length > 0) {
+    blockInformationByMode.value = { ...blockInformationByMode.value, [mode]: nextInformation }
+  }
   resetSelection()
   emit('mode-change', mode)
 
@@ -298,16 +374,13 @@ async function ensureCfgView(mode: CfgMode): Promise<CfgViewData | null> {
 
   if (mode === 'plain') plainLoading.value = true
   try {
-    const [view, swapPatterns] = await Promise.all([
-      fetchCfgViewData(txHash, mode),
-      fetchSwapPatternResult(txHash, mode),
-    ])
+    const view = await fetchCfgViewData(txHash, mode)
     if (requestId !== cfgLoadRequestId || props.txHash !== txHash) return null
     cfgViews.value = { ...cfgViews.value, [mode]: view }
-    swapSeedNodesByMode.value = {
-      ...swapSeedNodesByMode.value,
-      [mode]: collectSwapSeedNodes(swapPatterns),
-    }
+    const informationReady = mode === 'folded'
+      ? props.foldedInformationReady
+      : props.plainInformationReady
+    if (informationReady) void loadCfgInformation(mode)
     return view
   } catch (e: any) {
     if (requestId !== cfgLoadRequestId) return null
@@ -315,6 +388,57 @@ async function ensureCfgView(mode: CfgMode): Promise<CfgViewData | null> {
     return null
   } finally {
     if (mode === 'plain' && requestId === cfgLoadRequestId) plainLoading.value = false
+  }
+}
+
+async function loadCfgInformation(mode: CfgMode) {
+  if (!props.txHash || informationLoadedByMode.value[mode] || informationLoadingByMode.value[mode]) return
+  const informationReady = mode === 'folded'
+    ? props.foldedInformationReady
+    : props.plainInformationReady
+  if (!informationReady) return
+
+  const txHash = props.txHash
+  const requestId = cfgLoadRequestId
+  informationLoadingByMode.value = { ...informationLoadingByMode.value, [mode]: true }
+  informationErrorByMode.value = { ...informationErrorByMode.value, [mode]: '' }
+  try {
+    const view = getCfgView(mode) ?? await ensureCfgView(mode)
+    if (!view || requestId !== cfgLoadRequestId) return
+    const [information, swapPatterns] = await Promise.all([
+      fetchBlockInformation(txHash, mode),
+      fetchSwapPatternResult(txHash, mode),
+    ])
+    if (requestId !== cfgLoadRequestId || props.txHash !== txHash) return
+    cfgViews.value = {
+      ...cfgViews.value,
+      [mode]: { ...view, blockInformation: information },
+    }
+    blockInformationByMode.value = { ...blockInformationByMode.value, [mode]: information }
+    informationLoadedByMode.value = { ...informationLoadedByMode.value, [mode]: true }
+    swapSeedNodesByMode.value = {
+      ...swapSeedNodesByMode.value,
+      [mode]: collectSwapSeedNodes(swapPatterns),
+    }
+    if (cfgMode.value === mode) {
+      blockInformation.value = information
+      resetSelection()
+      if (view) {
+        await nextTick()
+        renderSvg(view.svgContent)
+      }
+    }
+  } catch (e: any) {
+    if (requestId === cfgLoadRequestId) {
+      informationErrorByMode.value = {
+        ...informationErrorByMode.value,
+        [mode]: e.message || `Failed to load ${mode} CFG information`,
+      }
+    }
+  } finally {
+    if (requestId === cfgLoadRequestId) {
+      informationLoadingByMode.value = { ...informationLoadingByMode.value, [mode]: false }
+    }
   }
 }
 
@@ -367,10 +491,15 @@ function renderSvg(svgContent: string) {
   attachInteractivity()
   buildEdgeIdToTitleMap()
   syncFilterStateWithProps()
-  if (cfgMode.value === 'folded') {
-    nextTick(() => resetZoom())
-  } else {
-    nextTick(() => fitGraphToViewport())
+  if (props.playbackActive && cfgMode.value === 'plain') {
+    nextTick(() => followPlainPlaybackBlock(props.playbackCurrentBlockId, props.playbackCutoffStep))
+  }
+  if (!hasActiveLinkedSelection()) {
+    if (cfgMode.value === 'folded') {
+      nextTick(() => resetZoom())
+    } else {
+      nextTick(() => fitGraphToViewport())
+    }
   }
 }
 
@@ -525,7 +654,7 @@ function prepareSvgMetadata(svg: SVGSVGElement) {
       ;(edge as HTMLElement).dataset.edgeType = matchedType
     }
 
-    harmonizeEdgeAppearance(edge as SVGGElement, matchedType)
+    harmonizeEdgeAppearance(edge as SVGGElement, matchedType ?? null)
   })
 
   svg.querySelectorAll('.node').forEach((node) => {
@@ -549,7 +678,7 @@ function toFiniteStep(value: unknown): number | null {
 
 function formatCompactCallSignature(signatures: string[]): string {
   if (!signatures.length) return ''
-  const first = signatures[0]
+  const first = signatures[0]!
   if (PRIORITY_SIGNATURES.has(first)) {
     return `${first}/...`
   }
@@ -710,7 +839,7 @@ function harmonizeNodeAppearance(node: SVGGElement) {
     strokeWidth >= 4
 
   node.classList.toggle('action-node', isActionNode)
-  ;(node as HTMLElement).dataset.themeDark = dark
+  node.dataset.themeDark = dark
 
   if (isActionNode) {
     shape.setAttribute('fill', fill)
@@ -769,7 +898,7 @@ function scalePolygon(polygon: SVGPolygonElement, scale: number) {
     .trim()
     .split(/\s+/)
     .map((pair) => pair.split(',').map(Number))
-    .filter((pair) => pair.length === 2 && pair.every(Number.isFinite))
+    .filter((pair): pair is [number, number] => pair.length === 2 && pair.every(Number.isFinite))
 
   if (rawPoints.length === 0) return
 
@@ -989,23 +1118,35 @@ function updateSwapHighlightOverlayVisibility() {
 
   svg.querySelectorAll<SVGRectElement>('#swap-highlight-layer .swap-highlight-box').forEach((rect) => {
     const nodes = (rect.dataset.nodes || '').split('|').filter(Boolean)
-    const shouldShow = visibleNodes.value.size === 0 || nodes.every(node => visibleNodes.value.has(node))
+    const matchesLinkedFilter = visibleNodes.value.size === 0 || nodes.every(node => visibleNodes.value.has(node))
+    const shouldShow = matchesLinkedFilter && nodes.every(node => isPlaybackNodeVisible(node))
     rect.classList.toggle('hidden', !shouldShow)
   })
 }
 
 function buildEdgeIdToTitleMap() {
   edgeIdToSvgTitle.value.clear()
+  edgeFirstStepByTitle.value.clear()
   if (!props.edgeStepMap) return
 
   for (const [edgeId, entry] of Object.entries(props.edgeStepMap)) {
-    edgeIdToSvgTitle.value.set(edgeId, `${entry.source_node}->${entry.target_node}`)
+    const title = `${entry.source_node}->${entry.target_node}`
+    edgeIdToSvgTitle.value.set(edgeId, title)
+    const previous = edgeFirstStepByTitle.value.get(title)
+    if (previous === undefined || entry.edge_step < previous) {
+      edgeFirstStepByTitle.value.set(title, entry.edge_step)
+    }
   }
 }
 
 function syncFilterStateWithProps() {
   if (cfgMode.value === 'folded' && props.filteredEdgeIds && props.filteredEdgeIds.length > 0) {
     applyEdgeFilter(props.filteredEdgeIds)
+    return
+  }
+
+  if (cfgMode.value === 'plain' && props.selectedStepRange) {
+    applyPlainStepFilter(props.selectedStepRange)
     return
   }
 
@@ -1019,10 +1160,52 @@ function syncFilterStateWithProps() {
   applyFilter()
 }
 
+function hasActiveLinkedSelection(): boolean {
+  if (props.highlightedBlockId && props.highlightedBlockId.length > 0) return true
+  if (cfgMode.value === 'folded') return Boolean(props.filteredEdgeIds?.length)
+  return Boolean(props.selectedStepRange)
+}
+
 function extractBlockIdFromNodeName(nodeName: string): string | null {
   if (!nodeName.startsWith('node_')) return null
   const rawId = nodeName.slice(5)
   return rawId ? rawId : null
+}
+
+function isPlaybackNodeVisible(nodeName: string): boolean {
+  const cutoff = props.playbackCutoffStep
+  if (cutoff === null || !currentInformationReady.value) return true
+  const blockId = extractBlockIdFromNodeName(nodeName)
+  const block = blockId === null ? null : blockInformation.value[String(blockId)]
+  if (!block) return false
+
+  if (cfgMode.value === 'plain' && props.playbackActive && props.playbackVisibleBlockIds !== null) {
+    return props.playbackVisibleBlockIds.some(id => String(id) === String(block.block_id))
+  }
+
+  if (cfgMode.value === 'folded') {
+    const ranges = block.step_ranges || []
+    return ranges.some(range => Number(range.start_step) <= cutoff)
+  }
+  const startStep = Number(block.start_step)
+  return Number.isFinite(startStep) && startStep <= cutoff
+}
+
+function isPlaybackEdgeVisible(edgeTitle: string): boolean {
+  const cutoff = props.playbackCutoffStep
+  if (cutoff === null || !currentInformationReady.value) return true
+
+  if (cfgMode.value === 'folded') {
+    const firstStep = edgeFirstStepByTitle.value.get(edgeTitle)
+    if (firstStep !== undefined) return firstStep <= cutoff
+  }
+
+  const connection = edgeConnections.value.get(edgeTitle)
+  return Boolean(
+    connection
+    && isPlaybackNodeVisible(connection.source)
+    && isPlaybackNodeVisible(connection.target),
+  )
 }
 
 function handleNodeClick(nodeName: string) {
@@ -1042,6 +1225,7 @@ function handleNodeClick(nodeName: string) {
 
   const blockId = extractBlockIdFromNodeName(nodeName)
   selectedBlockInfo.value = blockId !== null ? blockInformation.value[String(blockId)] || null : null
+  stepRangesExpanded.value = false
 
   nextTick(() => {
     const targetId = selectedBlockInfo.value ? `block-${selectedBlockInfo.value.block_id}` : null
@@ -1056,6 +1240,7 @@ function resetSelection() {
   }
   selectedNodeName.value = null
   selectedBlockInfo.value = null
+  stepRangesExpanded.value = false
   resetLlmAnalysis()
 }
 
@@ -1199,6 +1384,45 @@ function applyEdgeFilter(edgeIds: string[]) {
   visibleEdges.value = matchedEdgeTitles
   highlightedNodes.value = new Set(matchedNodes)
   applyFilter()
+  scheduleFocusOnNodes(matchedNodes)
+}
+
+function applyPlainStepFilter(stepRange: { entryStep: number; exitStep: number }) {
+  const entryStep = Math.min(stepRange.entryStep, stepRange.exitStep)
+  const exitStep = Math.max(stepRange.entryStep, stepRange.exitStep)
+  const blocks = buildPlainStepBlocks()
+  const matchedNodes = new Set(
+    blocks
+      .filter(block => block.startStep <= exitStep && block.endStep >= entryStep)
+      .map(block => block.nodeName),
+  )
+
+  if (matchedNodes.size === 0) {
+    clearFilterState()
+    applyFilter()
+    nextTick(() => resetZoom())
+    return
+  }
+
+  const callSourceNode = findPlainNodeByStep(entryStep, blocks)
+  const callTargetNode = findPlainNodeByStep(entryStep + 1, blocks)
+  const entryNodes = [callSourceNode, callTargetNode].filter(
+    (nodeName): nodeName is string => Boolean(nodeName),
+  )
+  entryNodes.forEach(nodeName => matchedNodes.add(nodeName))
+
+  const matchedEdges = new Set<string>()
+  edgeConnections.value.forEach(({ source, target }, edgeTitle) => {
+    if (matchedNodes.has(source) && matchedNodes.has(target)) {
+      matchedEdges.add(edgeTitle)
+    }
+  })
+
+  visibleNodes.value = matchedNodes
+  visibleEdges.value = matchedEdges
+  highlightedNodes.value = new Set(entryNodes)
+  applyFilter()
+  scheduleFocusOnNodes(matchedNodes)
 }
 
 function calculateVisibleElements(targetBlockIds: BlockId[]) {
@@ -1221,6 +1445,153 @@ function calculateVisibleElements(targetBlockIds: BlockId[]) {
     }
   })
   visibleEdges.value = visibleEdgeSet
+  scheduleFocusOnNodes(visible)
+}
+
+function scheduleFocusOnNodes(nodeNames: Iterable<string>) {
+  const targets = [...new Set(nodeNames)]
+  if (targets.length === 0) return
+
+  if (focusFrameId !== null) window.cancelAnimationFrame(focusFrameId)
+  focusFrameId = window.requestAnimationFrame(() => {
+    focusFrameId = null
+    focusNodesInViewport(targets)
+  })
+}
+
+function focusNodesInViewport(nodeNames: string[]) {
+  if (!graphContainer.value || !zoomBehavior) return
+
+  const svg = graphContainer.value.querySelector('svg') as SVGSVGElement | null
+  const zoomLayer = svg?.querySelector('#zoom-layer') as SVGGElement | null
+  if (!svg || !zoomLayer) return
+
+  const nodeElements = nodeNames
+    .map(nodeName => nodeNameToEl.value.get(nodeName))
+    .filter((element): element is SVGGraphicsElement => (
+      Boolean(element) && typeof (element as SVGGraphicsElement).getBBox === 'function'
+    ))
+  const visibleEdgeElements = Array.from(
+    svg.querySelectorAll<SVGGraphicsElement>('.edge:not(.filtered-out)'),
+  )
+  const elements = [...new Set([...nodeElements, ...visibleEdgeElements])]
+
+  if (cfgMode.value === 'plain') {
+    // Plain CFG deliberately uses a wide, horizontally scrollable SVG. Keep
+    // that original scale and layout; linkage only restores the neutral zoom
+    // transform and moves the scrollbar to the linked region.
+    select(svg).call(zoomBehavior.transform, zoomIdentity)
+    window.requestAnimationFrame(() => scrollPlainCfgToElements(elements))
+    return
+  }
+
+  const bounds = getElementsBoundsInZoomLayer(elements, zoomLayer)
+  const viewBox = svg.viewBox.baseVal
+  if (!bounds || viewBox.width <= 0 || viewBox.height <= 0) return
+
+  // Fit the complete non-muted selection, rather than zooming to only its
+  // entry/target block. A small margin keeps boundary edges readable.
+  const targetWidth = Math.max(bounds.width, 1)
+  const targetHeight = Math.max(bounds.height, 1)
+  const desiredScale = Math.min(
+    viewBox.width * 0.86 / targetWidth,
+    viewBox.height * 0.86 / targetHeight,
+  )
+  const scale = Math.min(5, Math.max(1, desiredScale))
+  const centerX = bounds.x + bounds.width / 2
+  const centerY = bounds.y + bounds.height / 2
+  const transform = zoomIdentity
+    .translate(
+      viewBox.x + viewBox.width / 2 - centerX * scale,
+      viewBox.y + viewBox.height / 2 - centerY * scale,
+    )
+    .scale(scale)
+
+  select(svg)
+    .transition()
+    .duration(280)
+    .call(zoomBehavior.transform, transform)
+}
+
+function getElementsBoundsInZoomLayer(
+  elements: SVGGraphicsElement[],
+  zoomLayer: SVGGElement,
+): { x: number; y: number; width: number; height: number } | null {
+  const zoomMatrix = zoomLayer.getCTM()
+  if (!zoomMatrix || elements.length === 0) return null
+
+  let inverseZoomMatrix: DOMMatrix
+  try {
+    inverseZoomMatrix = zoomMatrix.inverse()
+  } catch {
+    return null
+  }
+
+  let minX = Number.POSITIVE_INFINITY
+  let minY = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let maxY = Number.NEGATIVE_INFINITY
+
+  elements.forEach((element) => {
+    const elementMatrix = element.getCTM()
+    if (!elementMatrix) return
+    const matrix = inverseZoomMatrix.multiply(elementMatrix)
+    const bbox = element.getBBox()
+    const corners = [
+      [bbox.x, bbox.y],
+      [bbox.x + bbox.width, bbox.y],
+      [bbox.x, bbox.y + bbox.height],
+      [bbox.x + bbox.width, bbox.y + bbox.height],
+    ]
+
+    corners.forEach(([x, y]) => {
+      const transformedX = matrix.a * x! + matrix.c * y! + matrix.e
+      const transformedY = matrix.b * x! + matrix.d * y! + matrix.f
+      minX = Math.min(minX, transformedX)
+      minY = Math.min(minY, transformedY)
+      maxX = Math.max(maxX, transformedX)
+      maxY = Math.max(maxY, transformedY)
+    })
+  })
+
+  if (![minX, minY, maxX, maxY].every(Number.isFinite)) return null
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+}
+
+function scrollPlainCfgToElements(elements: SVGGraphicsElement[]) {
+  const container = graphContainer.value
+  if (!container || cfgMode.value !== 'plain' || container.scrollWidth <= container.clientWidth) return
+
+  const rects = elements.map(element => element.getBoundingClientRect())
+  if (rects.length === 0) return
+  const containerRect = container.getBoundingClientRect()
+  const contentLeft = container.scrollLeft
+    + Math.min(...rects.map(rect => rect.left))
+    - containerRect.left
+  const contentRight = container.scrollLeft
+    + Math.max(...rects.map(rect => rect.right))
+    - containerRect.left
+  const targetCenter = (contentLeft + contentRight) / 2
+  const maxScrollLeft = Math.max(0, container.scrollWidth - container.clientWidth)
+  container.scrollTo({
+    left: Math.min(maxScrollLeft, Math.max(0, targetCenter - container.clientWidth / 2)),
+    behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+  })
+}
+
+function followPlainPlaybackBlock(blockId: BlockId | null, cutoffStep: number | null) {
+  if (cfgMode.value !== 'plain') return
+  const directNode = blockId === null ? null : `node_${String(blockId)}`
+  const blocks = buildPlainStepBlocks()
+  const containingNode = cutoffStep === null ? null : findPlainNodeByStep(cutoffStep, blocks)
+  const latestNode = (directNode && nodeNameToEl.value.has(directNode) ? directNode : null) ?? containingNode ?? blocks
+    .filter(block => cutoffStep !== null && block.startStep <= cutoffStep)
+    .sort((left, right) => right.startStep - left.startStep)[0]?.nodeName
+  if (!latestNode) return
+
+  const element = nodeNameToEl.value.get(latestNode)
+  if (!(element instanceof SVGGraphicsElement)) return
+  scrollPlainCfgToElements([element])
 }
 
 function clearFilterState() {
@@ -1236,6 +1607,9 @@ function applyFilter() {
 
   svg.querySelectorAll('.node').forEach((node) => {
     const nodeName = getNodeName(node)
+    const isReached = isPlaybackNodeVisible(nodeName)
+    node.classList.toggle('playback-hidden', !isReached)
+    node.setAttribute('aria-hidden', String(!isReached))
     if (visibleNodes.value.size === 0) {
       node.classList.remove('filtered-out', 'highlighted')
     } else if (visibleNodes.value.has(nodeName)) {
@@ -1251,12 +1625,20 @@ function applyFilter() {
     }
   })
 
+  const hidePlaybackClusters = props.playbackCutoffStep !== null && currentInformationReady.value
+  svg.querySelectorAll('.cluster').forEach((cluster) => {
+    cluster.classList.toggle('playback-hidden', hidePlaybackClusters)
+    cluster.setAttribute('aria-hidden', String(hidePlaybackClusters))
+  })
+
   svg.querySelectorAll('.edge').forEach((edge) => {
     const title = getEdgeTitle(edge)
+    const isReached = isPlaybackEdgeVisible(title)
+    edge.classList.toggle('playback-hidden', !isReached)
+    edge.setAttribute('aria-hidden', String(!isReached))
+    const hasVisibleSelection = visibleNodes.value.size > 0
     const matchesVisibleSelection =
-      visibleNodes.value.size === 0 ||
-      visibleEdges.value.size === 0 ||
-      visibleEdges.value.has(title)
+      !hasVisibleSelection || visibleEdges.value.has(title)
     const matchesEdgeType =
       activeEdgeType.value === null || getEdgeType(edge) === activeEdgeType.value
 
@@ -1277,7 +1659,7 @@ function resetZoom() {
 function resetFilter() {
   activeEdgeType.value = null
   emit('cfg-navigate', null)
-  if (!props.filteredEdgeIds?.length && !props.highlightedBlockId?.length) {
+  if (!props.filteredEdgeIds?.length && !props.selectedStepRange && !props.highlightedBlockId?.length) {
     clearFilterState()
     applyFilter()
     nextTick(() => resetZoom())
@@ -1336,7 +1718,7 @@ function isBoundaryInstruction(instr: string): boolean {
 
 function formatInstruction(instr: string): string {
   const tupleMatch = instr.match(/^\(\s*([^,]+)\s*,\s*'([^']+)'\s*\)$/)
-  if (tupleMatch) {
+  if (tupleMatch?.[1] !== undefined && tupleMatch[2] !== undefined) {
     const pc = tupleMatch[1].trim().replace(/^['"]|['"]$/g, '')
     return `${pc}  ${tupleMatch[2]}`
   }
@@ -1346,11 +1728,6 @@ function formatInstruction(instr: string): string {
   if (dictOpcode && dictPc) return `${dictPc}  ${dictOpcode}`
 
   return instr
-}
-
-function truncateAddress(addr: string): string {
-  if (!addr || addr.length <= 12) return addr
-  return `${addr.slice(0, 8)}...${addr.slice(-4)}`
 }
 
 function addrToName(addr: string): string {
@@ -1390,6 +1767,7 @@ function addThousandsSeparators(value: string): string {
   const negative = value.startsWith('-')
   const unsigned = negative ? value.slice(1) : value
   const [whole, fraction] = unsigned.split('.')
+  if (whole === undefined) return value
   const withSeparators = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
   return `${negative ? '-' : ''}${withSeparators}${fraction !== undefined ? `.${fraction}` : ''}`
 }
@@ -1471,17 +1849,8 @@ function formatGas(gas: number | null | undefined): string {
   return Number(gas).toLocaleString(undefined, { maximumFractionDigits: 0 })
 }
 
-function normalizePcValue(pc: string | null | undefined): string {
-  const text = String(pc ?? '').trim()
-  return text ? text : 'Unknown'
-}
-
-function formatPcRange(startPc: string | null | undefined, endPc: string | null | undefined): string {
-  return `${normalizePcValue(startPc)} - ${normalizePcValue(endPc)}`
-}
-
-function hasPcRange(block: BlockInformation): boolean {
-  return Boolean(block.start_pc || block.end_pc)
+function formatFoldedStepRange(stepRange: StepRange): string {
+  return `${stepRange.start_step}–${stepRange.end_step}`
 }
 
 function hasStepRange(block: BlockInformation): boolean {
@@ -1513,6 +1882,10 @@ onBeforeUnmount(() => {
   if (edgeTooltipHideTimer !== null) {
     window.clearTimeout(edgeTooltipHideTimer)
     edgeTooltipHideTimer = null
+  }
+  if (focusFrameId !== null) {
+    window.cancelAnimationFrame(focusFrameId)
+    focusFrameId = null
   }
 })
 </script>
@@ -1572,6 +1945,17 @@ onBeforeUnmount(() => {
         </div>
       </span>
     </span>
+    <div class="graph-actions">
+      <GraphFitButton
+        graph-name="control flow graph"
+        @fit="resetZoom"
+      />
+      <GraphExpandButton
+        graph-name="control flow graph"
+        :expanded="props.expanded"
+        @toggle="emit('toggle-expanded')"
+      />
+    </div>
 
     <div v-if="isAnalyzing || status === 'loading'" class="status-overlay">
       Loading control flow graph...
@@ -1583,6 +1967,13 @@ onBeforeUnmount(() => {
 
     <div v-else-if="status === 'success'" class="cfg-container">
       <div class="graph-stage">
+        <div
+          v-if="!currentInformationReady"
+          class="information-pending"
+          :class="{ error: !!currentInformationError }"
+        >
+          {{ currentInformationError || 'CFG topology is ready · block information is still being computed' }}
+        </div>
         <div
           ref="graphContainer"
           class="graph-viewport"
@@ -1615,11 +2006,32 @@ onBeforeUnmount(() => {
                   </div>
                   <div class="info-row">
                     <span class="info-label">Contract</span>
-                    <span class="info-value">{{ cfgMode === 'folded' ? truncateAddress(selectedBlockInfo.address) : selectedBlockInfo.address }}</span>
+                    <span class="info-value" :title="selectedBlockInfo.address">{{ addrToName(selectedBlockInfo.address) }}</span>
                   </div>
-                  <div v-if="cfgMode === 'folded' && hasPcRange(selectedBlockInfo)" class="info-row">
-                    <span class="info-label">PC</span>
-                    <span class="info-value">{{ formatPcRange(selectedBlockInfo.start_pc, selectedBlockInfo.end_pc) }}</span>
+                  <div v-if="cfgMode === 'folded'" class="info-row info-row-steps">
+                    <span class="info-label">Steps</span>
+                    <div class="step-ranges">
+                      <span v-if="selectedFoldedStepRanges.length === 0" class="info-value">Unknown</span>
+                      <span
+                        v-for="(stepRange, index) in visibleFoldedStepRanges"
+                        :key="`${stepRange.start_step}-${stepRange.end_step}-${index}`"
+                        class="info-value step-range"
+                      >{{ formatFoldedStepRange(stepRange) }}</span>
+                      <button
+                        v-if="selectedFoldedStepRanges.length > 1"
+                        type="button"
+                        class="step-ranges-toggle"
+                        :aria-expanded="stepRangesExpanded"
+                        :aria-label="stepRangesExpanded ? 'Collapse step ranges' : 'Expand step ranges'"
+                        :title="stepRangesExpanded ? 'Collapse step ranges' : 'Expand step ranges'"
+                        @click="stepRangesExpanded = !stepRangesExpanded"
+                      >
+                        <svg viewBox="-7 -7 14 14" aria-hidden="true">
+                          <circle cx="0" cy="0" r="6" />
+                          <path :d="stepRangesExpanded ? 'M -3.5 -2 L 0 3 L 3.5 -2 Z' : 'M -2.25 -3.5 L 3 0 L -2.25 3.5 Z'" />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
                   <div v-if="cfgMode === 'plain' && hasStepRange(selectedBlockInfo)" class="info-row">
                     <span class="info-label">Step</span>
@@ -1760,6 +2172,16 @@ onBeforeUnmount(() => {
   opacity: 0.58;
 }
 
+.graph-actions {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .cfg-container {
   position: relative;
   width: 100%;
@@ -1770,12 +2192,52 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
 }
 
+.cfg-panel.graph-panel-expanded .cfg-container {
+  padding-right: calc(var(--expanded-legend-width) + 6px);
+}
+
+.cfg-panel.graph-panel-expanded .graph-actions {
+  right: calc(var(--expanded-legend-width) + 14px);
+}
+
+.cfg-panel.graph-panel-expanded .side-panel {
+  position: absolute;
+  top: calc(50% + 3px);
+  right: 0;
+  bottom: 0;
+  width: var(--expanded-legend-width);
+  border-top: 1px solid rgba(123, 143, 173, 0.24);
+  z-index: 20;
+}
+
 .graph-stage {
   position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
   display: flex;
+}
+
+.information-pending {
+  position: absolute;
+  top: 36px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 12;
+  padding: 5px 10px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 999px;
+  background: rgba(255, 251, 235, 0.94);
+  color: #92400e;
+  font-size: 10px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.information-pending.error {
+  border-color: rgba(220, 38, 38, 0.35);
+  background: rgba(254, 242, 242, 0.96);
+  color: #991b1b;
 }
 
 .graph-viewport {
@@ -1850,6 +2312,25 @@ onBeforeUnmount(() => {
 .graph-viewport :deep(.edge.filtered-out) {
   opacity: 0.08;
   pointer-events: none;
+}
+
+.graph-viewport :deep(.node),
+.graph-viewport :deep(.edge) {
+  transition: none;
+}
+
+.graph-viewport :deep(.node.playback-hidden),
+.graph-viewport :deep(.edge.playback-hidden),
+.graph-viewport :deep(.cluster.playback-hidden) {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .graph-viewport :deep(.node),
+  .graph-viewport :deep(.edge) {
+    transition: none;
+  }
 }
 
 .graph-viewport :deep(.node.highlighted) {
@@ -1934,16 +2415,8 @@ onBeforeUnmount(() => {
   overflow: hidden;
   flex-shrink: 0;
   min-height: 0;
-}
-
-.side-panel-plain {
   width: 324px;
-}
-
-.side-panel-folded {
-  width: fit-content;
-  min-width: 170px;
-  max-width: min(42vw, 420px);
+  box-sizing: border-box;
 }
 
 .drawer-enter-active,
@@ -1975,11 +2448,6 @@ onBeforeUnmount(() => {
   overflow-x: hidden;
   padding: 10px;
   min-height: 0;
-}
-
-.side-panel-folded .information-content {
-  width: fit-content;
-  max-width: 100%;
 }
 
 .information-stack {
@@ -2054,6 +2522,63 @@ onBeforeUnmount(() => {
   font-size: 10px;
   text-align: right;
   word-break: break-all;
+}
+
+.info-row-steps {
+  align-items: flex-start;
+}
+
+.step-ranges {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  min-width: 0;
+}
+
+.step-range {
+  display: block;
+  white-space: nowrap;
+}
+
+.step-ranges-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.step-ranges-toggle svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.step-ranges-toggle circle {
+  fill: rgba(255, 255, 255, 0.9);
+  stroke: #7b8fad;
+  stroke-width: 1;
+}
+
+.step-ranges-toggle path {
+  fill: #475569;
+}
+
+.step-ranges-toggle:hover circle {
+  fill: #eef2ff;
+  stroke: var(--accent);
+}
+
+.step-ranges-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .llm-analysis-group {

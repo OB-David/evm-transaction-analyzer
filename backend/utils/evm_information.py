@@ -415,6 +415,16 @@ class TraceFormatter:
         return len(s)
 
     @staticmethod
+    def _call_has_nonzero_value(opcode: str, raw_stack: List[str]) -> bool:
+        """Return whether a CALL instruction has a non-zero ETH value operand."""
+        if opcode != "CALL" or len(raw_stack) < 3:
+            return False
+        try:
+            return int(str(raw_stack[-3]), 16) > 0
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
     def _validate_raw_trace(raw_trace: object, source: str) -> Dict:
         if not isinstance(raw_trace, dict):
             raise TraceFetchError(f"{source} trace 返回值不是对象")
@@ -769,11 +779,13 @@ class TraceFormatter:
                                 to_address = norm_addr
                                 is_valid_address = True
 
-                                # 如果下一步 pc 是 0x0，则视为合约地址；否则在 hex_len 在 10-40 时视为用户地址
+                                # 如果下一步 pc 是 0x0，则视为合约地址。
+                                # 只有携带非零 ETH 的 CALL 目标才作为用户候选；
+                                # 零 value CALL 以及不传 ETH 的其他 CALL 类指令不应污染资产图 legend。
                                 if is_next_pc_zero:
                                     contracts_addresses.add(to_address)
                                 else:
-                                    if 10 <= hex_len <= 40:
+                                    if 10 <= hex_len <= 40 and self._call_has_nonzero_value(opcode, raw_stack):
                                         users_addresses_from_CALL.add(to_address)
                             else:
                                 # 标准化失败，保持 to_address 为空，is_valid_address=False

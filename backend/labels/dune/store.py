@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Literal
 
-from labels.coordinator import DATA_DIR, TX_HASH_RE
+from labels.coordinator import DATA_DIR, TX_HASH_RE, encode_tx_hash
 
 if TYPE_CHECKING:
     from labels.coordinator import LabelCoordinator
@@ -238,7 +238,7 @@ class DuneStore:
         execution_id: str,
         api_slot: str,
     ) -> SyncRun:
-        normalized: list[tuple[str, int]] = []
+        normalized: list[tuple[int, bytes]] = []
         for transaction in transactions:
             tx_hash = str(transaction["tx_hash"]).lower()
             block_number = int(transaction["block_number"])
@@ -249,15 +249,14 @@ class DuneStore:
                     f"block {block_number} outside chunk "
                     f"[{chunk.chunk_start}, {chunk.chunk_end}]"
                 )
-            normalized.append((tx_hash, block_number))
+            normalized.append((block_number, encode_tx_hash(tx_hash)))
 
         with self.coordinator._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.executemany(
                 """
-                INSERT INTO arbitrage_transactions(tx_hash, block_number)
+                INSERT OR IGNORE INTO arbitrage_transactions(block_number, tx_hash)
                 VALUES (?, ?)
-                ON CONFLICT(tx_hash) DO UPDATE SET block_number = excluded.block_number
                 """,
                 normalized,
             )

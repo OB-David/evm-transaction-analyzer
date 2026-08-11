@@ -4,10 +4,9 @@ export interface AnalyzeResult {
   result_dir: string
   files: string[]
   error?: string | null
-  updated_at?: string | null
 }
 
-export type AnalysisStage = 'queued' | 'analyzing' | 'afg' | 'sequence' | 'folded_cfg' | 'plain_cfg' | 'complete' | 'error'
+export type AnalysisStage = 'queued' | 'analyzing' | 'afg' | 'sequence' | 'folded_cfg' | 'plain_cfg' | 'folded_info' | 'complete' | 'error'
 
 const ANALYSIS_STAGE_ORDER: Record<AnalysisStage, number> = {
   queued: 0,
@@ -16,7 +15,8 @@ const ANALYSIS_STAGE_ORDER: Record<AnalysisStage, number> = {
   sequence: 3,
   folded_cfg: 4,
   plain_cfg: 5,
-  complete: 6,
+  folded_info: 6,
+  complete: 7,
   error: -1,
 }
 
@@ -26,13 +26,49 @@ export function analysisStageReached(current: AnalysisStage, target: AnalysisSta
 
 export type BlockId = string | number
 
+export type EdgeLinkMappingStatus = 'complete' | 'partial' | 'unmatched' | 'ambiguous'
+
+export interface EdgeLinkEvidence {
+  role: string
+  source_step: number | null
+  block_id?: BlockId | null
+  call_id?: number | null
+  contract_address?: string | null
+  status: 'matched' | 'unmatched' | 'ambiguous'
+}
+
 export interface EdgeLink {
+  schema_version?: number
   edge_id: number
   type: 'ETH_TRANSFER' | 'ERC20_TOKEN_TRANSFER' | 'ERC20_BALANCE_CHANGE'
+  mapping_status?: EdgeLinkMappingStatus
+  evidence?: EdgeLinkEvidence[]
   matched_blocks: BlockId | BlockId[] | {
     sender: BlockId[]
     receiver: BlockId[]
   }
+}
+
+export interface CallTreeLinkMatch {
+  call_id: number | null
+  contract_address: string
+}
+
+export interface CallTreeEdgeLink {
+  schema_version?: number
+  edge_id: number
+  type: EdgeLink['type']
+  mapping_status?: EdgeLinkMappingStatus
+  evidence?: EdgeLinkEvidence[]
+  matched_calls: CallTreeLinkMatch[]
+  matched_contracts: string[]
+}
+
+export interface AfgNavigationTarget {
+  blockIds: BlockId[]
+  callIds: number[]
+  contractAddresses: string[]
+  includesRootCall: boolean
 }
 
 export interface TransactionGasInfo {
@@ -75,10 +111,10 @@ async function fetchJsonFile<T>(filename: string, txHash: string): Promise<T> {
   return res.json()
 }
 
-async function fetchAnalysisStatus(txHash: string, signal?: AbortSignal): Promise<AnalyzeResult> {
-  const res = await fetch(`${API_BASE}/api/analyze/${txHash}/status`, { signal, cache: 'no-store' })
+async function fetchAnalysisProgress(txHash: string, signal?: AbortSignal): Promise<AnalyzeResult> {
+  const res = await fetch(`${API_BASE}/api/analyze/${txHash}/progress`, { signal, cache: 'no-store' })
   if (!res.ok) {
-    throw new Error(`Failed to fetch analysis status: ${res.status}`)
+    throw new Error(`Failed to fetch analysis progress: ${res.status}`)
   }
   return res.json()
 }
@@ -119,13 +155,11 @@ export async function analyzeTransaction(
 
   let result: AnalyzeResult = await res.json()
   onProgress?.(result)
-
   while (result.status === 'processing') {
-    await waitForPoll(400, signal)
-    result = await fetchAnalysisStatus(txHash, signal)
+    await waitForPoll(250, signal)
+    result = await fetchAnalysisProgress(txHash, signal)
     onProgress?.(result)
   }
-
   return result
 }
 
@@ -147,17 +181,33 @@ export async function fetchDotFile(txHash: string): Promise<string> {
   return fetchTextFile('asset_flow.dot', txHash)
 }
 
-export async function fetchCfgDotFile(txHash: string): Promise<string> {
-  return fetchTextFile('folded_cfg.dot', txHash)
+export async function fetchCfgSvg(txHash: string): Promise<string> {
+  return fetchCfgSvgByMode(txHash, 'folded')
 }
 
-export async function fetchCfgSvg(txHash: string): Promise<string> {
-  return fetchTextFile('folded_cfg.svg', txHash)
+export interface LinkArtifact {
+  schema_version: number
+  edge_links: {
+    folded: EdgeLink[]
+    plain: EdgeLink[]
+    call_tree: CallTreeEdgeLink[]
+  }
 }
 
 export async function fetchEdgeLink(txHash: string, mode: CfgMode = 'folded'): Promise<EdgeLink[]> {
-  const filename = mode === 'plain' ? 'TFG_link_PCFG.json' : 'TFG_link_FCFG.json'
-  return fetchJsonFile<EdgeLink[]>(filename, txHash)
+  const artifact = await fetchJsonFile<LinkArtifact>('link.json', txHash)
+  if (artifact.schema_version !== 1 || !Array.isArray(artifact.edge_links?.[mode])) {
+    throw new Error('Unsupported link.json schema')
+  }
+  return artifact.edge_links[mode]
+}
+
+export async function fetchCallTreeEdgeLink(txHash: string): Promise<CallTreeEdgeLink[]> {
+  const artifact = await fetchJsonFile<LinkArtifact>('link.json', txHash)
+  if (artifact.schema_version !== 1 || !Array.isArray(artifact.edge_links?.call_tree)) {
+    throw new Error('Unsupported link.json call-tree mapping schema')
+  }
+  return artifact.edge_links.call_tree
 }
 
 export async function fetchBlockGasData(blockNumber: number, signal?: AbortSignal): Promise<BlockGasData> {
@@ -241,7 +291,13 @@ export interface BlockAction {
   eth_event: EthEvent | null
 }
 
+export interface StepRange {
+  start_step: number
+  end_step: number
+}
+
 export interface BlockInformation {
+  schema_version?: number
   block_id: BlockId
   address: string
   blocks_number: number
@@ -249,10 +305,9 @@ export interface BlockInformation {
   actions: BlockAction[]
   start_step?: number
   end_step?: number
+  step_ranges?: StepRange[]
   folded_blocks?: BlockId[]
   instructions?: string[]
-  start_pc?: string
-  end_pc?: string
 }
 
 export interface BlockInformationMap {
@@ -264,7 +319,7 @@ export type CfgMode = 'folded' | 'plain'
 export interface CfgViewData {
   mode: CfgMode
   svgContent: string
-  blockInformation: BlockInformationMap
+  blockInformation?: BlockInformationMap
 }
 
 export interface PlainBlockLlmAnalysisRequest {
@@ -324,17 +379,16 @@ export async function fetchBlockInformation(txHash: string, mode: CfgMode = 'fol
 }
 
 async function fetchCfgSvgByMode(txHash: string, mode: CfgMode): Promise<string> {
-  const filename = mode === 'plain' ? 'plain_cfg.svg' : 'folded_cfg.svg'
-  return fetchTextFile(filename, txHash)
+  const res = await fetch(`${API_BASE}/api/cfg/${txHash}/${mode}.svg`, { cache: 'no-store' })
+  if (!res.ok) {
+    throw new Error(`Failed to render ${mode} CFG: ${res.status}`)
+  }
+  return res.text()
 }
 
 export async function fetchCfgViewData(txHash: string, mode: CfgMode = 'folded'): Promise<CfgViewData> {
-  const [svgContent, blockInformation] = await Promise.all([
-    fetchCfgSvgByMode(txHash, mode),
-    fetchBlockInformation(txHash, mode),
-  ])
-
-  return { mode, svgContent, blockInformation }
+  const svgContent = await fetchCfgSvgByMode(txHash, mode)
+  return { mode, svgContent }
 }
 
 export async function fetchPlainBlockLlmAnalysis(
@@ -378,29 +432,38 @@ export interface EdgeStepEntry {
 
 export type EdgeStepMap = Record<string, EdgeStepEntry>
 
-export interface SequenceCallEntry {
+export interface CallTreeEntry {
   call_id: number
+  parent_call_id: number | null
+  depth: number
   entry_step: number
   exit_step: number
   entry_op: string
   exit_op: string
+  from_address: string
+  to_address: string
   from_name: string
   to_name: string
+  selector?: string
   calldata: string[]
   probable_text_signatures?: string[]
 }
 
-export interface SequenceCalldataMapping {
-  total_calls: number
-  calls: SequenceCallEntry[]
+export interface CallTreePayload {
+  schema_version: number
+  root: {
+    address: string
+    name: string
+  }
+  calls: CallTreeEntry[]
 }
 
-export async function fetchSequenceSvg(txHash: string): Promise<string> {
-  return fetchTextFile('trace_sequence.svg', txHash)
-}
-
-export async function fetchSequenceCalldataMapping(txHash: string): Promise<SequenceCalldataMapping> {
-  return fetchJsonFile<SequenceCalldataMapping>('trace_sequence_calldata_mapping.json', txHash)
+export async function fetchCallTreeData(txHash: string): Promise<CallTreePayload> {
+  const payload = await fetchJsonFile<CallTreePayload>('call_tree.json', txHash)
+  if (payload.schema_version !== 1 || !payload.root || !Array.isArray(payload.calls)) {
+    throw new Error('Unsupported call_tree.json schema')
+  }
+  return payload
 }
 
 export async function fetchEdgeStepMap(txHash: string, _preferredMode: CfgMode = 'folded'): Promise<EdgeStepMap> {
@@ -426,9 +489,6 @@ export interface SwapPatternResult {
 export async function fetchArbitrageResult(txHash: string): Promise<ArbitrageResult> {
   const res = await fetch(`${API_BASE}/api/files/${txHash}/arbitrage.json`, { cache: 'no-store' })
   if (!res.ok) {
-    if (res.status === 404) {
-      return { is_arbitrage: false, cycles: [], arb_edge_orders: [] }
-    }
     throw new Error(`Failed to fetch arbitrage result: ${res.status}`)
   }
   return res.json()
@@ -456,9 +516,6 @@ export async function fetchSwapPatternResult(txHash: string, mode: CfgMode = 'fo
   const filename = mode === 'plain' ? 'swap_in_pcfg.json' : 'swap_in_fcfg.json'
   const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`, { cache: 'no-store' })
   if (!res.ok) {
-    if (res.status === 404) {
-      return { pattern_1: [], pattern_2: [] }
-    }
     throw new Error(`Failed to fetch ${filename}: ${res.status}`)
   }
   return res.json()
@@ -467,7 +524,6 @@ export async function fetchSwapPatternResult(txHash: string, mode: CfgMode = 'fo
 export async function fetchAddressBalances(txHash: string): Promise<Record<string, Record<string, number>>> {
   const res = await fetch(`${API_BASE}/api/files/${txHash}/address_balances.json`, { cache: 'no-store' })
   if (!res.ok) {
-    if (res.status === 404) return {}
     throw new Error(`Failed to fetch address balances: ${res.status}`)
   }
   return res.json()

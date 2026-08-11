@@ -2,6 +2,7 @@
 import { ref, watch } from 'vue'
 import { fetchLegendData, type LegendData } from '../api/analyze'
 import { getDarkAccentForColor, getFillColorForColor } from '../visualTheme'
+import CopyButton from './CopyButton.vue'
 
 const props = defineProps<{
   txHash: string | null
@@ -45,7 +46,9 @@ function strokeColor(color?: string) {
 
 <template>
   <div class="legend-panel">
-    <span class="panel-label">(F) Legend</span>
+    <div class="legend-header">
+      <span class="panel-label">(F) Legend</span>
+    </div>
 
     <div v-if="props.isAnalyzing" class="status-overlay">
       Loading legend...
@@ -63,14 +66,17 @@ function strokeColor(color?: string) {
           <svg width="28" height="20" viewBox="0 0 28 20">
             <polygon
               points="14,3 23,10 14,17 5,10"
-              fill="#FFFFFF"
-              stroke="#2C2C2C"
+              fill="#E2E2E2"
+              stroke="#B6B6B6"
               stroke-width="1.2"
             />
           </svg>
           <div class="legend-text">
             <span class="legend-name">{{ item.name }}</span>
-            <span class="legend-addr">{{ truncateAddr(item.address) }}</span>
+            <div class="legend-address-row">
+              <span class="legend-addr" :title="item.address">{{ truncateAddr(item.address) }}</span>
+              <CopyButton :value="item.address" :label="`${item.name} address`" />
+            </div>
           </div>
         </div>
       </template>
@@ -96,7 +102,10 @@ function strokeColor(color?: string) {
           </svg>
           <div class="legend-text">
             <span class="legend-name">{{ item.name }}</span>
-            <span class="legend-addr">{{ truncateAddr(item.address) }}</span>
+            <div class="legend-address-row">
+              <span class="legend-addr" :title="item.address">{{ truncateAddr(item.address) }}</span>
+              <CopyButton :value="item.address" :label="`${item.name} address`" />
+            </div>
           </div>
         </div>
       </template>
@@ -123,7 +132,10 @@ function strokeColor(color?: string) {
           </svg>
           <div class="legend-text">
             <span class="legend-name">{{ item.name }}</span>
-            <span class="legend-addr">{{ truncateAddr(item.address) }}</span>
+            <div class="legend-address-row">
+              <span class="legend-addr" :title="item.address">{{ truncateAddr(item.address) }}</span>
+              <CopyButton :value="item.address" :label="`${item.name} address`" />
+            </div>
           </div>
         </div>
       </template>
@@ -145,11 +157,23 @@ function strokeColor(color?: string) {
   min-height: 0;
 }
 
+.legend-header {
+  flex: 0 0 30px;
+  min-height: 30px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-bg);
+  z-index: 2;
+}
+
 .legend-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 34px 10px 10px;
+  padding: 8px 10px 10px;
 }
 
 .legend-scroll::-webkit-scrollbar {
@@ -170,7 +194,7 @@ function strokeColor(color?: string) {
 }
 
 .legend-title {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text);
   margin-bottom: 4px;
@@ -201,27 +225,30 @@ function strokeColor(color?: string) {
 }
 
 .legend-name {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text);
-  line-height: 1.3;
+  line-height: 1.35;
+}
+
+.legend-address-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
 }
 
 .legend-addr {
-  font-size: 9px;
+  font-size: 11px;
   color: var(--muted);
   font-family: 'Consolas', 'Monaco', monospace;
-  line-height: 1.2;
+  line-height: 1.3;
 }
 
 .panel-label {
-  position: absolute;
-  top: 8px;
-  left: 12px;
   font-size: 11px;
   color: #000000;
   font-weight: 700;
   letter-spacing: 0.5px;
-  z-index: 2;
 }
 
 .status-overlay,

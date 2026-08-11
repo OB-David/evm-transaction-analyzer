@@ -1,19 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { normalizeAnalyzeError, type AnalyzeResult } from '../api/analyze'
-
-async function copyToClipboard(text: string) {
-  try {
-    await navigator.clipboard.writeText(text)
-  } catch {
-    const ta = document.createElement('textarea')
-    ta.value = text
-    document.body.appendChild(ta)
-    ta.select()
-    document.execCommand('copy')
-    document.body.removeChild(ta)
-  }
-}
+import CopyButton from './CopyButton.vue'
 
 const emit = defineEmits<{
   'analysis-requested': [txHash: string]
@@ -32,10 +20,11 @@ const progressLabel = computed(() => {
   switch (result.value?.stage) {
     case 'queued': return 'Analysis queued...'
     case 'analyzing': return 'Analyzing transaction...'
-    case 'afg': return 'AFG ready · generating sequence diagram...'
-    case 'sequence': return 'Sequence ready · generating folded CFG...'
+    case 'afg': return 'AFG ready · generating call tree...'
+    case 'sequence': return 'Call tree ready · generating folded CFG...'
     case 'folded_cfg': return 'Folded CFG ready · generating plain CFG...'
-    case 'plain_cfg': return 'Plain CFG ready · finalizing...'
+    case 'plain_cfg': return 'CFG topology ready · computing folded details...'
+    case 'folded_info': return 'Folded details ready · computing plain details...'
     default: return 'Processing transaction...'
   }
 })
@@ -133,7 +122,7 @@ async function onBlockSubmit() {
     <!-- Block Number Input -->
     <div class="field-label-row">
       <span class="field-label">Block Number</span>
-      <button class="copy-btn" @click="copyToClipboard(blockNumber)" title="Copy">&#x2750;</button>
+      <CopyButton :value="blockNumber" label="block number" />
     </div>
     <form class="input-form" @submit.prevent="onBlockSubmit">
       <input
@@ -155,7 +144,7 @@ async function onBlockSubmit() {
     <!-- Transaction Hash Input -->
     <div class="field-label-row">
       <span class="field-label">Tx Hash</span>
-      <button class="copy-btn" @click="copyToClipboard(txHash)" title="Copy">&#x2750;</button>
+      <CopyButton :value="txHash" label="transaction hash" />
     </div>
     <form class="input-form" @submit.prevent="onSubmit">
       <input
@@ -209,20 +198,6 @@ async function onBlockSubmit() {
   font-size: 11px;
   color: var(--muted);
   letter-spacing: 0.3px;
-}
-
-.copy-btn {
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 12px;
-  padding: 0 2px;
-  line-height: 1;
-}
-
-.copy-btn:hover {
-  color: var(--accent);
 }
 
 .input-form {

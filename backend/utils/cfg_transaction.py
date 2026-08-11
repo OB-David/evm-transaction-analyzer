@@ -22,8 +22,9 @@ class FoldableBlockNode(BlockNode):
     def __init__(self, base_block: Block):
         super().__init__(base_block)
         # 初始状态即代表“未折叠”状态，无需 is_folded 标签
-        # 新增：记录该节点包含的所有原始块对象（物理双轨制核心）
-        self.folded_blocks: List[BlockNode] = [self]
+        # 只保留原始 block ID。保留 BlockNode 对象会形成自引用环，
+        # 并让 plain/folded 输出继续持有整张源图。
+        self.folded_blocks: List[int] = [self.id]
         self.fold_info = {
             "blocks_number": 1,
             "total_gas": 0.0,
@@ -54,8 +55,9 @@ class FoldableBlockNode(BlockNode):
         )
 
         for node in other_nodes:
-            if node not in self.folded_blocks:
-                self.folded_blocks.append(node)
+            for block_id in node.folded_blocks:
+                if block_id not in self.folded_blocks:
+                    self.folded_blocks.append(block_id)
             self.fold_info["actions"].extend(node.actions)
 
         self.fold_info["blocks_number"] = len(self.folded_blocks)
@@ -362,17 +364,12 @@ class CFGConstructor:
                 other_nodes = chain[1:]
                 last_node = chain[-1]
                 
-                # --- A. 指令与对象继承 (保持线性顺序) ---
+                # --- A. 指令与 ID 继承 (保持线性顺序) ---
                 for m_node in other_nodes:
                     # 1. 指令合并
                     first_node.instructions.extend(m_node.instructions)
-                    
-                    # 2. 深度对象继承 (folded_blocks)
-                    if hasattr(m_node, 'folded_blocks'):
-                        ext_blocks = [b for b in m_node.folded_blocks if b != m_node]
-                        first_node.folded_blocks.extend(ext_blocks)
 
-                    # 3. 映射表更新：核心改动！
+                    # 2. 映射表更新
                     # 如果 m_node 之前被钻石折叠吞过，pop 出它代表的所有原始 IDs
                     # 如果它是原始块，pop 出来的就是 [m_node.id]
                     m_original_ids = self.folded_node_map.pop(m_node.id, [m_node.id])
@@ -570,14 +567,9 @@ class CFGConstructor:
                     })
                     root.instructions.extend(end.instructions)
 
-                    # --- 2. 深度对象继承 (folded_blocks) ---
+                    # --- 2. 原始 block ID 继承 ---
                     to_absorb = mids + [end]
                     for node_to_fold in to_absorb:
-                        if hasattr(node_to_fold, 'folded_blocks'):
-                            # 继承该节点之前所有折叠过的原始块对象
-                            ext_blocks = [b for b in node_to_fold.folded_blocks if b != node_to_fold]
-                            root.folded_blocks.extend(ext_blocks)
-                        
                         # --- 3. 映射表(folded_node_map) 扁平化更新 ---
                         # pop 掉被吞掉节点的 key，将其所有 original_ids 转移到 root.id 下
                         original_ids = self.folded_node_map.pop(node_to_fold.id, [node_to_fold.id])
@@ -708,10 +700,7 @@ class CFGConstructor:
                             "pc": "---", "opcode": "FEEDBACK_LOOP_END", "is_boundary": True
                         })
 
-                        # 映射表与对象合并
-                        if hasattr(fb, 'folded_blocks'):
-                            root.folded_blocks.extend([b for b in fb.folded_blocks if b != fb])
-                        
+                        # 映射表与原始 block ID 合并
                         m_original_ids = self.folded_node_map.pop(fb.id, [fb.id])
                         self.folded_node_map[root.id].extend(m_original_ids)
                         
@@ -819,20 +808,14 @@ class CFGConstructor:
                         # 更新子块指令集
                         child.instructions = new_instructions
 
-                        # --- 2. 深度对象继承 ---
-                        # 子块继承 M 曾经折叠过的所有块对象
-                        if hasattr(m_node, 'folded_blocks'):
-                            ext_blocks = [b for b in m_node.folded_blocks if b != m_node]
-                            child.folded_blocks.extend(ext_blocks)
-
-                        # --- 3. 映射表更新 ---
+                        # --- 2. 映射表更新 ---
                         # 因为 M 被分发到了多个子块，M 代表的原始 ID 需要被所有子块 ID 共享
                         m_original_ids = self.folded_node_map.get(m_node.id, [m_node.id])
                         for oid in m_original_ids:
                             if oid not in self.folded_node_map[child.id]:
                                 self.folded_node_map[child.id].append(oid)
                         
-                        # --- 4. 物理信息继承 (Gas, Actions) ---
+                        # --- 3. 物理信息继承 (Block IDs, Gas, Actions) ---
                         child.merge_fold_info([m_node])
 
                     # --- 5. 重连边关系 (去重处理逻辑) ---
@@ -930,25 +913,34 @@ class CFGConstructor:
         return fixed_ids
 
 
-    def _create_and_add_node_instance(self, stack: List[Any], step_label: Any, is_isolated: bool = False) -> Any:
+    def _create_and_add_node_instance(
+        self,
+        stack: List[Any],
+        step_label: Any,
+        is_isolated: bool = False,
+        source_node_map: Optional[Dict[Any, List[Any]]] = None,
+        result_node_map: Optional[Dict[Any, List[Any]]] = None,
+    ) -> Any:
         if not stack and not is_isolated:
             return None
 
+        source_node_map = source_node_map or {}
+        result_node_map = result_node_map if result_node_map is not None else {}
+
         if is_isolated:
             source_node = stack
-            new_node = copy.deepcopy(source_node)
+            new_node = self._clone_node(source_node)
 
             if not hasattr(self, '_plain_node_counter'):
                 self._plain_node_counter = 1
             new_node.id = self._plain_node_counter
             self._plain_node_counter += 1
 
-            # 映射关系
-            self.folded_node_map[new_node.id] = self.folded_node_map.get(source_node.id, [source_node.id])
+            result_node_map[new_node.id] = list(source_node_map.get(source_node.id, [source_node.id]))
             return new_node
         else:
             first_node = stack[0]
-            merged_node = copy.deepcopy(first_node)
+            merged_node = self._clone_node(first_node)
             merged_node.instructions = []
 
             if not hasattr(self, '_plain_node_counter'):
@@ -965,10 +957,10 @@ class CFGConstructor:
                 })
                 merged_node.instructions.extend(node.instructions)
 
-                if merged_node.id not in self.folded_node_map:
-                    self.folded_node_map[merged_node.id] = []
-                orig_ids = self.folded_node_map.get(node.id, [node.id])
-                self.folded_node_map[merged_node.id].extend(orig_ids)
+                if merged_node.id not in result_node_map:
+                    result_node_map[merged_node.id] = []
+                orig_ids = source_node_map.get(node.id, [node.id])
+                result_node_map[merged_node.id].extend(orig_ids)
 
                 # 合并信息
                 if i > 0 and hasattr(merged_node, 'merge_fold_info'):
@@ -976,31 +968,53 @@ class CFGConstructor:
 
             return merged_node
 
+    @staticmethod
+    def _clone_node(source_node: FoldableBlockNode) -> FoldableBlockNode:
+        """Clone one node without recursively copying the source CFG object graph."""
+        new_node = copy.copy(source_node)
+        new_node.instructions = [
+            copy.copy(instruction) if isinstance(instruction, dict) else instruction
+            for instruction in source_node.instructions
+        ]
+        new_node.actions = copy.deepcopy(source_node.actions)
+        new_node.folded_blocks = list(source_node.folded_blocks)
+        new_node.fold_info = copy.deepcopy(source_node.fold_info)
+        new_node.processed_addr_pc = set(source_node.processed_addr_pc)
+        return new_node
+
     def _mode_fold(self, current_cfg: Any, mode: str = "plain") -> Any:
-        # --- 修改点 1: 重置计数器与局部映射初始化 ---
-        if mode != "plain":
-            self._plain_node_counter = 1
-        
-        # 为了防止 mode="folded" 时受到之前模式残留的影响，
-        # 我们确保 folded_node_map 至少包含了基础映射
-        if not hasattr(self, 'folded_node_map') or self.folded_node_map is None:
-            self.folded_node_map = {n.id: [n.id] for n in current_cfg.nodes}
+        # Plain 与 Folded 各自从同一份结构折叠映射开始，禁止互相污染 ID 空间。
+        self._plain_node_counter = 1
+        raw_source_node_map = (
+            self.folded_node_map
+            if hasattr(self, 'folded_node_map') and self.folded_node_map is not None
+            else {n.id: [n.id] for n in current_cfg.nodes}
+        )
+        source_node_map = {
+            node_id: list(original_ids)
+            for node_id, original_ids in raw_source_node_map.items()
+        }
+        result_node_map: Dict[Any, List[Any]] = {}
 
         fixed_node_ids = self._get_fixed_node_ids(current_cfg)
         sorted_edges = sorted(current_cfg.edges, key=lambda x: x.edge_step)
 
-        new_cfg = copy.deepcopy(current_cfg)
-        new_cfg.nodes = []
-        new_cfg.edges = []
+        new_cfg = CFG(tx_hash=current_cfg.tx_hash)
+
+        if not sorted_edges:
+            isolated_map = {}
+            for node in current_cfg.nodes:
+                cloned_node = self._clone_node(node)
+                new_cfg.add_node(cloned_node)
+                isolated_map[cloned_node.id] = list(
+                    source_node_map.get(node.id, [node.id])
+                )
+            return (new_cfg, isolated_map) if mode == "folded" else new_cfg
 
         mergestack = []
         fixed_instances = {}
         last_node_in_new_graph = None
         pending_entry_edge = None
-
-        if not sorted_edges:
-            # 如果没有边，返回原图和基础映射
-            return (new_cfg, self.folded_node_map) if mode == "folded" else new_cfg
 
         def _connect(src, tgt, orig_edge):
             if src and tgt and orig_edge:
@@ -1016,7 +1030,13 @@ class CFGConstructor:
         # --- 处理起点 ---
         u_start = sorted_edges[0].source
         if u_start.id in fixed_node_ids:
-            last_node_in_new_graph = self._create_and_add_node_instance(u_start, 0, is_isolated=True)
+            last_node_in_new_graph = self._create_and_add_node_instance(
+                u_start,
+                0,
+                is_isolated=True,
+                source_node_map=source_node_map,
+                result_node_map=result_node_map,
+            )
             if mode != "plain":
                 fixed_instances[u_start.id] = last_node_in_new_graph
             _ensure_fold_info(last_node_in_new_graph)
@@ -1040,7 +1060,13 @@ class CFGConstructor:
                     start_step = (pending_entry_edge.edge_step + 1) if pending_entry_edge else 0
                     end_step = edge_step
 
-                    new_merged = self._create_and_add_node_instance(mergestack, start_step, is_isolated=False)
+                    new_merged = self._create_and_add_node_instance(
+                        mergestack,
+                        start_step,
+                        is_isolated=False,
+                        source_node_map=source_node_map,
+                        result_node_map=result_node_map,
+                    )
                     _ensure_fold_info(new_merged)
                     new_merged.fold_info["start_step"] = start_step
                     new_merged.fold_info["end_step"] = end_step
@@ -1057,7 +1083,13 @@ class CFGConstructor:
                     pending_entry_edge = None
 
                 if v_old.id not in fixed_instances:
-                    v_inst = self._create_and_add_node_instance(v_old, edge_step + 1, is_isolated=True)
+                    v_inst = self._create_and_add_node_instance(
+                        v_old,
+                        edge_step + 1,
+                        is_isolated=True,
+                        source_node_map=source_node_map,
+                        result_node_map=result_node_map,
+                    )
                     if mode != "plain":
                         fixed_instances[v_old.id] = v_inst
                 else:
@@ -1081,20 +1113,77 @@ class CFGConstructor:
 
         # --- 修改点 4: 结果对齐与多返回逻辑 ---
         # 1. 先进行去重处理
-        for rid in self.folded_node_map:
-            self.folded_node_map[rid] = list(dict.fromkeys(self.folded_node_map[rid]))
+        for rid in result_node_map:
+            result_node_map[rid] = list(dict.fromkeys(result_node_map[rid]))
 
         if mode == "folded":
             # 2. 提取当前图中实际存在的 ID 映射快照
             active_ids = {node.id for node in new_cfg.nodes}
             current_map_snapshot = {
                 node_id: orig_ids 
-                for node_id, orig_ids in self.folded_node_map.items() 
+                for node_id, orig_ids in result_node_map.items()
                 if node_id in active_ids
             }
             return new_cfg, current_map_snapshot
         
         return new_cfg
+
+    @staticmethod
+    def _assign_folded_step_ranges(cfg: CFG, trace_step_count: int) -> None:
+        """Derive every final folded-node execution interval from dynamic CFG edges."""
+        for node in cfg.nodes:
+            if not hasattr(node, "fold_info"):
+                node.fold_info = {}
+            node.fold_info["step_ranges"] = []
+            node.fold_info.pop("start_step", None)
+            node.fold_info.pop("end_step", None)
+
+        if trace_step_count <= 0 or not cfg.nodes:
+            return
+
+        def append_range(node: Any, start_step: int, end_step: int) -> None:
+            start = max(0, int(start_step))
+            end = min(trace_step_count - 1, int(end_step))
+            if start > end:
+                return
+            node.fold_info["step_ranges"].append({
+                "start_step": start,
+                "end_step": end,
+            })
+
+        indexed_edges = list(enumerate(cfg.edges))
+        sorted_edges = sorted(
+            indexed_edges,
+            key=lambda item: (int(getattr(item[1], "edge_step", 0)), item[0]),
+        )
+        if not sorted_edges:
+            append_range(cfg.nodes[0], 0, trace_step_count - 1)
+            return
+
+        current_node = sorted_edges[0][1].source
+        current_start = 0
+        previous_edge_step = -1
+
+        for _index, edge in sorted_edges:
+            edge_step = int(getattr(edge, "edge_step", 0))
+            edge_step = max(0, min(trace_step_count - 1, edge_step))
+
+            if edge.source is not current_node:
+                append_range(current_node, current_start, edge_step - 1)
+                current_node = edge.source
+                current_start = max(0, previous_edge_step + 1)
+
+            append_range(current_node, current_start, edge_step)
+            current_node = edge.target
+            current_start = edge_step + 1
+            previous_edge_step = edge_step
+
+        append_range(current_node, current_start, trace_step_count - 1)
+
+        for node in cfg.nodes:
+            node.fold_info["step_ranges"].sort(
+                key=lambda item: (item["start_step"], item["end_step"])
+            )
         
     # ========== CFG构建主逻辑 ==========
     def construct_cfg(
@@ -1276,18 +1365,18 @@ class CFGConstructor:
         # 基于pc填充cfg语义
         self._fill_actions_from_table(cfg, "addr_pc")
         
-        # --- 核心改动：物理双轨制 ---
-        # 1. 在折叠前，先克隆出一份完整的、原始的 CFG 结构用于查询（tx_cfg）
-        original_cfg = copy.deepcopy(cfg)
-        
-        # 2. 对原有的 cfg 对象进行折叠（这会修改 cfg 内部的 nodes 和 edges，使其变成折叠版）
+        # 对执行 CFG 进行折叠。旧版额外 deepcopy 出 original_cfg，但入口已不再消费它。
+        original_cfg = None
         folded_node_map = self._fold_linear_chains(cfg)
         folded_node_map = self._fold_feedback_patterns(cfg)
         folded_node_map = self._fold_dianmond_patterns(cfg)
         folded_node_map = self._fold_dispatch_patterns(cfg)
-        current_cfg = copy.deepcopy(cfg)
-        plain_cfg = self._mode_fold(current_cfg, "plain")
-        folded_cfg, final_map = self._mode_fold(current_cfg, "folded")
+        plain_cfg = self._mode_fold(cfg, "plain")
+        folded_cfg, final_map = self._mode_fold(cfg, "folded")
+        # 两个输出图已经拥有自己的节点和重复边，立即释放源图容器。
+        cfg.nodes.clear()
+        cfg.edges.clear()
+        self._assign_folded_step_ranges(folded_cfg, len(steps))
         folded_node_map = final_map
 
         # 基于step填充plain_cfg的语义
@@ -1305,16 +1394,17 @@ class CFGConstructor:
 
             start_step = node.fold_info.get("start_step", -1)
             end_step = node.fold_info.get("end_step", start_step)
+            if start_step >= 0 and end_step < start_step:
+                end_step = len(steps) - 1
 
-            # 生成【字符串格式】指令，和 fcfg 完全统一
+            # Plain nodes already carry an inclusive execution range. Slice it
+            # directly instead of scanning the complete trace for every block.
             matched_instructions = []
-            for idx, step in enumerate(steps):
-                if start_step <= idx <= end_step:
+            if 0 <= start_step <= end_step < len(steps):
+                for step in steps[start_step:end_step + 1]:
                     pc = step.get("pc", "")
                     opcode = step.get("opcode", "")
-                    # 构造字典 → 转字符串，和你原有风格 100% 一致
-                    instr_dict = {"pc": pc, "opcode": opcode}
-                    matched_instructions.append(str(instr_dict))
+                    matched_instructions.append(str({"pc": pc, "opcode": opcode}))
 
             block_inst_map[node.id] = {
                 "block_id": node.id,
@@ -1343,10 +1433,21 @@ class CFGConstructor:
                 continue
 
             block_inst_map[node.id] = {
+                "schema_version": 2,
                 "block_id": node.id,
                 "address": node.address,
+                "step_ranges": [
+                    {
+                        "start_step": int(step_range["start_step"]),
+                        "end_step": int(step_range["end_step"]),
+                    }
+                    for step_range in node.fold_info.get("step_ranges", [])
+                    if isinstance(step_range, dict)
+                    and "start_step" in step_range
+                    and "end_step" in step_range
+                ],
                 "blocks_number": node.fold_info.get("blocks_number", len(node.folded_blocks)),
-                "folded_blocks": [n.id for n in node.folded_blocks],
+                "folded_blocks": list(node.folded_blocks),
                 "gas": node.fold_info.get("total_gas", node.total_gas),
                 "actions": node.fold_info.get("actions", node.actions),
                 "instructions": [str(instr) for instr in node.instructions],

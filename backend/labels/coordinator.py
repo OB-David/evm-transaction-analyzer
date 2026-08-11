@@ -16,6 +16,23 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPOSITORY_ROOT / "data_base" / "arbitrage_txs"
 DEFAULT_DB_PATH = DATA_DIR / "arbitrage.sqlite3"
 TX_HASH_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
+LABEL_SCHEMA_VERSION = 2
+
+
+def encode_tx_hash(tx_hash: str) -> bytes:
+    """Encode an API-format transaction hash for compact SQLite storage."""
+    normalized = str(tx_hash).lower()
+    if not TX_HASH_RE.fullmatch(normalized):
+        raise ValueError(f"invalid transaction hash: {tx_hash!r}")
+    return bytes.fromhex(normalized[2:])
+
+
+def decode_tx_hash(tx_hash: bytes) -> str:
+    """Decode a compact SQLite transaction hash for API responses."""
+    value = bytes(tx_hash)
+    if len(value) != 32:
+        raise ValueError(f"stored transaction hash has {len(value)} bytes, expected 32")
+    return f"0x{value.hex()}"
 
 if TYPE_CHECKING:
     from labels.dune.store import DuneStore
@@ -60,19 +77,94 @@ class LabelCoordinator:
             if self._initialized:
                 return
             with self._connect() as connection:
-                connection.executescript(
-                    """
-                    CREATE TABLE IF NOT EXISTS arbitrage_transactions (
-                        tx_hash TEXT PRIMARY KEY,
-                        block_number INTEGER NOT NULL CHECK (block_number >= 0)
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_arbitrage_block_number
-                        ON arbitrage_transactions(block_number);
-                    """
-                )
+                self._initialize_transaction_schema(connection)
                 self.dune.initialize_schema(connection)
                 self.geth.initialize_schema(connection)
             self._initialized = True
+
+    @staticmethod
+    def _create_transaction_table(
+        connection: sqlite3.Connection,
+        table_name: str = "arbitrage_transactions",
+    ) -> None:
+        connection.execute(
+            f"""
+            CREATE TABLE {table_name} (
+                block_number INTEGER NOT NULL CHECK (block_number >= 0),
+                tx_hash BLOB NOT NULL CHECK (
+                    typeof(tx_hash) = 'blob' AND length(tx_hash) = 32
+                ),
+                PRIMARY KEY (block_number, tx_hash)
+            ) WITHOUT ROWID
+            """
+        )
+
+    def _initialize_transaction_schema(self, connection: sqlite3.Connection) -> None:
+        schema_row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            ("arbitrage_transactions",),
+        ).fetchone()
+        if schema_row is None:
+            self._create_transaction_table(connection)
+            connection.execute(f"PRAGMA user_version = {LABEL_SCHEMA_VERSION}")
+            return
+
+        columns = {
+            row["name"]: row
+            for row in connection.execute("PRAGMA table_info(arbitrage_transactions)")
+        }
+        schema_sql = str(schema_row["sql"] or "").upper()
+        already_compact = (
+            columns.get("block_number") is not None
+            and columns.get("tx_hash") is not None
+            and str(columns["tx_hash"]["type"]).upper() == "BLOB"
+            and int(columns["block_number"]["pk"]) == 1
+            and int(columns["tx_hash"]["pk"]) == 2
+            and "WITHOUT ROWID" in schema_sql
+        )
+        if already_compact:
+            connection.execute(f"PRAGMA user_version = {LABEL_SCHEMA_VERSION}")
+            return
+
+        connection.create_function("encode_tx_hash", 1, encode_tx_hash, deterministic=True)
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            old_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM arbitrage_transactions"
+                ).fetchone()[0]
+            )
+            connection.execute("DROP TABLE IF EXISTS arbitrage_transactions_compact")
+            self._create_transaction_table(
+                connection, "arbitrage_transactions_compact"
+            )
+            connection.execute(
+                """
+                INSERT INTO arbitrage_transactions_compact(block_number, tx_hash)
+                SELECT block_number, encode_tx_hash(tx_hash)
+                FROM arbitrage_transactions
+                """
+            )
+            new_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM arbitrage_transactions_compact"
+                ).fetchone()[0]
+            )
+            if new_count != old_count:
+                raise RuntimeError(
+                    f"label migration changed row count: {old_count} -> {new_count}"
+                )
+            connection.execute("DROP TABLE arbitrage_transactions")
+            connection.execute(
+                "ALTER TABLE arbitrage_transactions_compact "
+                "RENAME TO arbitrage_transactions"
+            )
+            connection.execute(f"PRAGMA user_version = {LABEL_SCHEMA_VERSION}")
+        except Exception:
+            connection.rollback()
+            raise
+        else:
+            connection.commit()
 
     def count_transactions(self) -> int:
         self.initialize()
@@ -103,7 +195,13 @@ class LabelCoordinator:
                 """,
                 (from_block, to_block),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [
+            {
+                "tx_hash": decode_tx_hash(row["tx_hash"]),
+                "block_number": int(row["block_number"]),
+            }
+            for row in rows
+        ]
 
     def recent_transactions(self, limit: int = 500) -> list[dict]:
         self.initialize()
@@ -115,7 +213,13 @@ class LabelCoordinator:
                 """,
                 (limit,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [
+            {
+                "tx_hash": decode_tx_hash(row["tx_hash"]),
+                "block_number": int(row["block_number"]),
+            }
+            for row in rows
+        ]
 
     def coverage_complete(self, from_block: int, to_block: int) -> bool:
         if from_block < HISTORY_START_BLOCK or to_block < from_block:

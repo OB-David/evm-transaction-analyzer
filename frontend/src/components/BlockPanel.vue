@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import {
   fetchBlockGasData,
   fetchBlocksHeatmap,
@@ -8,6 +8,7 @@ import {
   type BlocksHeatmapData,
   type TransactionGasInfo,
 } from '../api/analyze'
+import CopyButton from './CopyButton.vue'
 
 type ViewMode = 'blocks' | 'transactions'
 
@@ -124,6 +125,15 @@ const selectedTxIndex = ref<number | null>(null)
 // Gas range for legend
 const gasMin = ref<string>('')
 const gasMax = ref<string>('')
+
+const selectedGasPosition = computed<number | null>(() => {
+  const transactions = blockData.value?.transactions
+  const index = selectedTxIndex.value
+  if (!transactions?.length || index === null) return null
+
+  const position = mapTransactionGasToColorScale(transactions)[index]
+  return position === undefined ? null : position * 100
+})
 
 // Load Plotly from CDN
 onMounted(() => {
@@ -285,7 +295,7 @@ async function loadArbitrageMarkers(
         arbitrageCoverageMessage.value = `Dune arbitrage coverage starts at #${data.history_start_block}`
       } else if (!data.coverage_complete) {
         arbitrageCoverageMessage.value = data.initial_sync_complete
-          ? 'Dune arbitrage index is updating'
+          ? 'Arbitrage index is updating'
           : 'Dune arbitrage history is still syncing'
       } else {
         arbitrageCoverageMessage.value = ''
@@ -565,13 +575,7 @@ function renderPlotly(data: BlockGasData) {
   if (!Plotly) return
 
   const txs = data.transactions
-  const logGasValues = txs.map(tx => tx.log_gas)
-  const txColorMapping = mapGasValuesForColor(logGasValues)
-  const txHeatColors = remapScaledRange(
-    txColorMapping.scaledValues,
-    TX_COLOR_RANGE_MIN,
-    TX_COLOR_RANGE_MAX
-  )
+  const txHeatColors = mapTransactionGasToColorScale(txs)
 
   const gasValues = txs.map(tx => tx.gas)
   gasMin.value = Math.min(...gasValues).toLocaleString()
@@ -706,11 +710,6 @@ function renderPlotly(data: BlockGasData) {
 
 // ─── Helpers ───
 
-function truncateHash(hash: string): string {
-  if (hash.length <= 20) return hash
-  return hash.substring(0, 10) + '...' + hash.substring(hash.length - 10)
-}
-
 function clamp(value: number, lower: number, upper: number): number {
   return Math.min(upper, Math.max(lower, value))
 }
@@ -764,19 +763,12 @@ function remapScaledRange(values: number[], minTarget: number, maxTarget: number
   return values.map(v => clamp(minTarget + v * span, 0, 1))
 }
 
-async function copyToClipboard(text: string) {
-  try {
-    await navigator.clipboard.writeText(text)
-  } catch {
-    // fallback
-    const ta = document.createElement('textarea')
-    ta.value = text
-    document.body.appendChild(ta)
-    ta.select()
-    document.execCommand('copy')
-    document.body.removeChild(ta)
-  }
+function mapTransactionGasToColorScale(transactions: TransactionGasInfo[]): number[] {
+  const logGasValues = transactions.map(tx => tx.log_gas)
+  const mapping = mapGasValuesForColor(logGasValues)
+  return remapScaledRange(mapping.scaledValues, TX_COLOR_RANGE_MIN, TX_COLOR_RANGE_MAX)
 }
+
 </script>
 
 <template>
@@ -788,10 +780,26 @@ async function copyToClipboard(text: string) {
       <span class="view-mode-pill">{{ viewMode === 'blocks' ? 'Block View' : 'Transaction View' }}</span>
     </div>
 
-    <div v-if="gasMin && gasMax" class="gas-legend">
+    <div
+      v-if="gasMin && gasMax"
+      class="gas-legend"
+      :class="{ 'has-selected-gas': viewMode === 'transactions' && selectedGasPosition !== null }"
+    >
       <span class="gas-unit">{{ viewMode === 'blocks' ? 'Average Gas' : 'Gas' }}</span>
       <span class="gas-label">{{ gasMin }}</span>
-      <div class="gas-bar" :class="viewMode"></div>
+      <div class="gas-scale">
+        <div class="gas-bar" :class="viewMode"></div>
+        <div
+          v-if="viewMode === 'transactions' && selectedTxInfo && selectedGasPosition !== null"
+          class="selected-gas-marker"
+          :style="{ left: `${selectedGasPosition}%` }"
+          :aria-label="`Selected transaction gas: ${selectedTxInfo.gas.toLocaleString()}`"
+        >
+          <span class="selected-gas-value">{{ selectedTxInfo.gas.toLocaleString() }}</span>
+          <span class="selected-gas-stem"></span>
+          <span class="selected-gas-dot"></span>
+        </div>
+      </div>
       <span class="gas-label">{{ gasMax }}</span>
     </div>
 
@@ -828,21 +836,18 @@ async function copyToClipboard(text: string) {
       <template v-else>
         <div class="tx-info" v-if="selectedTxInfo">
           <div class="tx-info-row">
-            <span class="tx-info-label">Hash:</span>
-            <span class="tx-info-value mono">{{ truncateHash(selectedTxInfo.hash) }}</span>
-            <button class="copy-btn" @click="copyToClipboard(selectedTxInfo.hash)" title="Copy hash">&#x2750;</button>
-          </div>
-          <div class="tx-info-row">
-            <span class="tx-info-label">Gas:</span>
-            <span class="tx-info-value">{{ selectedTxInfo.gas.toLocaleString() }}</span>
-          </div>
-          <div class="tx-info-row">
             <span class="tx-info-label">From:</span>
             <span class="tx-info-value mono">{{ selectedTxInfo.from_addr }}</span>
+            <CopyButton :value="selectedTxInfo.from_addr" label="from address" />
           </div>
           <div class="tx-info-row">
             <span class="tx-info-label">To:</span>
             <span class="tx-info-value mono">{{ selectedTxInfo.to_addr || 'Contract Creation' }}</span>
+            <CopyButton
+              v-if="selectedTxInfo.to_addr"
+              :value="selectedTxInfo.to_addr"
+              label="to address"
+            />
           </div>
         </div>
         <div class="tx-info-placeholder" v-else>
@@ -1035,21 +1040,6 @@ async function copyToClipboard(text: string) {
   color: #b71c1c;
 }
 
-.copy-btn {
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 12px;
-  padding: 0 2px;
-  line-height: 1;
-  flex-shrink: 0;
-}
-
-.copy-btn:hover {
-  color: var(--accent);
-}
-
 .tx-info {
   display: flex;
   flex-direction: column;
@@ -1059,6 +1049,7 @@ async function copyToClipboard(text: string) {
 
 .tx-info-row {
   display: flex;
+  align-items: center;
   gap: 6px;
   font-size: 11px;
   line-height: 1.4;
@@ -1108,6 +1099,10 @@ async function copyToClipboard(text: string) {
   flex-shrink: 0;
 }
 
+.gas-legend.has-selected-gas {
+  margin-top: 16px;
+}
+
 .gas-unit {
   font-size: 9px;
   color: #000000;
@@ -1120,11 +1115,64 @@ async function copyToClipboard(text: string) {
   white-space: nowrap;
 }
 
-.gas-bar {
+.gas-scale {
+  position: relative;
   flex: 1;
   max-width: 160px;
   height: 3px;
+}
+
+.gas-bar {
+  width: 100%;
+  height: 3px;
   border-radius: 1.5px;
+}
+
+.selected-gas-marker {
+  position: absolute;
+  top: 50%;
+  width: 0;
+  height: 0;
+  color: #334155;
+  pointer-events: none;
+}
+
+.selected-gas-value {
+  position: absolute;
+  left: 0;
+  bottom: 7px;
+  transform: translateX(-50%);
+  padding: 1px 4px;
+  border: 1px solid #CBD5E1;
+  border-radius: 3px;
+  background: #FFFFFF;
+  color: #334155;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+
+.selected-gas-stem {
+  position: absolute;
+  left: -0.5px;
+  bottom: 1px;
+  width: 1px;
+  height: 6px;
+  background: currentColor;
+}
+
+.selected-gas-dot {
+  position: absolute;
+  left: -4px;
+  top: -4px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid #FFFFFF;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 1px currentColor;
 }
 
 .gas-bar.blocks {

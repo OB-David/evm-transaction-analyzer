@@ -42,26 +42,33 @@ const LEGACY_CONTRACT_COLORS = [
 ] as const
 
 export const CFG_EDGE_COLORS = {
-  NORMAL: '#8698B2',
-  JUMP: '#A99D93',
-  CALL: '#769B7E',
-  DELEGATECALL: '#7898BC',
-  TERMINATE: '#AE877B',
+  NORMAL: '#64748B',
+  JUMP: '#6B5B73',
+  CALL: '#4D7C61',
+  DELEGATECALL: '#4F78A0',
+  TERMINATE: '#9A6658',
 } as const
 
 const THEME_BY_FILL = new Map<string, { fill: string; dark: string }>()
 
 for (let i = 0; i < THEME_FILL_COLORS.length; i += 1) {
-  THEME_BY_FILL.set(THEME_FILL_COLORS[i].toLowerCase(), {
-    fill: THEME_FILL_COLORS[i],
-    dark: THEME_DARK_COLORS[i],
+  const fill = THEME_FILL_COLORS[i]
+  const dark = THEME_DARK_COLORS[i]
+  if (!fill || !dark) continue
+  THEME_BY_FILL.set(fill.toLowerCase(), {
+    fill,
+    dark,
   })
 }
 
 for (let i = 0; i < LEGACY_CONTRACT_COLORS.length; i += 1) {
-  THEME_BY_FILL.set(normalizeColor(LEGACY_CONTRACT_COLORS[i]), {
-    fill: THEME_FILL_COLORS[i],
-    dark: THEME_DARK_COLORS[i],
+  const legacy = LEGACY_CONTRACT_COLORS[i]
+  const fill = THEME_FILL_COLORS[i]
+  const dark = THEME_DARK_COLORS[i]
+  if (!legacy || !fill || !dark) continue
+  THEME_BY_FILL.set(normalizeColor(legacy), {
+    fill,
+    dark,
   })
 }
 

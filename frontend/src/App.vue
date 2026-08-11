@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import TitleBar from './components/TitleBar.vue'
 import InputPanel from './components/InputPanel.vue'
 import CfgPanel from './components/CfgPanel.vue'
@@ -14,6 +14,7 @@ import {
   fetchEdgeStepMap,
   fetchTransactionBlock,
   normalizeAnalyzeError,
+  type AfgNavigationTarget,
   type BlockId,
   type AnalysisStage,
   type AnalyzeResult,
@@ -31,21 +32,29 @@ const inputPanelRef = ref<InstanceType<typeof InputPanel> | null>(null)
 const isAnalyzing = ref(false)
 const currentCfgMode = ref<CfgMode>('folded')
 const exportInProgress = ref(false)
+type ExpandedGraph = 'afg' | 'sequence' | 'cfg'
+const expandedGraph = ref<ExpandedGraph | null>(null)
 let analysisController: AbortController | null = null
 let analysisSessionId = 0
 let edgeStepRequestId = 0
 
 // Sequence diagram state
 const sequenceStepRange = ref<{ entryStep: number; exitStep: number } | null>(null)
+const afgCallTreeTarget = ref<AfgNavigationTarget | null>(null)
 const edgeStepMap = ref<EdgeStepMap | null>(null)
+const playbackCutoffStep = ref<number | null>(null)
+const playbackActive = ref(false)
+const playbackVisibleBlockIds = ref<BlockId[] | null>(null)
+const playbackVisibleCallIds = ref<number[] | null>(null)
+const playbackCurrentBlockId = ref<BlockId | null>(null)
 
-// Load edge step map when txHash changes
-watch([currentTxHash, currentCfgMode, analysisStage], async ([newHash, cfgMode, stage]) => {
+// The edge-step artifact belongs to folded CFG, so mode switches do not reload it.
+watch([currentTxHash, analysisStage], async ([newHash, stage]) => {
   const requestId = ++edgeStepRequestId
   edgeStepMap.value = null
-  if (newHash && analysisStageReached(stage, 'folded_cfg')) {
+  if (newHash && analysisStageReached(stage, 'folded_info')) {
     try {
-      const nextMap = await fetchEdgeStepMap(newHash, cfgMode)
+      const nextMap = await fetchEdgeStepMap(newHash, 'folded')
       if (requestId === edgeStepRequestId && currentTxHash.value === newHash) {
         edgeStepMap.value = nextMap
       }
@@ -57,7 +66,7 @@ watch([currentTxHash, currentCfgMode, analysisStage], async ([newHash, cfgMode, 
 
 // Compute filtered edge IDs from sequence step range
 const filteredEdgeIds = computed<string[] | null>(() => {
-  if (!sequenceStepRange.value || !edgeStepMap.value) return null
+  if (currentCfgMode.value !== 'folded' || !sequenceStepRange.value || !edgeStepMap.value) return null
   const { entryStep, exitStep } = sequenceStepRange.value
   const matched = Object.values(edgeStepMap.value)
     .filter(e => e.edge_step >= entryStep && e.edge_step <= exitStep)
@@ -119,7 +128,13 @@ async function startAnalysis(txHash: string) {
   currentCfgMode.value = 'folded'
   highlightedBlockId.value = null
   sequenceStepRange.value = null
+  afgCallTreeTarget.value = null
   edgeStepMap.value = null
+  playbackCutoffStep.value = null
+  playbackActive.value = false
+  playbackVisibleBlockIds.value = null
+  playbackVisibleCallIds.value = null
+  playbackCurrentBlockId.value = null
   isAnalyzing.value = true
   inputPanelRef.value?.setAnalyzing(txHash)
 
@@ -169,6 +184,7 @@ function handleTransactionSelected(txHash: string) {
 }
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleExpandedGraphKeydown)
   analysisSessionId += 1
   analysisController?.abort()
   if (activeAnalysisTxHash.value && analysisController) {
@@ -176,16 +192,35 @@ onBeforeUnmount(() => {
   }
 })
 
-function handleCfgNavigate(blockIds: BlockId[] | null) {
-  // Clear sequence selection when AFG navigates
+function handleAfgNavigate(target: AfgNavigationTarget | null) {
   sequenceStepRange.value = null
+  highlightedBlockId.value = target?.blockIds.length ? target.blockIds : null
+  afgCallTreeTarget.value = target
+  console.log('Navigate from TFG edge:', target)
+}
+
+function handlePlaybackChange(state: {
+  cutoffStep: number | null
+  active: boolean
+  visibleBlockIds: BlockId[] | null
+  visibleCallIds: number[] | null
+  currentBlockId: BlockId | null
+}) {
+  playbackCutoffStep.value = state.cutoffStep
+  playbackActive.value = state.active
+  playbackVisibleBlockIds.value = state.visibleBlockIds
+  playbackVisibleCallIds.value = state.visibleCallIds
+  playbackCurrentBlockId.value = state.currentBlockId
+}
+
+function handleCfgNavigate(blockIds: BlockId[] | null) {
   highlightedBlockId.value = blockIds
-  console.log('Navigate to CFG blocks:', blockIds)
 }
 
 function handleSequenceSelect(stepRange: { entryStep: number; exitStep: number } | null) {
-  // Clear AFG highlight when sequence diagram selects
+  // Clear AFG highlight when the call tree selects an execution range.
   highlightedBlockId.value = null
+  afgCallTreeTarget.value = null
   sequenceStepRange.value = stepRange
   console.log('Sequence diagram selection:', stepRange)
 }
@@ -194,6 +229,20 @@ function handleCfgModeChange(mode: CfgMode) {
   currentCfgMode.value = mode
   highlightedBlockId.value = null
 }
+
+function toggleExpandedGraph(graph: ExpandedGraph) {
+  expandedGraph.value = expandedGraph.value === graph ? null : graph
+}
+
+function handleExpandedGraphKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && expandedGraph.value) {
+    expandedGraph.value = null
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', handleExpandedGraphKeydown)
+})
 
 const SVG_EXPORT_STYLE_PROPERTIES = [
   'display',
@@ -308,7 +357,11 @@ function inlineComputedSvgStyles(sourceEl: Element, targetEl: Element, options: 
   const targetChildren = targetEl.children
   const childCount = Math.min(sourceChildren.length, targetChildren.length)
   for (let i = 0; i < childCount; i += 1) {
-    inlineComputedSvgStyles(sourceChildren[i], targetChildren[i], options)
+    const sourceChild = sourceChildren.item(i)
+    const targetChild = targetChildren.item(i)
+    if (sourceChild && targetChild) {
+      inlineComputedSvgStyles(sourceChild, targetChild, options)
+    }
   }
 }
 
@@ -429,7 +482,12 @@ function resolveBorder(style: CSSStyleDeclaration): { width: number, color: stri
     return { width: 0, color: 'rgba(0, 0, 0, 0.08)' }
   }
 
-  const dominant = visibleSides.reduce((max, side) => side.width > max.width ? side : max, visibleSides[0])
+  const firstVisibleSide = visibleSides[0]
+  if (!firstVisibleSide) return { width: 0, color: 'rgba(0, 0, 0, 0.08)' }
+  const dominant = visibleSides.reduce(
+    (max, side) => side.width > max.width ? side : max,
+    firstVisibleSide,
+  )
   return {
     width: dominant.width,
     color: dominant.color,
@@ -442,9 +500,9 @@ function isTransparentColor(color: string | null | undefined): boolean {
   if (!normalized || normalized === 'transparent') return true
   const rgbaMatch = normalized.match(/^rgba?\((.+)\)$/)
   if (!rgbaMatch) return false
-  const parts = rgbaMatch[1].split(',').map((part) => part.trim())
+  const parts = (rgbaMatch[1] || '').split(',').map((part) => part.trim())
   if (parts.length < 4) return false
-  const alpha = Number.parseFloat(parts[3])
+  const alpha = Number.parseFloat(parts[3] || '')
   return Number.isFinite(alpha) && alpha <= 0
 }
 
@@ -610,6 +668,7 @@ function applyPanelSpecificFigmaFallbacks(
     for (let i = 0; i < edgeTextCount; i += 1) {
       const sourceText = sourceEdgeTexts[i]
       const clonedText = clonedEdgeTexts[i]
+      if (!sourceText || !clonedText) continue
       const computed = window.getComputedStyle(sourceText)
       const fill = computed.getPropertyValue('fill').trim()
       if (fill) {
@@ -921,10 +980,10 @@ function handleExportVisibleSvgs() {
         outputName: `${prefix}-control-flow-viewport.svg`,
       },
       {
-        panelName: 'Sequence Diagram',
+        panelName: 'Contract Call Tree',
         panelSelector: '.sequence-panel',
         viewportSelector: '.graph-viewport',
-        outputName: `${prefix}-sequence-viewport.svg`,
+        outputName: `${prefix}-call-tree-viewport.svg`,
       },
     ] as const
 
@@ -970,14 +1029,21 @@ function handleExportFullUiSvg() {
 </script>
 
 <template>
-  <div class="app-grid">
+  <div
+    class="app-grid"
+    :class="{
+      'has-expanded-graph': expandedGraph,
+      'expanded-cfg': expandedGraph === 'cfg',
+    }"
+  >
     <TitleBar
       class="title-bar"
+      :inert="expandedGraph !== null"
       :export-disabled="exportInProgress"
       @export-visible-svgs="handleExportVisibleSvgs"
       @export-full-ui-svg="handleExportFullUiSvg"
     />
-    <div class="left-col">
+    <div class="left-col" :inert="expandedGraph !== null">
       <InputPanel
         ref="inputPanelRef"
         class="input-panel"
@@ -997,18 +1063,32 @@ function handleExportFullUiSvg() {
       <div class="top-row">
         <AfgPanel
           class="afg-panel"
+          :class="{ 'graph-panel-expanded': expandedGraph === 'afg' }"
+          :inert="expandedGraph !== null && expandedGraph !== 'afg'"
           :tx-hash="currentTxHash"
           :cfg-mode="currentCfgMode"
-          :highlighted-block-id="highlightedBlockId"
+          :linked-call-tree-target="afgCallTreeTarget"
           :is-analyzing="isAnalyzing && !isStageReady('afg')"
-          @cfg-navigate="handleCfgNavigate"
+          :playback-ready="isStageReady('complete')"
+          :expanded="expandedGraph === 'afg'"
+          @graph-navigate="handleAfgNavigate"
+          @playback-change="handlePlaybackChange"
+          @toggle-expanded="toggleExpandedGraph('afg')"
         />
         <SequencePanel
           class="sequence-panel"
+          :class="{ 'graph-panel-expanded': expandedGraph === 'sequence' }"
+          :inert="expandedGraph !== null && expandedGraph !== 'sequence'"
           :tx-hash="isStageReady('sequence') ? currentTxHash : null"
           :is-analyzing="isAnalyzing && !isStageReady('sequence')"
           :selected-step-range="sequenceStepRange"
+          :linked-call-tree-target="afgCallTreeTarget"
+          :playback-cutoff-step="playbackCutoffStep"
+          :playback-active="playbackActive"
+          :playback-visible-call-ids="playbackVisibleCallIds"
+          :expanded="expandedGraph === 'sequence'"
           @sequence-select="handleSequenceSelect"
+          @toggle-expanded="toggleExpandedGraph('sequence')"
         />
         <LegendPanel
           class="legend-panel"
@@ -1018,15 +1098,26 @@ function handleExportFullUiSvg() {
       </div>
       <CfgPanel
         class="cfg-panel"
+        :class="{ 'graph-panel-expanded': expandedGraph === 'cfg' }"
+        :inert="expandedGraph !== null && expandedGraph !== 'cfg'"
         :tx-hash="isStageReady('folded_cfg') ? currentTxHash : null"
         :highlighted-block-id="highlightedBlockId"
         :filtered-edge-ids="filteredEdgeIds"
+        :selected-step-range="sequenceStepRange"
         :is-analyzing="isAnalyzing && !isStageReady('folded_cfg')"
         :plain-ready="isStageReady('plain_cfg')"
+        :folded-information-ready="isStageReady('folded_info')"
+        :plain-information-ready="isStageReady('complete')"
         :edge-step-map="edgeStepMap"
+        :playback-cutoff-step="playbackCutoffStep"
+        :playback-active="playbackActive"
+        :playback-visible-block-ids="playbackVisibleBlockIds"
+        :playback-current-block-id="playbackCurrentBlockId"
         :preferred-mode="currentCfgMode"
+        :expanded="expandedGraph === 'cfg'"
         @cfg-navigate="handleCfgNavigate"
         @mode-change="handleCfgModeChange"
+        @toggle-expanded="toggleExpandedGraph('cfg')"
       />
     </div>
   </div>
@@ -1034,6 +1125,7 @@ function handleExportFullUiSvg() {
 
 <style scoped>
 .app-grid {
+  --expanded-legend-width: clamp(170px, 14vw, 196px);
   height: 100vh;
   width: 100%;
   min-width: 0;
@@ -1096,6 +1188,7 @@ function handleExportFullUiSvg() {
 }
 
 .afg-panel {
+  grid-column: 1;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -1105,6 +1198,7 @@ function handleExportFullUiSvg() {
 }
 
 .sequence-panel {
+  grid-column: 2;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -1113,6 +1207,7 @@ function handleExportFullUiSvg() {
 }
 
 .legend-panel {
+  grid-column: 3;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -1125,6 +1220,39 @@ function handleExportFullUiSvg() {
   overflow: hidden;
   border-radius: 3px;
   box-shadow: 0 1px 4px rgba(0,0,0,0.07), 0 0 0 1px rgba(0,0,0,0.05);
+}
+
+.graph-panel-expanded {
+  position: fixed !important;
+  top: 6px;
+  right: calc(var(--expanded-legend-width) + 12px);
+  bottom: 6px;
+  left: 6px;
+  z-index: 100;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 3px;
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+
+.has-expanded-graph .legend-panel {
+  position: fixed;
+  top: 6px;
+  right: 6px;
+  bottom: 6px;
+  width: var(--expanded-legend-width);
+  z-index: 110;
+}
+
+.expanded-cfg .cfg-panel.graph-panel-expanded {
+  right: 6px;
+}
+
+.expanded-cfg .legend-panel {
+  bottom: auto;
+  height: calc(50vh - 9px);
 }
 
 @media (max-width: 1180px) {
