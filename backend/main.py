@@ -11,7 +11,7 @@ from utils.cfg_transaction import CFGConstructor
 from utils.render_cfg import get_valid_nodes_and_colors, render_transaction
 from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_fcfg, afg_to_pcfg, afg_to_call_tree, build_link_artifact, detect_arbitrage, compute_address_balances, filter_asset_flow_user_addresses
 from utils.swap_routes import build_arbitrage_artifact, build_swap_legs_artifact
-from utils.sequence_diagram import build_refined_hierarchical_trace, write_call_tree_json
+from utils.call_tree import build_refined_hierarchical_trace, write_call_tree_json
 from utils.indentify_swap import filter_to_file
 from utils.plain_cfg_llm import PLAIN_SEMANTICS_FILENAME, write_plain_semantics_artifact
 from utils.analysis_paths import analysis_directory

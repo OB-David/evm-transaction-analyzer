@@ -1,3 +1,5 @@
+"""Build, serialize, and optionally render EVM call trees."""
+
 import json
 import os
 import re

@@ -29,7 +29,7 @@ from utils.extract_token_changes import (
 from utils.swap_routes import build_arbitrage_artifact, build_swap_legs_artifact
 from utils.indentify_swap import filter_to_file
 from utils.plain_cfg_llm import PLAIN_SEMANTICS_FILENAME, write_plain_semantics_artifact
-from utils.sequence_diagram import build_refined_hierarchical_trace
+from utils.call_tree import build_refined_hierarchical_trace
 from main import create_result_directory, save_graphs
 
 load_dotenv()
