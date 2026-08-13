@@ -6,6 +6,8 @@ from graphviz import Digraph
 from utils.cfg_structure import CFG
 from typing import Any, Dict, List, Optional, Tuple
 import json
+import re
+from utils.swap_routes import detect_arbitrage
 
 THEME_FILLS = [
     "#F4B9B9",
@@ -42,8 +44,15 @@ FILL_TO_DARK = {fill.lower(): dark for fill, dark in zip(THEME_FILLS, THEME_DARK
 def dark_accent(color: str | None, fallback: str = "#6B7280") -> str:
     if not color:
         return fallback
-    normalized = color.strip().lower()[:7]
-    return FILL_TO_DARK.get(normalized, fallback)
+    match = re.fullmatch(r"#([0-9a-fA-F]{6})(?:[0-9a-fA-F]{2})?", color.strip())
+    if not match:
+        return fallback
+    normalized = f"#{match.group(1).lower()}"
+    configured = FILL_TO_DARK.get(normalized)
+    if configured:
+        return configured
+    channels = [int(match.group(1)[offset:offset + 2], 16) for offset in (0, 2, 4)]
+    return "#" + "".join(f"{round(channel * 0.78):02X}" for channel in channels)
 
 def hex_to_int_safe(x: str) -> int:
     try:
@@ -78,18 +87,8 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
     pending_erc20 = []  # ✅ 改成列表
     token_queues = defaultdict(list)
 
-    # 预扫描 ETH 转移，用于识别 wrap/unwrap 场景下的 ERC20 余额变化，避免误配成普通转账
+    # 只保留执行到当前 step 时已经出现的 ETH，避免 WETH 变化抢占未来的 unwrap。
     eth_mirror_pool = []
-    for c in all_changes:
-        if c.get("type") != "ETH_TRANSFER":
-            continue
-        eth_mirror_pool.append({
-            "from": c.get("from_address"),
-            "to": c.get("to_address"),
-            "value": abs(int(c.get("eth_value", 0))),
-            "step": c.get("step"),
-            "used": False,
-        })
 
     def _to_int_or_none(v):
         try:
@@ -97,12 +96,12 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
         except Exception:
             return None
 
-    def _match_eth_mirror(token_addr, user_addr, raw_val, erc20_step):
+    def _match_prior_wrap(token_addr, user_addr, raw_val, erc20_step):
         """
-        识别 ERC20 变化是否与 ETH 转移构成镜像：
-        - raw_val > 0: token_addr -> user 的 mint，需匹配 user -> token_addr 的 ETH
-        - raw_val < 0: user -> token_addr 的 burn，需匹配 token_addr -> user 的 ETH
-        命中后该 ERC20 变化应保留为 pending（mint/burn），不参与 ERC20 正负配对。
+        将 WETH 正变化与先前 user -> token 的等额 ETH 匹配为 wrap。
+
+        unwrap 在后续 ETH 转出到达时反向回看 WETH 负变化，
+        不在这里预览未来事件。
         """
         target = abs(raw_val)
         if target == 0:
@@ -118,12 +117,7 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
             if e["value"] != target:
                 continue
 
-            if raw_val > 0:
-                # wrap: user 交 ETH 给 token 合约，用户余额增加 token
-                direction_ok = (e["from"] == user_addr and e["to"] == token_addr)
-            else:
-                # unwrap: token 合约返 ETH 给 user，用户 token 余额减少
-                direction_ok = (e["from"] == token_addr and e["to"] == user_addr)
+            direction_ok = e["from"] == user_addr and e["to"] == token_addr
 
             if not direction_ok:
                 continue
@@ -150,16 +144,61 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
             "from": original_transfer[0],
             "to": original_transfer[1],
             "amount": original_value / (10 ** 18),
+            "amount_raw": abs(original_value),
             "token": "ETH",
             "token_addr": "ETH",
             "source_pcs": None,
             "source_steps": None,
         })
 
-    for c in all_changes:
+    def _change_step(change):
+        step = (
+            change.get("step")
+            if change.get("type") == "ETH_TRANSFER"
+            else change.get("SSTORE_step")
+        )
+        parsed = _to_int_or_none(step)
+        return parsed if parsed is not None else 10**30
+
+    # 以真实执行 step 为唯一时序；相同/缺失 step 保留原始顺序。
+    ordered_changes = [
+        change for _, change in sorted(
+            enumerate(all_changes),
+            key=lambda item: (_change_step(item[1]), item[0]),
+        )
+    ]
+
+    for c in ordered_changes:
         # -------- ETH --------
         if c["type"] == "ETH_TRANSFER":
-            formatted_val = abs(int(c["eth_value"])) / (10 ** 18)
+            raw_eth_value = abs(int(c["eth_value"]))
+            formatted_val = raw_eth_value / (10 ** 18)
+
+            # unwrap 的 WETH 减少先于 ETH 转出。只在已经执行的
+            # token 变化中找最近一笔，然后将它从普通 transfer 队列转为 burn。
+            token_addr = c.get("from_address")
+            eth_step = _to_int_or_none(c.get("step"))
+            unwrap_candidates = [
+                change for change in token_queues.get(token_addr, [])
+                if change.get("user") == c.get("to_address")
+                and change.get("value") == -raw_eth_value
+                and (
+                    eth_step is None
+                    or _to_int_or_none(change.get("source_steps", [None, None])[1]) is None
+                    or _to_int_or_none(change.get("source_steps", [None, None])[1]) <= eth_step
+                )
+            ]
+            unwrap_change = max(
+                unwrap_candidates,
+                key=lambda change: _to_int_or_none(
+                    change.get("source_steps", [None, None])[1]
+                ) or -1,
+                default=None,
+            )
+            if unwrap_change is not None:
+                token_queues[token_addr].remove(unwrap_change)
+                pending_erc20.append(unwrap_change)
+
             order_counter += 1
             paired.append({
                 "order": order_counter,
@@ -167,11 +206,20 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
                 "from": c["from_address"],
                 "to": c["to_address"],
                 "amount": formatted_val,
+                "amount_raw": abs(int(c["eth_value"])),
                 "token": "ETH",
                 "token_addr": "ETH",
                 "source_pcs": [c["pc"]],
                 "source_steps": [c["step"]],
             })
+            if unwrap_change is None:
+                eth_mirror_pool.append({
+                    "from": c.get("from_address"),
+                    "to": c.get("to_address"),
+                    "value": raw_eth_value,
+                    "step": c.get("step"),
+                    "used": False,
+                })
             continue
 
         # -------- ERC20 --------
@@ -203,7 +251,11 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
         }
 
         # 优先识别 ETH<->Token 镜像变化（例如 ETH<->WETH wrap/unwrap），命中则不进入普通配对队列
-        mirror_idx = _match_eth_mirror(token_addr, user, val, c.get("SSTORE_step"))
+        mirror_idx = (
+            _match_prior_wrap(token_addr, user, val, c.get("SSTORE_step"))
+            if val > 0
+            else None
+        )
         if mirror_idx is not None:
             pending_erc20.append(c_structured)
             continue
@@ -238,6 +290,7 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
                     "to_codecontract": receiver.get("codecontract_address"),
                     "to": receiver.get("user"),
                     "amount": formatted_val,
+                    "amount_raw": abs(curr["value"]),
                     "token": token_name,
                     "token_addr": token_addr,
                     "source_pcs": {
@@ -280,69 +333,6 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
     pending_erc20.sort(key=lambda x: x["order"])
     return paired, node_annotations, pending_erc20
 
-
-def detect_arbitrage(paired: list, pending_erc20: list = None) -> dict:
-    from collections import defaultdict
-
-    graph = defaultdict(list)
-
-    for e in paired:
-        frm = e.get("from")
-        to  = e.get("to")
-        tok = e["token"]
-        ord_= e["order"]
-        if frm and to and frm != to:
-            graph[frm].append((to, tok, ord_))
-
-    if pending_erc20:
-        for v in pending_erc20:
-            user       = v.get("user")
-            token_addr = v.get("token_addr")
-            tok        = v.get("token")
-            ord_       = v.get("order")
-            if not (user and token_addr and tok and ord_):
-                continue
-            if v["value"] > 0:
-                graph[token_addr].append((user, tok, ord_))
-            else:
-                graph[user].append((token_addr, tok, ord_))
-
-    node_arb_orders = defaultdict(set)
-
-    def dfs(start, current, path_edges, visited_tokens, path_edge_keys):
-        for (nxt, tok, ord_) in graph[current]:
-            edge_key = (current, nxt, ord_)
-
-            if nxt == start and len(path_edges) >= 2:
-                all_tokens = visited_tokens | {tok}
-                first_tok = path_edges[0][2]
-                if len(all_tokens) > 1 and tok == first_tok:
-                    cycle_orders = [o for (_, _, _, o) in path_edges] + [ord_]
-                    node_arb_orders[start].update(cycle_orders)
-
-            elif edge_key not in path_edge_keys and len(path_edges) < 10:
-                path_edge_keys.add(edge_key)
-                dfs(start, nxt,
-                    path_edges + [(current, nxt, tok, ord_)],
-                    visited_tokens | {tok},
-                    path_edge_keys)
-                path_edge_keys.discard(edge_key)
-
-    for node in list(graph.keys()):
-        dfs(node, node, [], set(), set())
-
-    seen = set()
-    unique_cycles = []
-    all_arb_orders = set()
-
-    for start_node, orders in node_arb_orders.items():
-        key = frozenset(orders)
-        if key not in seen:
-            seen.add(key)
-            unique_cycles.append(list(orders))
-            all_arb_orders.update(orders)
-
-    return {"cycles": unique_cycles, "arb_edge_orders": all_arb_orders}
 
 def compute_address_balances(paired: list, pending_erc20: list = None) -> dict:
     """
@@ -501,8 +491,8 @@ def render_asset_flow(paired, node_annotations, users_addresses,
     for p in sorted(paired, key=lambda x: x["order"]):
         src_id = get_merged_node_id(p["from"])
         tgt_id = get_merged_node_id(p["to"])
-        edge_fill = addr_color_map.get(p["token_addr"] if p["token"] != "ETH" else p["from"], "#E2E2E2")
-        edge_color = dark_accent(edge_fill, "#6B7280")
+        edge_fill = addr_color_map.get(p["token_addr"], "#E2E2E2")
+        edge_color = "#000000" if p["token"] == "ETH" else dark_accent(edge_fill, "#6B7280")
         amount_str = format_scientific_html(p["amount"])
         edge_label = f"({p['order']}) {p['token']}: {amount_str}"
         is_arb = arb_edge_orders and p["order"] in arb_edge_orders

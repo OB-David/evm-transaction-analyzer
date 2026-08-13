@@ -10,6 +10,7 @@ export interface CallTreeFrame extends CallTreeEntry {
 
 export interface CallTreeModel {
   totalCalls: number
+  rootAddress: string
   rootName: string
   rootCallIds: number[]
   frames: CallTreeFrame[]
@@ -63,6 +64,7 @@ export function buildCallTreeModel(mapping: CallTreePayload): CallTreeModel {
   const firstRoot = firstRootId === undefined ? null : frameById.get(firstRootId)
   return {
     totalCalls: frameById.size,
+    rootAddress: mapping.root.address,
     rootName: mapping.root.name || firstRoot?.from_name || 'Transaction root',
     rootCallIds,
     frames: [...frameById.values()],

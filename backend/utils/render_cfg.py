@@ -236,8 +236,15 @@ def addr_short(s: Any) -> str:
 def get_dark_accent(color: str | None, fallback: str = "#6B7280") -> str:
     if not color:
         return fallback
-    normalized = str(color).strip().lower()[:7]
-    return THEME_DARKS.get(normalized, fallback)
+    match = re.fullmatch(r"#([0-9a-fA-F]{6})(?:[0-9a-fA-F]{2})?", str(color).strip())
+    if not match:
+        return fallback
+    normalized = f"#{match.group(1).lower()}"
+    configured = THEME_DARKS.get(normalized)
+    if configured:
+        return configured
+    channels = [int(match.group(1)[offset:offset + 2], 16) for offset in (0, 2, 4)]
+    return "#" + "".join(f"{round(channel * 0.78):02X}" for channel in channels)
 
 def get_action_border_color() -> str:
     return "#DC2626"

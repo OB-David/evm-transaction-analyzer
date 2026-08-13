@@ -1,16 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { graphviz } from 'd3-graphviz'
 import {
   fetchAddressBalances,
   fetchArbitrageResult,
   fetchCallTreeEdgeLink,
   fetchBlockInformation,
   fetchCallTreeData,
-  fetchDotFile,
+  fetchTfgSvg,
   fetchEdgeLink,
   fetchLegendData,
   type AfgNavigationTarget,
+  type ArbitrageCycle,
   type BlockId,
   type CallTreeEdgeLink,
   type CallTreeEntry,
@@ -52,7 +52,6 @@ type PlaybackStep = {
   currentBlockId: BlockId | null
 }
 
-const dotContent = ref<string>('')
 const edgeLinks = ref<EdgeLink[]>([])
 const callTreeLinks = ref<CallTreeEdgeLink[]>([])
 const plainBlocks = ref<BlockInformation[]>([])
@@ -64,9 +63,11 @@ const linksLoading = ref(false)
 const mappingNotice = ref('')
 
 const graphContainer = ref<HTMLElement | null>(null)
-let graphvizInstance: any = null
+let disposeSvgViewport: (() => void) | null = null
+let resetSvgViewport: (() => void) | null = null
 let loadRequestId = 0
 let linkRequestId = 0
+let playbackDataRequestId = 0
 let playbackTimer: number | null = null
 let playbackRunId = 0
 let playbackTargetIndex: number | null = null
@@ -105,7 +106,9 @@ const playbackUnavailable = computed(() => (
 // 套利相关状态
 const isArbitrage = ref(false)
 const arbCycles = ref<number[][]>([])
+const detailedArbCycles = ref<ArbitrageCycle[]>([])
 const arbOrders = ref<Set<number>>(new Set())
+const activeCycleIndex = ref<number | null>(null)
 const arbShowOnly = ref(false)
 // 套利边经过的节点 title 集合
 const arbNodeTitles = ref<Set<string>>(new Set())
@@ -115,6 +118,25 @@ const addressBalances = ref<Record<string, Record<string, number>>>({})
 // display name(小写) -> 地址(小写) 的反向映射，用于节点名匹配
 const nameToAddress = ref<Record<string, string>>({})
 const nameToColor = ref<Record<string, string>>({})
+const tokenAddressToName = ref<Record<string, string>>({})
+
+const cycleCount = computed(() => arbCycles.value.length)
+const activeCycleOrders = computed(() => {
+  if (activeCycleIndex.value === null) return new Set(arbOrders.value)
+  return new Set(arbCycles.value[activeCycleIndex.value] || [])
+})
+const activeDetailedCycle = computed(() => {
+  if (activeCycleIndex.value === null) return null
+  return detailedArbCycles.value[activeCycleIndex.value] || null
+})
+const displayedArbitrageAsset = computed(() => {
+  if (cycleCount.value > 1 && activeCycleIndex.value === null) return ''
+  const cycle = activeDetailedCycle.value
+  if (!cycle) return 'Unknown token'
+  const path = cycle.token_address_path || []
+  const finalToken = cycle.arbitrage_token_address || path[path.length - 1]
+  return finalToken ? displayTokenAddress(finalToken) : 'Unknown token'
+})
 
 // tooltip 状态
 const tooltipVisible = ref(false)
@@ -126,20 +148,25 @@ const tooltipBalances = ref<Record<string, number>>({})
 watch(() => props.txHash, (newHash) => {
   loadRequestId += 1
   linkRequestId += 1
-  graphvizInstance?.destroy?.()
-  graphvizInstance = null
+  playbackDataRequestId += 1
+  disposeSvgViewport?.()
+  disposeSvgViewport = null
+  resetSvgViewport = null
   resetPlayback()
   if (newHash) {
     loadAfgData(newHash, props.cfgMode)
   } else {
     status.value = 'idle'
-    dotContent.value = ''
     edgeLinks.value = []
     callTreeLinks.value = []
     plainBlocks.value = []
     callTreeEntries.value = []
     if (graphContainer.value) graphContainer.value.innerHTML = ''
   }
+}, { immediate: true })
+
+watch([() => props.playbackReady, () => props.txHash], ([ready, txHash]) => {
+  if (ready && txHash) void loadPlaybackSupportData(txHash)
 }, { immediate: true })
 
 watch(() => props.cfgMode, async (newMode) => {
@@ -188,38 +215,42 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
 
   isArbitrage.value = false
   arbCycles.value = []
+  detailedArbCycles.value = []
   arbOrders.value = new Set()
+  activeCycleIndex.value = null
   arbShowOnly.value = false
   arbNodeTitles.value = new Set()
   addressBalances.value = {}
   nameToAddress.value = {}   // ← 重置
   nameToColor.value = {}
+  tokenAddressToName.value = {}
 
   try {
-    const [dot, links, callLinks, arb, balances, legend, blockInformation, callTree] = await Promise.all([
-      fetchDotFile(txHash),
+    const [svg, links, callLinks, arb, balances, legend] = await Promise.all([
+      fetchTfgSvg(txHash),
       fetchEdgeLink(txHash, cfgMode),
       fetchCallTreeEdgeLink(txHash),
       fetchArbitrageResult(txHash),
       fetchAddressBalances(txHash),
       fetchLegendData(txHash),
-      fetchBlockInformation(txHash, 'plain'),
-      fetchCallTreeData(txHash),
     ])
     if (requestId !== loadRequestId || props.txHash !== txHash) return
 
-    dotContent.value = dot
     edgeLinks.value = props.cfgMode === cfgMode
       ? links
       : await fetchEdgeLink(txHash, props.cfgMode)
     callTreeLinks.value = callLinks
-    plainBlocks.value = Object.values(blockInformation)
-    callTreeEntries.value = callTree.calls
     if (requestId !== loadRequestId || props.txHash !== txHash) return
 
     isArbitrage.value = arb.is_arbitrage
-    arbCycles.value = arb.cycles
-    arbOrders.value = new Set(arb.arb_edge_orders)
+    detailedArbCycles.value = arb.selected_cycles || []
+    arbCycles.value = detailedArbCycles.value.length > 0
+      ? detailedArbCycles.value.map(cycle => cycle.transfer_edge_orders)
+      : arb.cycles
+    arbOrders.value = new Set(
+      arb.arb_edge_orders.length > 0 ? arb.arb_edge_orders : arbCycles.value.flat(),
+    )
+    activeCycleIndex.value = arbCycles.value.length === 1 ? 0 : null
 
     // 地址统一转小写
     addressBalances.value = Object.fromEntries(
@@ -229,6 +260,7 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
     // ← 建立 displayName -> address 反向映射
     const nameMap: Record<string, string> = {}
     const colorMap: Record<string, string> = {}
+    const tokenNameMap: Record<string, string> = { eth: 'ETH' }
     const allEntries = [
       ...legend.user_addresses,
       ...legend.erc20_tokens,
@@ -244,9 +276,13 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
     }
     nameToAddress.value = nameMap
     nameToColor.value = colorMap
+    for (const entry of legend.erc20_tokens) {
+      if (entry.address && entry.name) tokenNameMap[entry.address.toLowerCase()] = entry.name
+    }
+    tokenAddressToName.value = tokenNameMap
 
     await nextTick()
-    await renderGraph(dot, requestId)
+    await renderGraph(svg, requestId)
     if (requestId === loadRequestId) status.value = 'success'
   } catch (e: any) {
     if (requestId !== loadRequestId) return
@@ -255,36 +291,104 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
   }
 }
 
-async function renderGraph(dot: string, requestId: number) {
-  if (!graphContainer.value || !dot) return
+async function loadPlaybackSupportData(txHash: string) {
+  const requestId = ++playbackDataRequestId
+  try {
+    const [blockInformation, callTree] = await Promise.all([
+      fetchBlockInformation(txHash, 'plain'),
+      fetchCallTreeData(txHash),
+    ])
+    if (requestId !== playbackDataRequestId || props.txHash !== txHash) return
+    plainBlocks.value = Object.values(blockInformation)
+    callTreeEntries.value = callTree.calls
+    if (status.value === 'success') initializePlayback()
+  } catch (e) {
+    if (requestId === playbackDataRequestId) {
+      console.warn('Failed to load AFG playback support data:', e)
+    }
+  }
+}
+
+async function renderGraph(svgSource: string, requestId: number) {
+  if (!graphContainer.value || !svgSource) return
 
   try {
     const container = graphContainer.value
-
-    graphvizInstance = graphviz(container, {
-      useWorker: true,
-      zoom: true,
-      fit: true,
-      width: container.clientWidth,
-      height: container.clientHeight,
-    })
-
-    await new Promise<void>((resolve, reject) => {
-      try {
-        graphvizInstance
-          .renderDot(dot)
-          .on('end', () => {
-            if (requestId === loadRequestId) attachInteractivity()
-            resolve()
-          })
-      } catch (e) {
-        reject(e)
-      }
-    })
+    disposeSvgViewport?.()
+    container.innerHTML = svgSource
+    const svg = container.querySelector<SVGSVGElement>('svg')
+    if (!svg) throw new Error('TFG SVG is missing its root element')
+    const viewport = installSvgViewport(svg)
+    disposeSvgViewport = viewport.dispose
+    resetSvgViewport = viewport.reset
+    if (requestId === loadRequestId) attachInteractivity()
   } catch (e) {
     console.error('Graphviz render error:', e)
     errorMsg.value = 'Failed to render graph'
     status.value = 'error'
+  }
+}
+
+function installSvgViewport(svg: SVGSVGElement) {
+  const values = (svg.getAttribute('viewBox') || '').split(/\s+/).map(Number)
+  const base = values.length === 4 && values.every(Number.isFinite)
+    ? values as [number, number, number, number]
+    : [0, 0, Number(svg.getAttribute('width')) || 1, Number(svg.getAttribute('height')) || 1] as [number, number, number, number]
+  let current: [number, number, number, number] = [...base]
+  let drag: { x: number; y: number; viewBox: [number, number, number, number] } | null = null
+
+  const apply = () => svg.setAttribute('viewBox', current.join(' '))
+  const reset = () => {
+    current = [...base]
+    apply()
+  }
+  const onWheel = (event: WheelEvent) => {
+    event.preventDefault()
+    const rect = svg.getBoundingClientRect()
+    if (!rect.width || !rect.height) return
+    const scale = Math.exp(event.deltaY * 0.001)
+    const x = current[0] + (event.clientX - rect.left) / rect.width * current[2]
+    const y = current[1] + (event.clientY - rect.top) / rect.height * current[3]
+    const width = Math.min(base[2] * 8, Math.max(base[2] * 0.08, current[2] * scale))
+    const height = width * base[3] / base[2]
+    const ratioX = (x - current[0]) / current[2]
+    const ratioY = (y - current[1]) / current[3]
+    current = [x - ratioX * width, y - ratioY * height, width, height]
+    apply()
+  }
+  const onPointerDown = (event: PointerEvent) => {
+    if (event.button !== 0) return
+    if ((event.target as Element).closest('.edge, .node')) return
+    drag = { x: event.clientX, y: event.clientY, viewBox: [...current] }
+    svg.setPointerCapture(event.pointerId)
+  }
+  const onPointerMove = (event: PointerEvent) => {
+    if (!drag) return
+    const rect = svg.getBoundingClientRect()
+    current = [
+      drag.viewBox[0] - (event.clientX - drag.x) / rect.width * drag.viewBox[2],
+      drag.viewBox[1] - (event.clientY - drag.y) / rect.height * drag.viewBox[3],
+      drag.viewBox[2],
+      drag.viewBox[3],
+    ]
+    apply()
+  }
+  const onPointerUp = () => { drag = null }
+  svg.addEventListener('wheel', onWheel, { passive: false })
+  svg.addEventListener('pointerdown', onPointerDown)
+  svg.addEventListener('pointermove', onPointerMove)
+  svg.addEventListener('pointerup', onPointerUp)
+  svg.addEventListener('pointercancel', onPointerUp)
+  reset()
+  return {
+    reset,
+    dispose: () => {
+      svg.removeEventListener('wheel', onWheel)
+      svg.removeEventListener('pointerdown', onPointerDown)
+      svg.removeEventListener('pointermove', onPointerMove)
+      svg.removeEventListener('pointerup', onPointerUp)
+      svg.removeEventListener('pointercancel', onPointerUp)
+    },
   }
 }
 
@@ -329,29 +433,19 @@ function attachInteractivity() {
     harmonizeEdgeAppearance(edgeEl)
 
     const textEls = edge.querySelectorAll('text')
-    let edgeId: number | null = null
-    textEls.forEach(t => {
-      if (edgeId !== null) return
-      const m = (t.textContent || '').match(/\((\d+)\)/)
-      if (m) edgeId = parseInt(m[1]!, 10)
-    })
-
-    if (edgeId !== null && arbOrders.value.has(edgeId)) {
-      edgeEl.classList.add('arb-highlight')
-
-      // 收集套利边的源节点和目标节点 title，用于 flash 节点
-      const edgeTitleEl = edge.querySelector('title')
-      const edgeTitle = edgeTitleEl?.textContent?.trim() || ''
-      // graphviz 边 title 格式通常为 "SrcNode->TgtNode"
-      const parts = edgeTitle.split('->')
-      parts.forEach(p => {
-        const t = p.trim()
-        if (t) arbNodeTitles.value.add(t)
+    const machineOrder = Number(edgeEl.dataset.edgeOrder)
+    let edgeId: number | null = Number.isFinite(machineOrder) ? machineOrder : null
+    if (edgeId === null) {
+      textEls.forEach(t => {
+        if (edgeId !== null) return
+        const m = (t.textContent || '').match(/\((\d+)\)/)
+        if (m) edgeId = parseInt(m[1]!, 10)
       })
     }
 
     if (edgeId !== null) {
       const capturedId = edgeId
+      edgeEl.setAttribute('data-edge-order', String(edgeId))
 
       edgeEl.classList.add('interactive')
 
@@ -374,6 +468,10 @@ function attachInteractivity() {
 
       const polygons = edge.querySelectorAll('polygon')
       polygons.forEach(el => {
+        if (el.getAttribute('pointer-events') === 'none') {
+          el.setAttribute('fill', 'transparent')
+          el.setAttribute('pointer-events', 'all')
+        }
         el.addEventListener('click', (e) => {
           e.stopPropagation()
           handleEdgeClick(capturedId)
@@ -384,11 +482,13 @@ function attachInteractivity() {
     }
   })
 
-  applyArbShowFilter()
+  applyArbCycleStyles()
   initializePlayback()
 }
 
 function getEdgeOrder(edge: Element): number | null {
+  const machineOrder = Number((edge as HTMLElement).dataset.edgeOrder)
+  if (Number.isFinite(machineOrder)) return machineOrder
   const label = Array.from(edge.querySelectorAll('text'))
     .map(text => text.textContent || '')
     .join(' ')
@@ -731,7 +831,7 @@ function harmonizeNodeAppearance(nodeEl: SVGElement) {
 function harmonizeEdgeAppearance(edgeEl: SVGElement) {
   const edgeText = Array.from(edgeEl.querySelectorAll<SVGTextElement>('text'))
   const label = edgeText.map(el => el.textContent || '').join(' ').trim()
-  const tokenName = inferTokenNameFromLabel(label)
+  const tokenName = inferTokenNameFromLabel(edgeText, label)
   const accent = getDarkAccentForName(tokenName)
   const textColor = getThemeDarkTextColor(tokenName)
 
@@ -743,7 +843,7 @@ function harmonizeEdgeAppearance(edgeEl: SVGElement) {
     }
   })
 
-  edgeEl.querySelectorAll<SVGPolygonElement>('polygon').forEach((polygon) => {
+  edgeEl.querySelectorAll<SVGPolygonElement>('polygon:not([pointer-events="none"])').forEach((polygon) => {
     polygon.setAttribute('stroke', accent)
     polygon.setAttribute('fill', accent)
     polygon.style.stroke = accent
@@ -756,7 +856,10 @@ function harmonizeEdgeAppearance(edgeEl: SVGElement) {
   })
 }
 
-function inferTokenNameFromLabel(label: string): string | null {
+function inferTokenNameFromLabel(texts: SVGTextElement[], label: string): string | null {
+  const firstLine = texts[0]?.textContent?.trim() || ''
+  const firstLineMatch = firstLine.match(/^\(\d+\)\s+(.+)$/)
+  if (firstLineMatch?.[1]) return firstLineMatch[1].trim()
   const match = label.match(/\)\s+(.+?)(?:\(|:)/)
   return match?.[1]?.trim() || null
 }
@@ -764,6 +867,7 @@ function inferTokenNameFromLabel(label: string): string | null {
 function getDarkAccentForName(name: string | null) {
   if (!name) return '#6B7280'
   const lower = name.toLowerCase()
+  if (lower === 'eth') return '#000000'
   return getDarkAccentForColor(nameToColor.value[lower], '#6B7280')
 }
 
@@ -771,6 +875,7 @@ function getThemeDarkTextColor(name: string | null) {
   if (!name) return THEME_DARK_COLORS[THEME_DARK_COLORS.length - 1] ?? '#6B7280'
 
   const lower = name.toLowerCase()
+  if (lower === 'eth') return '#000000'
   const mappedColor = nameToColor.value[lower]
   const resolved = getDarkAccentForColor(mappedColor, '')
   if (resolved) return resolved
@@ -830,27 +935,70 @@ function formatAmount(val: number): string {
   return sign + val.toExponential(3)
 }
 
-function toggleArbShowOnly() {
-  arbShowOnly.value = !arbShowOnly.value
-  applyArbShowFilter()
+function displayTokenAddress(address: string): string {
+  const normalized = address.toLowerCase()
+  const name = tokenAddressToName.value[normalized]
+  if (name) return name
+  if (normalized === 'eth') return 'ETH'
+  return address.length > 14 ? `${address.slice(0, 8)}…${address.slice(-4)}` : address
 }
 
-function applyArbShowFilter() {
+function selectCycle(index: number | null) {
+  activeCycleIndex.value = index
+  selectedEdgeId.value = null
+  mappingNotice.value = ''
+  applySelectedEdgeStyle()
+  emit('graph-navigate', null)
+  applyArbCycleStyles()
+  nextTick(() => fitGraphToViewport())
+}
+
+function previousCycle() {
+  if (cycleCount.value === 0) return
+  const current = activeCycleIndex.value ?? 0
+  selectCycle((current - 1 + cycleCount.value) % cycleCount.value)
+}
+
+function nextCycle() {
+  if (cycleCount.value === 0) return
+  const current = activeCycleIndex.value ?? -1
+  selectCycle((current + 1) % cycleCount.value)
+}
+
+function toggleArbShowOnly() {
+  arbShowOnly.value = !arbShowOnly.value
+  activeCycleIndex.value = cycleCount.value === 1 ? 0 : null
+  applyArbCycleStyles()
+}
+
+function applyArbCycleStyles() {
   if (!graphContainer.value) return
   const svg = graphContainer.value.querySelector('svg')
   if (!svg) return
 
   const showOnly = arbShowOnly.value && isArbitrage.value
+  const highlightedOrders = activeCycleOrders.value
+  const highlightedNodes = new Set<string>()
 
   svg.querySelectorAll('.edge').forEach((edgeEl) => {
-    const keep = edgeEl.classList.contains('arb-highlight')
+    const order = Number((edgeEl as HTMLElement).dataset.edgeOrder)
+    const keep = Number.isFinite(order) && highlightedOrders.has(order)
+    edgeEl.classList.toggle('arb-highlight', keep)
     edgeEl.classList.toggle('arb-muted', showOnly && !keep)
+    if (!keep) return
+    const edgeTitle = edgeEl.querySelector('title')?.textContent?.trim() || ''
+    edgeTitle.split('->').forEach(part => {
+      const title = part.trim()
+      if (title) highlightedNodes.add(title)
+    })
   })
+
+  arbNodeTitles.value = highlightedNodes
 
   svg.querySelectorAll('.node').forEach(nodeEl => {
     const titleEl = nodeEl.querySelector('title')
     const nodeTitle = titleEl?.textContent?.trim() || ''
-    const keep = arbNodeTitles.value.has(nodeTitle)
+    const keep = highlightedNodes.has(nodeTitle)
     nodeEl.classList.toggle('arb-muted', showOnly && !keep)
   })
 }
@@ -919,20 +1067,17 @@ function navigateToCfgForEdge(edgeId: number) {
 function applySelectedEdgeStyle() {
   const svg = graphContainer.value?.querySelector('svg')
   svg?.querySelectorAll('.edge').forEach((edge) => {
-    const match = Array.from(edge.querySelectorAll('text'))
-      .map(text => text.textContent || '')
-      .join(' ')
-      .match(/\((\d+)\)/)
-    edge.classList.toggle('selected', Number(match?.[1]) === selectedEdgeId.value)
+    edge.classList.toggle('selected', getEdgeOrder(edge) === selectedEdgeId.value)
   })
 }
 
 function fitGraphToViewport() {
-  graphvizInstance?.resetZoom?.('fit-graph')
+  resetSvgViewport?.()
 }
 
 onBeforeUnmount(() => {
   stopPlayback()
+  disposeSvgViewport?.()
 })
 </script>
 
@@ -994,11 +1139,45 @@ onBeforeUnmount(() => {
       />
     </div>
 
-    <!-- 套利 badge -->
-    <div v-if="status === 'success' && isArbitrage" class="arb-badge">
-      <span class="arb-icon">⚠</span>
-      Arbitrage detected — {{ arbCycles.length }} cycle(s)
-      <button class="arb-btn" :class="{ active: arbShowOnly }" @click="toggleArbShowOnly">show</button>
+    <div
+      v-if="status === 'success' && isArbitrage"
+      class="arb-circle-controls"
+      role="group"
+      aria-label="Arbitrage cycle controls"
+    >
+      <button
+        type="button"
+        class="arb-circle-button"
+        :class="{ active: arbShowOnly }"
+        :aria-pressed="arbShowOnly"
+        @click="toggleArbShowOnly"
+      >
+        <span class="arb-circle-icon" aria-hidden="true">↻</span>
+        Arbitrage circle
+      </button>
+
+      <template v-if="arbShowOnly && cycleCount > 1">
+        <button
+          type="button"
+          class="arb-icon-button"
+          aria-label="Previous arbitrage cycle"
+          title="Previous cycle"
+          @click="previousCycle"
+        >‹</button>
+        <button
+          type="button"
+          class="arb-icon-button"
+          aria-label="Next arbitrage cycle"
+          title="Next cycle"
+          @click="nextCycle"
+        >›</button>
+        <span v-if="activeCycleIndex !== null" class="arb-cycle-position" aria-live="polite">
+          {{ activeCycleIndex + 1 }}/{{ cycleCount }}
+        </span>
+      </template>
+      <span v-if="displayedArbitrageAsset" class="arb-token" aria-live="polite">
+        Token: <strong>{{ displayedArbitrageAsset }}</strong>
+      </span>
     </div>
 
     <div v-if="isAnalyzing || status === 'loading'" class="status-overlay">
@@ -1055,6 +1234,8 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .panel-label {
@@ -1068,22 +1249,15 @@ onBeforeUnmount(() => {
   z-index: 10;
 }
 
-/* 套利 badge */
-.arb-badge {
+.arb-circle-controls {
   position: absolute;
   top: 36px;
   right: 8px;
   z-index: 20;
   display: flex;
   align-items: center;
-  gap: 6px;
-  background: rgba(220, 80, 30, 0.12);
-  border: 1px solid rgba(220, 80, 30, 0.5);
-  border-radius: 6px;
-  padding: 3px 10px;
-  font-size: 11px;
-  color: #dc501e;
-  white-space: nowrap;
+  gap: 5px;
+  max-width: calc(100% - 16px);
 }
 
 .graph-actions {
@@ -1162,28 +1336,84 @@ onBeforeUnmount(() => {
   text-align: center;
 }
 
-.arb-icon {
-  font-size: 12px;
-}
-
-.arb-btn {
-  background: rgba(220, 80, 30, 0.15);
-  border: 1px solid rgba(220, 80, 30, 0.4);
-  border-radius: 4px;
-  color: #dc501e;
+.arb-circle-button,
+.arb-icon-button {
+  height: 28px;
+  border: 1px solid rgba(194, 65, 12, 0.38);
+  border-radius: 5px;
+  color: #9a3412;
+  background: rgba(255, 247, 237, 0.96);
   font-size: 10px;
-  padding: 1px 7px;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 150ms ease, border-color 150ms ease;
+  box-shadow: 0 2px 8px rgba(124, 45, 18, 0.1);
 }
 
-.arb-btn:hover {
-  background: rgba(220, 80, 30, 0.28);
+.arb-circle-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
-.arb-btn.active {
-  background: rgba(220, 80, 30, 0.4);
-  border-color: rgba(220, 80, 30, 0.65);
+.arb-circle-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+
+.arb-icon-button {
+  width: 28px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.arb-icon-button:hover:not(:disabled),
+.arb-circle-button:hover,
+.arb-circle-button.active {
+  color: #7c2d12;
+  background: rgba(255, 237, 213, 0.98);
+  border-color: rgba(194, 65, 12, 0.72);
+}
+
+.arb-icon-button:focus-visible,
+.arb-circle-button:focus-visible {
+  outline: 2px solid #c2410c;
+  outline-offset: 2px;
+}
+
+.arb-icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+}
+
+.arb-cycle-position {
+  min-width: 27px;
+  color: #7c2d12;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.arb-token {
+  max-width: 150px;
+  padding: 5px 8px;
+  overflow: hidden;
+  color: #9a3412;
+  background: rgba(255, 247, 237, 0.96);
+  border: 1px solid rgba(194, 65, 12, 0.28);
+  border-radius: 5px;
+  box-shadow: 0 2px 8px rgba(124, 45, 18, 0.1);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arb-token strong {
+  color: #431407;
 }
 
 .afg-container {
@@ -1286,7 +1516,7 @@ onBeforeUnmount(() => {
 
 .graph-viewport :deep(.edge.arb-muted),
 .graph-viewport :deep(.node.arb-muted) {
-  opacity: 0.15;
+  opacity: 0;
 }
 
 .graph-viewport :deep(.edge.arb-muted .hit-area),

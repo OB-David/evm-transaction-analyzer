@@ -99,6 +99,7 @@ const treeViewBox = ref('0 0 720 320')
 const popupRef = ref<HTMLElement | null>(null)
 const popupPosition = ref({ left: 12, top: 12 })
 const popupAnchor = ref<{ x: number; y: number } | null>(null)
+const popupVisible = ref(false)
 const signaturesExpanded = ref(false)
 const calldataExpanded = ref(false)
 const showEdgeLegend = ref(false)
@@ -143,18 +144,17 @@ const selectedFrame = computed(() => {
 })
 
 const legendLookup = computed(() => {
-  const entryByName = new Map<string, { color?: string }>()
-  const tokenNames = new Set<string>()
-  const normalize = (name: string) => name.trim().toLowerCase()
+  const entryByAddress = new Map<string, { color?: string }>()
+  const tokenAddresses = new Set<string>()
   const legend = legendData.value
 
   if (legend) {
     for (const entry of [...legend.erc20_tokens, ...legend.normal_contracts, ...legend.user_addresses]) {
-      entryByName.set(normalize(entry.name), entry)
+      entryByAddress.set(normalizeAddress(entry.address), entry)
     }
-    legend.erc20_tokens.forEach(entry => tokenNames.add(normalize(entry.name)))
+    legend.erc20_tokens.forEach(entry => tokenAddresses.add(normalizeAddress(entry.address)))
   }
-  return { entryByName, tokenNames }
+  return { entryByAddress, tokenAddresses }
 })
 
 const layout = computed(() => {
@@ -596,7 +596,7 @@ function toggleRoot() {
 }
 
 function handleRootClick() {
-  clearSelection()
+  closePopup()
 }
 
 function handleNodeClick(frame: CallTreeFrame, event?: MouseEvent) {
@@ -606,6 +606,7 @@ function handleNodeClick(frame: CallTreeFrame, event?: MouseEvent) {
   }
 
   selectedCallId.value = frame.call_id
+  popupVisible.value = true
   const containerRect = sequenceContainer.value?.getBoundingClientRect()
   if (containerRect && event) {
     popupAnchor.value = {
@@ -626,7 +627,7 @@ function handleNodeClick(frame: CallTreeFrame, event?: MouseEvent) {
 function updatePopupPosition() {
   if (!popupAnchor.value || !popupRef.value || !sequenceContainer.value) return
   const containerRect = sequenceContainer.value.getBoundingClientRect()
-  const popupWidth = popupRef.value.offsetWidth || 380
+  const popupWidth = popupRef.value.offsetWidth || 200
   const popupHeight = popupRef.value.offsetHeight || 300
   const margin = 12
   let left = popupAnchor.value.x + 14
@@ -643,8 +644,13 @@ function updatePopupPosition() {
 
 function clearSelection(shouldEmit = true) {
   selectedCallId.value = null
+  popupVisible.value = false
   popupAnchor.value = null
   if (shouldEmit) emit('sequence-select', null)
+}
+
+function closePopup() {
+  popupVisible.value = false
 }
 
 function toggleSignatures() {
@@ -659,30 +665,30 @@ function toggleCalldata() {
   nextTick(updatePopupPosition)
 }
 
-function normalizeName(name: string): string {
-  return name.trim().toLowerCase()
+function normalizeAddress(address: string): string {
+  return address.trim().toLowerCase()
 }
 
 function isToken(frame: CallTreeFrame): boolean {
-  return legendLookup.value.tokenNames.has(normalizeName(frame.to_name))
+  return legendLookup.value.tokenAddresses.has(normalizeAddress(frame.to_address))
 }
 
-function colorForName(name: string): string | undefined {
-  return legendLookup.value.entryByName.get(normalizeName(name))?.color
+function colorForAddress(address: string): string | undefined {
+  return legendLookup.value.entryByAddress.get(normalizeAddress(address))?.color
 }
 
-function fillForName(name: string): string {
-  return getFillColorForColor(colorForName(name), '#E2E2E2')
+function fillForAddress(address: string): string {
+  return getFillColorForColor(colorForAddress(address), '#E2E2E2')
 }
 
 function strokeForFrame(frame: CallTreeFrame): string {
   if (frame.exit_op.toUpperCase() === 'REVERT') return '#C14A00'
-  return getDarkAccentForColor(colorForName(frame.to_name), '#7B8794')
+  return getDarkAccentForColor(colorForAddress(frame.to_address), '#7B8794')
 }
 
 function rootStroke(): string {
   if (!model.value) return '#7B8794'
-  return getDarkAccentForColor(colorForName(model.value.rootName), '#7B8794')
+  return getDarkAccentForColor(colorForAddress(model.value.rootAddress), '#7B8794')
 }
 
 function nodeTextLeft(frame: CallTreeFrame): number {
@@ -833,7 +839,7 @@ function edgeColor(edge: TreeEdgeLayout): string {
     </div>
 
     <div v-else-if="status === 'success' && model" ref="sequenceContainer" class="sequence-container">
-      <div ref="graphViewport" class="graph-viewport" @click.self="clearSelection()">
+      <div ref="graphViewport" class="graph-viewport" @click.self="closePopup">
         <svg
           ref="treeSvg"
           :class="['call-tree-svg', { 'playback-active': props.playbackActive }]"
@@ -841,7 +847,7 @@ function edgeColor(edge: TreeEdgeLayout): string {
           height="100%"
           :viewBox="treeViewBox"
           aria-label="Foldable contract call tree"
-          @click.self="clearSelection()"
+          @click.self="closePopup"
         >
           <defs>
             <marker id="call-tree-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
@@ -913,7 +919,7 @@ function edgeColor(edge: TreeEdgeLayout): string {
                 :rx="NODE_WIDTH / 2"
                 :ry="NODE_HEIGHT / 2"
                 class="node-shape"
-                :fill="fillForName(node.frame.to_name)"
+                :fill="fillForAddress(node.frame.to_address)"
                 :stroke="strokeForFrame(node.frame)"
               />
               <rect
@@ -922,7 +928,7 @@ function edgeColor(edge: TreeEdgeLayout): string {
                 :height="NODE_HEIGHT"
                 rx="3"
                 class="node-shape"
-                :fill="fillForName(node.frame.to_name)"
+                :fill="fillForAddress(node.frame.to_address)"
                 :stroke="strokeForFrame(node.frame)"
               />
               <title>{{ node.frame.from_name }} → {{ node.frame.to_name }}</title>
@@ -966,7 +972,7 @@ function edgeColor(edge: TreeEdgeLayout): string {
                 :height="NODE_HEIGHT"
                 rx="3"
                 class="node-shape root-shape"
-                :fill="fillForName(model.rootName)"
+                :fill="fillForAddress(model.rootAddress)"
                 :stroke="rootStroke()"
               />
               <text x="22" y="16" class="node-order">#0</text>
@@ -1006,7 +1012,7 @@ function edgeColor(edge: TreeEdgeLayout): string {
       </div>
 
       <aside
-        v-if="selectedFrame"
+        v-if="selectedFrame && popupVisible"
         ref="popupRef"
         class="call-popup"
         :style="{ left: `${popupPosition.left}px`, top: `${popupPosition.top}px` }"
@@ -1018,7 +1024,7 @@ function edgeColor(edge: TreeEdgeLayout): string {
             <div class="popup-kicker">CALL #{{ selectedFrame.call_id }} · DEPTH {{ selectedFrame.depth }}</div>
             <div class="popup-title">{{ selectedFrame.from_name }} → {{ selectedFrame.to_name }}</div>
           </div>
-          <button type="button" class="close-btn" aria-label="Close call details" @click="clearSelection()">
+          <button type="button" class="close-btn" aria-label="Close call details" @click="closePopup">
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
           </button>
         </div>
@@ -1342,7 +1348,7 @@ function edgeColor(edge: TreeEdgeLayout): string {
 .call-popup {
   position: absolute;
   z-index: 30;
-  width: min(320px, calc(100% - 24px));
+  width: min(200px, calc(100% - 24px));
   max-height: min(480px, calc(100% - 24px));
   display: flex;
   flex-direction: column;

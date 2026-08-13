@@ -201,6 +201,36 @@ class TraceFormatter:
             logger.debug(f"获取字节码 RPC 失败: {addr_checksum} - {e}")
             return b""
 
+    @staticmethod
+    def _normalize_token_text(value: object) -> str:
+        """兼容现代 string 和早期 bytes32 形式的 ERC20 元数据。"""
+        if isinstance(value, (bytes, bytearray)):
+            value = bytes(value).decode("utf-8", errors="replace")
+        # Some proxy logic contracts return a string made only of NUL padding.
+        # Python's str.strip() does not remove NULs, so such a value otherwise
+        # looks non-empty and becomes invisible text in legend/call-tree JSON.
+        return str(value).strip().strip("\x00").strip()
+
+    def _read_token_text(self, checksum_addr: str, function_name: str) -> str:
+        for output_type in ("string", "bytes32"):
+            abi = [{
+                "constant": True,
+                "inputs": [],
+                "name": function_name,
+                "outputs": [{"name": "", "type": output_type}],
+                "stateMutability": "view",
+                "type": "function",
+            }]
+            try:
+                contract = self.web3.eth.contract(address=checksum_addr, abi=abi)
+                value = getattr(contract.functions, function_name)().call()
+                text = self._normalize_token_text(value)
+                if text:
+                    return text
+            except Exception:
+                continue
+        return ""
+
 
     # 识别ERC20 token合约，包括逻辑合约识别
     def identify_erc20_contracts(self, initial_contracts: Set[str], steps: List[StandardizedStep]) -> Tuple[Dict[str, str], Set[str]]:
@@ -213,7 +243,6 @@ class TraceFormatter:
 
         # 标准 ERC20 最小 ABI
         ERC20_MINI_ABI = [
-            {"constant":True,"inputs":[],"name":"name","outputs":[{"name":"","type":"string"}],"stateMutability":"view","type":"function"},
             {"constant":True,"inputs":[],"name":"decimals","outputs":[{"name":"","type":"uint8"}],"stateMutability":"view","type":"function"},
         ]
 
@@ -239,7 +268,10 @@ class TraceFormatter:
                 # --------------------------
                 # 1. 基础 ERC20 检查
                 # --------------------------
-                raw_name = token_contract.functions.name().call()
+                token_name = (
+                    self._read_token_text(checksum_addr, "name")
+                    or self._read_token_text(checksum_addr, "symbol")
+                )
                 decimals = token_contract.functions.decimals().call()
 
                 # 必须是合法小数位
@@ -247,7 +279,6 @@ class TraceFormatter:
                     continue
 
                 # 【修复空名称问题】严格过滤：名称为空/空白 → 不识别为代币
-                token_name = str(raw_name).strip()
                 if not token_name:
                     logger.debug(f"[{norm_addr}] 代币名称为空，跳过")
                     continue

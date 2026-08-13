@@ -26,6 +26,7 @@ from utils.extract_token_changes import (
     detect_arbitrage,
     compute_address_balances,
 )
+from utils.swap_routes import build_arbitrage_artifact, build_swap_legs_artifact
 from utils.indentify_swap import filter_to_file
 from utils.plain_cfg_llm import PLAIN_SEMANTICS_FILENAME, write_plain_semantics_artifact
 from utils.sequence_diagram import build_refined_hierarchical_trace
@@ -185,7 +186,7 @@ def run(tx_hash: str):
     with timings.measure("map_afg_to_call_tree"):
         edge_link_call_tree = afg_to_call_tree(pairs, pending_erc20, tree_data)
     with timings.measure("detect_arbitrage_candidates"):
-        arb_result = detect_arbitrage(pairs, pending_erc20)
+        arb_result = detect_arbitrage(pairs, pending_erc20, tree_data)
     with timings.measure("compute_address_balances"):
         addr_balances = compute_address_balances(pairs, pending_erc20)
 
@@ -208,11 +209,10 @@ def run(tx_hash: str):
 
         # Arbitrage & Balances
         with open(os.path.join(result_dir, "arbitrage.json"), "w", encoding="utf-8") as f:
-            json.dump({
-                "is_arbitrage": len(arb_result["cycles"]) > 0,
-                "cycles": arb_result["cycles"],
-                "arb_edge_orders": list(arb_result["arb_edge_orders"])
-            }, f, indent=2, ensure_ascii=False)
+            json.dump(build_arbitrage_artifact(arb_result), f, indent=2, ensure_ascii=False)
+
+        with open(os.path.join(result_dir, "swap_legs.json"), "w", encoding="utf-8") as f:
+            json.dump(build_swap_legs_artifact(arb_result), f, indent=2, ensure_ascii=False)
 
         with open(os.path.join(result_dir, "address_balances.json"), "w", encoding="utf-8") as f:
             json.dump(addr_balances, f, indent=2, ensure_ascii=False)
@@ -254,17 +254,41 @@ def run(tx_hash: str):
         plain_blocks_map = cfg_constructor.build_pcfg_blocks_information(plain_cfg, standardized_trace)
         with open(plain_blocks_path, "w", encoding="utf-8") as f:
             json.dump(plain_blocks_map, f, indent=2, ensure_ascii=False)
-        write_plain_semantics_artifact(
-            os.path.join(result_dir, PLAIN_SEMANTICS_FILENAME),
-            standardized_trace["steps"],
-            plain_blocks_map,
-        )
         filter_to_file(plain_blocks_path, os.path.join(result_dir, "swap_in_pcfg.json"))
 
+    # The graph contract is complete at this point. Plain-block LLM semantics
+    # are an optional warm cache and must never delay graph availability.
     timings.write(complete=True)
     emit_analysis_stage("complete")
-
     print(f"RESULT_DIR={os.path.abspath(result_dir)}")
+    _warm_plain_semantics(result_dir, standardized_trace["steps"], plain_blocks_map)
+
+
+def _warm_plain_semantics(result_dir: str, steps: list[Any], plain_blocks_map: Dict[str, Any]) -> None:
+    """Build click-only LLM context after graph completion, at lower priority."""
+    semantics_path = os.path.join(result_dir, PLAIN_SEMANTICS_FILENAME)
+    temp_path = f"{semantics_path}.tmp"
+    try:
+        if os.name != "nt":
+            try:
+                os.nice(10)
+            except OSError:
+                pass
+        started = perf_counter()
+        write_plain_semantics_artifact(semantics_path, steps, plain_blocks_map)
+        print(
+            f"PLAIN_SEMANTICS_WARMUP_MS={round((perf_counter() - started) * 1000, 3)}",
+            flush=True,
+        )
+    except Exception as exc:
+        # Graph artifacts are already complete. A warm-cache failure must not
+        # turn a successful visualization analysis into a failed analysis.
+        try:
+            if os.path.isfile(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+        print(f"WARNING: plain semantics warmup failed: {exc}", flush=True)
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:

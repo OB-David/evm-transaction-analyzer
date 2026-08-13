@@ -31,10 +31,13 @@ from labels.coordinator import (
     MAX_API_BLOCK_RANGE,
 )
 from utils.plain_cfg_llm import (
+    PLAIN_SEMANTICS_FILENAME,
     PlainCfgLlmServiceError,
     analyze_plain_cfg_block,
     clear_plain_cfg_runtime_cache,
 )
+from utils.swap_routes import DETECTOR_SCHEMA_VERSION
+from utils.tfg_layout import render_tfg_svg
 
 load_dotenv()
 
@@ -253,9 +256,9 @@ def _completed_analysis_response(tx_hash: str) -> AnalyzeResponse | None:
         "link.json",
         "plain_blocks_information.json",
         "plain_cfg.dot",
-        "plain_semantics.json.gz",
         "swap_in_fcfg.json",
         "swap_in_pcfg.json",
+        "swap_legs.json",
     }
     if not os.path.isdir(result_dir):
         return None
@@ -268,6 +271,8 @@ def _completed_analysis_response(tx_hash: str) -> AnalyzeResponse | None:
     try:
         with open(os.path.join(result_dir, "link.json"), "r", encoding="utf-8") as handle:
             link_artifact = json.load(handle)
+        with open(os.path.join(result_dir, "arbitrage.json"), "r", encoding="utf-8") as handle:
+            arbitrage_artifact = json.load(handle)
     except (OSError, json.JSONDecodeError):
         return None
     edge_links = link_artifact.get("edge_links", {})
@@ -278,6 +283,10 @@ def _completed_analysis_response(tx_hash: str) -> AnalyzeResponse | None:
     ):
         # Older cached analyses must be regenerated so a TFG selection can
         # drive both CFG modes and the contract call tree.
+        return None
+    if arbitrage_artifact.get("schema_version") != DETECTOR_SCHEMA_VERSION:
+        # Detector v7 recognizes prefunded venues reached through an inverse
+        # outer-venue callback while keeping unrelated sibling calls isolated.
         return None
     return AnalyzeResponse(
         status="success",
@@ -293,6 +302,12 @@ def _job_response(job: AnalysisJob) -> AnalyzeResponse:
         name for name in os.listdir(result_dir)
         if os.path.isfile(os.path.join(result_dir, name))
     ) if os.path.isdir(result_dir) else []
+    # main_api publishes "complete" once every graph-facing artifact exists,
+    # then keeps the subprocess alive only to warm click-only LLM semantics.
+    if job.stage == "complete":
+        completed = _completed_analysis_response(job.tx_hash)
+        if completed is not None:
+            return completed
     if job.future is None or not job.future.done():
         return AnalyzeResponse(
             status="processing",
@@ -362,6 +377,12 @@ def _cleanup_analysis_job(tx_hash: str, job: AnalysisJob) -> None:
             analysis_jobs.pop(tx_hash, None)
 
 
+def _cleanup_successful_analysis_job(job: AnalysisJob) -> None:
+    """Release a warmed job while retaining failed jobs for error reporting."""
+    if job.process.returncode == 0 and not job.cancel_requested and job.error is None:
+        _cleanup_analysis_job(job.tx_hash, job)
+
+
 def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
     if process.poll() is not None:
         return
@@ -399,6 +420,10 @@ def _cancel_analysis_job(tx_hash: str) -> CancelAnalysisResponse:
         job = analysis_jobs.get(tx_hash)
         if job is None:
             return CancelAnalysisResponse(status="not_running", tx_hash=tx_hash, cleaned=False)
+        if job.stage == "complete":
+            # Only optional low-priority warming remains. Switching away from
+            # a completed transaction must not delete its valid graph output.
+            return CancelAnalysisResponse(status="not_running", tx_hash=tx_hash, cleaned=False)
         if job.process.poll() is not None:
             analysis_jobs.pop(tx_hash, None)
             return CancelAnalysisResponse(status="not_running", tx_hash=tx_hash, cleaned=False)
@@ -427,7 +452,7 @@ async def analyze(req: AnalyzeRequest):
         job = analysis_jobs.get(req.tx_hash)
         if job is not None:
             response = _job_response(job)
-            if response.status != "processing":
+            if response.status != "processing" and (job.future is None or job.future.done()):
                 analysis_jobs.pop(req.tx_hash, None)
             return response
         else:
@@ -459,6 +484,10 @@ async def analyze(req: AnalyzeRequest):
             analysis_jobs[req.tx_hash] = job
             job.future = executor.submit(_wait_for_analysis, job)
 
+    if job.future is not None:
+        # Register outside analysis_jobs_lock: add_done_callback executes
+        # synchronously when the future already completed.
+        job.future.add_done_callback(lambda _future: _cleanup_successful_analysis_job(job))
     return _job_response(job)
 
 
@@ -479,7 +508,7 @@ async def analyze_progress(tx_hash: str):
         job = analysis_jobs.get(tx_hash)
         if job is not None:
             response = _job_response(job)
-            if response.status != "processing":
+            if response.status != "processing" and (job.future is None or job.future.done()):
                 analysis_jobs.pop(tx_hash, None)
             return response
     completed = _completed_analysis_response(tx_hash)
@@ -551,6 +580,26 @@ async def render_cfg_svg(tx_hash: str, mode: str):
     except (OSError, subprocess.CalledProcessError) as exc:
         raise HTTPException(status_code=500, detail="CFG rendering failed") from exc
 
+    return Response(
+        content=svg,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/api/tfg/{tx_hash}.svg")
+async def render_token_flow_svg(tx_hash: str):
+    """Render the persisted TFG using the topology-petal layout."""
+    if not TX_HASH_RE.match(tx_hash):
+        raise HTTPException(status_code=400, detail="Invalid tx_hash format")
+    try:
+        svg = await asyncio.to_thread(render_tfg_svg, tx_hash)
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="TFG rendering timed out") from exc
+    except HTTPException:
+        raise
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise HTTPException(status_code=500, detail="TFG rendering failed") from exc
     return Response(
         content=svg,
         media_type="image/svg+xml",
@@ -642,13 +691,41 @@ async def plain_block_analysis(req: PlainBlockAnalysisRequest):
     try:
         result = await loop.run_in_executor(
             executor,
-            lambda: analyze_plain_cfg_block(
-                tx_hash=req.tx_hash,
-                block_id=req.block_id,
-                force_refresh=req.force_refresh,
-            ),
+            lambda: _analyze_plain_cfg_block_when_ready(req),
         )
     except PlainCfgLlmServiceError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     return PlainBlockAnalysisResponse(**result)
+
+
+def _wait_for_plain_semantics(tx_hash: str) -> None:
+    """Wait only on an active post-graph warmup; graph requests never call this."""
+    semantics_path = os.path.join(_analysis_result_dir(tx_hash), PLAIN_SEMANTICS_FILENAME)
+    if os.path.isfile(semantics_path):
+        return
+
+    with analysis_jobs_lock:
+        job = analysis_jobs.get(tx_hash)
+        warmup_future = job.future if job is not None and job.stage == "complete" else None
+
+    if warmup_future is not None:
+        try:
+            warmup_future.result(timeout=120)
+        except Exception as exc:
+            raise PlainCfgLlmServiceError(503, "Plain block context warmup failed") from exc
+
+    if not os.path.isfile(semantics_path):
+        raise PlainCfgLlmServiceError(
+            503,
+            "Plain block context is unavailable because background warmup did not complete",
+        )
+
+
+def _analyze_plain_cfg_block_when_ready(req: PlainBlockAnalysisRequest) -> dict[str, Any]:
+    _wait_for_plain_semantics(req.tx_hash)
+    return analyze_plain_cfg_block(
+        tx_hash=req.tx_hash,
+        block_id=req.block_id,
+        force_refresh=req.force_refresh,
+    )

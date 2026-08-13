@@ -17,8 +17,8 @@ const emit = defineEmits<{
     @click="emit('fit')"
   >
     <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M3 8V3h5M16 3h5v5M21 16v5h-5M8 21H3v-5" />
-      <path d="M8 8l3 3M16 8l-3 3M16 16l-3-3M8 16l3-3" />
+      <rect x="4" y="4" width="16" height="16" rx="1.5" />
+      <circle cx="12" cy="12" r="1.75" class="fit-center-dot" />
     </svg>
   </button>
 </template>
@@ -71,6 +71,11 @@ const emit = defineEmits<{
   stroke-linecap: round;
   stroke-linejoin: round;
   pointer-events: none;
+}
+
+.graph-fit-button .fit-center-dot {
+  fill: currentColor;
+  stroke: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -10,6 +10,7 @@ from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
 from utils.render_cfg import get_valid_nodes_and_colors, render_transaction
 from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_fcfg, afg_to_pcfg, afg_to_call_tree, build_link_artifact, detect_arbitrage, compute_address_balances, filter_asset_flow_user_addresses
+from utils.swap_routes import build_arbitrage_artifact, build_swap_legs_artifact
 from utils.sequence_diagram import build_refined_hierarchical_trace, write_call_tree_json
 from utils.indentify_swap import filter_to_file
 from utils.plain_cfg_llm import PLAIN_SEMANTICS_FILENAME, write_plain_semantics_artifact
@@ -28,6 +29,32 @@ CONTRACT_COLORS = [
     "#EBB8F4",
     "#F3B4DB",
     "#E2E2E2",
+    # Extended pastel palette: same low-saturation visual language, with
+    # enough distinct hues for larger transactions before cycling is needed.
+    "#E18E8E",
+    "#E1A38E",
+    "#E1B88E",
+    "#E1CC8E",
+    "#E1E18E",
+    "#CCE18E",
+    "#B8E18E",
+    "#A3E18E",
+    "#8EE18E",
+    "#8EE1A3",
+    "#8EE1B8",
+    "#8EE1CC",
+    "#8EE1E1",
+    "#8ECCE1",
+    "#8EB8E1",
+    "#8EA3E1",
+    "#8E8EE1",
+    "#A38EE1",
+    "#B88EE1",
+    "#CC8EE1",
+    "#E18EE1",
+    "#E18ECC",
+    "#E18EB8",
+    "#E18EA3",
 ]
 
 EDGE_COLOR_MAP = {
@@ -141,7 +168,7 @@ def main():
         edge_link_call_tree = afg_to_call_tree(pairs, pending_erc20, tree_data)
         
         print(f"共提取到 {len(all_changes)} 条资产变更事件，配对成功 {len(pairs)} 对交易流,存在孤立变动{len(annotations)}条\n")
-        arb_result = detect_arbitrage(pairs, pending_erc20)
+        arb_result = detect_arbitrage(pairs, pending_erc20, tree_data)
         addr_balances = compute_address_balances(pairs, pending_erc20)
 
         # 8. 保存折叠后Block ID与Instructions映射数据
@@ -153,11 +180,6 @@ def main():
         plain_blocks_map = cfg_constructor.build_pcfg_blocks_information(plain_cfg, standardized_trace)
         with open(plain_blocks_path, "w", encoding="utf-8") as f:
             json.dump(plain_blocks_map, f, ensure_ascii=False, indent=2)
-        write_plain_semantics_artifact(
-            os.path.join(result_dir, PLAIN_SEMANTICS_FILENAME),
-            standardized_trace["steps"],
-            plain_blocks_map,
-        )
 
 
         swap_fcfg_path = os.path.join(result_dir, "swap_in_fcfg.json")
@@ -186,11 +208,11 @@ def main():
 
         arb_json_path = os.path.join(result_dir, "arbitrage.json")
         with open(arb_json_path, "w", encoding="utf-8") as f:
-            json.dump({
-                "is_arbitrage": len(arb_result["cycles"]) > 0,
-                "cycles": arb_result["cycles"],
-                "arb_edge_orders": list(arb_result["arb_edge_orders"])
-            }, f, indent=2, ensure_ascii=False)
+            json.dump(build_arbitrage_artifact(arb_result), f, indent=2, ensure_ascii=False)
+
+        swap_legs_path = os.path.join(result_dir, "swap_legs.json")
+        with open(swap_legs_path, "w", encoding="utf-8") as f:
+            json.dump(build_swap_legs_artifact(arb_result), f, indent=2, ensure_ascii=False)
 
         addr_balances_path = os.path.join(result_dir, "address_balances.json")
         with open(addr_balances_path, "w", encoding="utf-8") as f:
@@ -203,6 +225,13 @@ def main():
         save_graphs(result_dir=result_dir, plain_cfg=plain_cfg, folded_cfg = folded_cfg, full_address_name_map = full_address_name_map, erc20_token_map=erc20_token_map, 
                     users_addresses=users_addresses, pairs=pairs, annotations=annotations, pending_erc20=pending_erc20,
                     tree_data = tree_data, arb_result  = arb_result)
+
+        # Click-only LLM context is deliberately generated after all graphs.
+        write_plain_semantics_artifact(
+            os.path.join(result_dir, PLAIN_SEMANTICS_FILENAME),
+            standardized_trace["steps"],
+            plain_blocks_map,
+        )
 
     except Exception as e:
         import traceback

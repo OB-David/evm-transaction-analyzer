@@ -66,8 +66,8 @@ function strokeColor(color?: string) {
           <svg width="28" height="20" viewBox="0 0 28 20">
             <polygon
               points="14,3 23,10 14,17 5,10"
-              fill="#E2E2E2"
-              stroke="#B6B6B6"
+              fill="#FFFFFF"
+              stroke="#C7C7C7"
               stroke-width="1.2"
             />
           </svg>

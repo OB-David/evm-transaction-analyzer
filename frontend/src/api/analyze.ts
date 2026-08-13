@@ -95,14 +95,6 @@ export interface BlockGasData {
 const configuredApiBase = import.meta.env.VITE_API_BASE || ''
 const API_BASE = configuredApiBase.endsWith('/') ? configuredApiBase.slice(0, -1) : configuredApiBase
 
-async function fetchTextFile(filename: string, txHash: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`, { cache: 'no-store' })
-  if (!res.ok) {
-    throw new Error(`Failed to fetch ${filename}: ${res.status}`)
-  }
-  return res.text()
-}
-
 async function fetchJsonFile<T>(filename: string, txHash: string): Promise<T> {
   const res = await fetch(`${API_BASE}/api/files/${txHash}/${filename}`, { cache: 'no-store' })
   if (!res.ok) {
@@ -177,8 +169,12 @@ export async function cancelAnalysis(txHash: string): Promise<CancelAnalysisResu
   return res.json()
 }
 
-export async function fetchDotFile(txHash: string): Promise<string> {
-  return fetchTextFile('asset_flow.dot', txHash)
+export async function fetchTfgSvg(txHash: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/tfg/${txHash}.svg`, { cache: 'no-store' })
+  if (!res.ok) {
+    throw new Error(`Failed to fetch TFG SVG: ${res.status}`)
+  }
+  return res.text()
 }
 
 export async function fetchCfgSvg(txHash: string): Promise<string> {
@@ -470,9 +466,28 @@ export async function fetchEdgeStepMap(txHash: string, _preferredMode: CfgMode =
   return fetchJsonFile<EdgeStepMap>('edge_id-step.json', txHash)
 }
 
+export interface ArbitrageCycle {
+  cycle_id: string
+  ordered_swap_leg_ids: string[]
+  token_address_path: string[]
+  arbitrage_token_address?: string
+  arbitrage_amount_delta_raw?: string
+  arbitrage_direction?: 'increase' | 'decrease' | 'unchanged'
+  transfer_edge_orders: number[]
+  route_account: string
+  start_step: number
+  end_step: number
+  closure_kind: string
+  max_amount_relative_gap?: number
+  score?: number
+}
+
 export interface ArbitrageResult {
+  schema_version?: number
+  detection_basis?: string
   is_arbitrage: boolean
   cycles: number[][]
+  selected_cycles?: ArbitrageCycle[]
   arb_edge_orders: number[]
 }
 

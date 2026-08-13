@@ -77,7 +77,23 @@ export function normalizeColor(color: string | null | undefined): string {
 }
 
 export function resolveThemeColor(color: string | null | undefined) {
-  return THEME_BY_FILL.get(normalizeColor(color)) || null
+  const normalized = normalizeColor(color)
+  const configured = THEME_BY_FILL.get(normalized)
+  if (configured) return configured
+
+  // Newly added palette colors should remain usable without maintaining a
+  // second exhaustive lookup table in the frontend. Accept #RRGGBB and
+  // #RRGGBBAA, preserving the fill and deriving a darker border/text accent.
+  const match = /^#([a-f0-9]{6})(?:[a-f0-9]{2})?$/.exec(normalized)
+  if (!match?.[1]) return null
+
+  const hex = match[1]
+  const fill = `#${hex.toUpperCase()}`
+  const darkChannels = [0, 2, 4].map(offset =>
+    Math.round(Number.parseInt(hex.slice(offset, offset + 2), 16) * 0.78),
+  )
+  const dark = `#${darkChannels.map(channel => channel.toString(16).padStart(2, '0')).join('').toUpperCase()}`
+  return { fill, dark }
 }
 
 export function getDarkAccentForColor(color: string | null | undefined, fallback = '#6B7280') {
