@@ -321,6 +321,7 @@ export interface CfgViewData {
 export interface PlainBlockLlmAnalysisRequest {
   tx_hash: string
   block_id: BlockId
+  mode: CfgMode
   force_refresh?: boolean
 }
 
@@ -390,15 +391,17 @@ export async function fetchCfgViewData(txHash: string, mode: CfgMode = 'folded')
 export async function fetchPlainBlockLlmAnalysis(
   txHash: string,
   blockId: BlockId,
+  mode: CfgMode = 'plain',
   forceRefresh: boolean = false,
 ): Promise<PlainBlockLlmAnalysisResponse> {
   const payload: PlainBlockLlmAnalysisRequest = {
     tx_hash: txHash,
     block_id: blockId,
+    mode,
     force_refresh: forceRefresh,
   }
 
-  const res = await fetch(`${API_BASE}/api/llm/plain-block-analysis`, {
+  const res = await fetch(`${API_BASE}/api/llm/cfg-block-analysis`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -412,7 +415,7 @@ export async function fetchPlainBlockLlmAnalysis(
   }
 
   if (!res.ok) {
-    const detail = body?.detail || `Failed to fetch plain block LLM analysis: ${res.status}`
+    const detail = body?.detail || `Failed to fetch CFG block LLM analysis: ${res.status}`
     throw new Error(detail)
   }
 
@@ -427,6 +430,53 @@ export interface EdgeStepEntry {
 }
 
 export type EdgeStepMap = Record<string, EdgeStepEntry>
+
+export async function fetchFoldedCfgRelayout(
+  txHash: string,
+  nodeIds: string[],
+  edgeTitles: string[],
+): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/cfg/${txHash}/folded/relayout.svg`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ node_ids: nodeIds, edge_titles: edgeTitles }),
+    cache: 'no-store',
+  })
+  if (!res.ok) {
+    let detail = `Failed to relayout folded CFG: ${res.status}`
+    try {
+      const payload = await res.json()
+      if (payload?.detail) detail = payload.detail
+    } catch {
+      // Keep the status-based fallback for non-JSON proxy errors.
+    }
+    throw new Error(detail)
+  }
+  return res.text()
+}
+
+export async function fetchTfgPlaybackRelayout(
+  txHash: string,
+  maxOrder: number,
+): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/tfg/${txHash}/relayout.svg`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ max_order: maxOrder }),
+    cache: 'no-store',
+  })
+  if (!res.ok) {
+    let detail = `Failed to relayout TFG playback prefix: ${res.status}`
+    try {
+      const payload = await res.json()
+      if (payload?.detail) detail = payload.detail
+    } catch {
+      // Keep the status-based fallback for non-JSON proxy errors.
+    }
+    throw new Error(detail)
+  }
+  return res.text()
+}
 
 export interface CallTreeEntry {
   call_id: number
@@ -474,6 +524,8 @@ export interface ArbitrageCycle {
   arbitrage_amount_delta_raw?: string
   arbitrage_direction?: 'increase' | 'decrease' | 'unchanged'
   transfer_edge_orders: number[]
+  swap_transfer_edge_orders?: number[]
+  connector_edge_orders?: number[]
   route_account: string
   start_step: number
   end_step: number
@@ -540,6 +592,34 @@ export async function fetchAddressBalances(txHash: string): Promise<Record<strin
   const res = await fetch(`${API_BASE}/api/files/${txHash}/address_balances.json`, { cache: 'no-store' })
   if (!res.ok) {
     throw new Error(`Failed to fetch address balances: ${res.status}`)
+  }
+  return res.json()
+}
+
+export interface BalanceTimelineDelta {
+  address: string
+  amount_raw: string
+}
+
+export interface BalanceTimelineEvent {
+  order: number
+  kind: 'transfer' | 'mint' | 'burn'
+  token_address: string
+  token_name: string
+  decimals: number
+  amount_raw: string
+  deltas: BalanceTimelineDelta[]
+}
+
+export interface BalanceTimelineArtifact {
+  schema_version: 1
+  events: BalanceTimelineEvent[]
+}
+
+export async function fetchBalanceTimeline(txHash: string): Promise<BalanceTimelineArtifact> {
+  const res = await fetch(`${API_BASE}/api/files/${txHash}/balance_timeline.json`, { cache: 'no-store' })
+  if (!res.ok) {
+    throw new Error(`Failed to fetch balance timeline: ${res.status}`)
   }
   return res.json()
 }

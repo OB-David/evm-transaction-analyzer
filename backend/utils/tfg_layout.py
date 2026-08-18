@@ -61,6 +61,39 @@ def _parse_dot(dot_source: str) -> tuple[list[str], list[dict[str, Any]]]:
     return nodes, edges
 
 
+def filter_dot_through_order(dot_source: str, max_order: int) -> str:
+    """Keep the complete TFG execution prefix through ``max_order``."""
+    if max_order < 0:
+        raise ValueError("max_order must be non-negative")
+
+    retained_nodes: set[str] = set()
+    retained_edge_lines: set[str] = set()
+    for line in dot_source.splitlines():
+        edge_match = EDGE_RE.match(line)
+        if not edge_match:
+            continue
+        order_match = ORDER_RE.search(edge_match.group(3))
+        if order_match and int(order_match.group(1)) <= max_order:
+            retained_nodes.update((edge_match.group(1), edge_match.group(2)))
+            retained_edge_lines.add(line)
+
+    if not retained_edge_lines:
+        raise ValueError(f"No TFG transfers found through order {max_order}")
+
+    output: list[str] = []
+    for line in dot_source.splitlines():
+        edge_match = EDGE_RE.match(line)
+        if edge_match:
+            if line in retained_edge_lines:
+                output.append(line)
+            continue
+        node_match = NODE_RE.match(line)
+        if node_match and node_match.group(1) not in retained_nodes:
+            continue
+        output.append(line)
+    return "\n".join(output) + "\n"
+
+
 def topology_center(dot_source: str, call_tree_path: Path | None = None) -> str:
     """Use the transaction root address, falling back to TFG centrality."""
     nodes, edges = _parse_dot(dot_source)
@@ -1333,11 +1366,16 @@ def enhance_svg_curves(svg: bytes, topology: dict[str, Any] | None = None) -> by
 # Public rendering entry point
 
 
-def render_tfg_svg(tx_hash: str) -> bytes:
+def render_tfg_svg(tx_hash: str, max_order: int | None = None) -> bytes:
     dot_path, call_tree_path = _artifact_paths(tx_hash)
     if not dot_path.is_file():
         raise HTTPException(status_code=404, detail="Run transaction analysis first")
     dot_source = dot_path.read_text(encoding="utf-8")
+    if max_order is not None:
+        try:
+            dot_source = filter_dot_through_order(dot_source, max_order)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     center = topology_center(dot_source, call_tree_path)
     topology = detect_topology(dot_source, center)
     dot_source = presentation_dot(topology_dot(dot_source, topology))

@@ -147,6 +147,7 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
             "amount_raw": abs(original_value),
             "token": "ETH",
             "token_addr": "ETH",
+            "decimals": 18,
             "source_pcs": None,
             "source_steps": None,
         })
@@ -209,6 +210,7 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
                 "amount_raw": abs(int(c["eth_value"])),
                 "token": "ETH",
                 "token_addr": "ETH",
+                "decimals": 18,
                 "source_pcs": [c["pc"]],
                 "source_steps": [c["step"]],
             })
@@ -293,6 +295,7 @@ def pair_transactions(original_transfer, all_changes, token_decimals_map=None):
                     "amount_raw": abs(curr["value"]),
                     "token": token_name,
                     "token_addr": token_addr,
+                    "decimals": decimals,
                     "source_pcs": {
                         "sender_sload_pc": sender.get("source_pcs", [])[0],
                         "sender_sstore_pc": sender.get("source_pcs", [])[1],
@@ -375,6 +378,63 @@ def compute_address_balances(paired: list, pending_erc20: list = None) -> dict:
 
     # 转成普通 dict 方便序列化
     return {addr: dict(tokens) for addr, tokens in balances.items()}
+
+
+def build_balance_timeline(paired: list, pending_erc20: list = None) -> dict:
+    """Build the canonical per-transfer balance deltas used by TFG playback.
+
+    Raw integer amounts are serialized as decimal strings so the browser can
+    accumulate them with ``BigInt`` without losing ERC-20 precision. Mint and
+    burn events only change the holder balance; the token contract is a supply
+    boundary, not the counterparty of an ordinary transfer.
+    """
+    events = []
+
+    def normalize_address(value):
+        return value.lower() if isinstance(value, str) else value
+
+    def normalize_token_address(value):
+        if not isinstance(value, str):
+            return value
+        return "eth" if value.lower() == "eth" else value.lower()
+
+    for transfer in paired or []:
+        raw_amount = abs(int(transfer.get("amount_raw", 0)))
+        from_address = normalize_address(transfer.get("from"))
+        to_address = normalize_address(transfer.get("to"))
+        deltas = []
+        if from_address:
+            deltas.append({"address": from_address, "amount_raw": str(-raw_amount)})
+        if to_address:
+            deltas.append({"address": to_address, "amount_raw": str(raw_amount)})
+        events.append({
+            "order": int(transfer.get("order", 0)),
+            "kind": "transfer",
+            "token_address": normalize_token_address(transfer.get("token_addr")),
+            "token_name": transfer.get("token") or "Unknown token",
+            "decimals": int(transfer.get("decimals", 18)),
+            "amount_raw": str(raw_amount),
+            "deltas": deltas,
+        })
+
+    for change in pending_erc20 or []:
+        raw_delta = int(change.get("value", 0))
+        user_address = normalize_address(change.get("user"))
+        events.append({
+            "order": int(change.get("order", 0)),
+            "kind": "mint" if raw_delta > 0 else "burn",
+            "token_address": normalize_token_address(change.get("token_addr")),
+            "token_name": change.get("token") or "Unknown token",
+            "decimals": int(change.get("decimals", 18)),
+            "amount_raw": str(abs(raw_delta)),
+            "deltas": (
+                [{"address": user_address, "amount_raw": str(raw_delta)}]
+                if user_address else []
+            ),
+        })
+
+    events.sort(key=lambda event: event["order"])
+    return {"schema_version": 1, "events": events}
 
 
 def collect_asset_flow_addresses(paired, pending_erc20):
@@ -522,17 +582,20 @@ def render_asset_flow(paired, node_annotations, users_addresses,
             # 销毁 (Burn): 用户 -> 合约
             src, tgt = user_id, token_id
             action = "burn"
-        
+
         edge_label = f"({v['order']}) {v['token']}({action}): {amount_str}"
+        is_arb = arb_edge_orders and v["order"] in arb_edge_orders
         dot.edge(
             src,
             tgt,
             label="<" + edge_label + ">",
             color=edge_color,
             fontcolor=edge_color,
-            style="dashed",
-            penwidth="1.5",
-            arrowsize="0.78",
+            # Keep the supply-boundary dash while adding the same accessible
+            # width emphasis used by ordinary candidate-path transfers.
+            style="dashed, bold" if is_arb else "dashed",
+            penwidth="3.1" if is_arb else "1.5",
+            arrowsize="1.02" if is_arb else "0.78",
         )
 
     dot.save(output_file)

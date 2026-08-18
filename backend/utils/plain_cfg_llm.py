@@ -10,8 +10,9 @@ from typing import Any
 from openai import APITimeoutError, OpenAI
 from utils.analysis_paths import analysis_directory
 
-PROMPT_VERSION = "plain_cfg_opcode_objective_v4"
-DEFAULT_MODEL = "gpt-5.4-nano"
+PROMPT_VERSION = "cfg_opcode_objective_deepseek_v5"
+DEFAULT_MODEL = "deepseek-v4-flash"
+DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MAX_INPUT_CHARS = 400000
 DEFAULT_LLM_TIMEOUT_SECONDS = 90.0
 DEFAULT_LLM_MAX_RETRIES = 1
@@ -33,15 +34,21 @@ class PlainCfgLlmServiceError(Exception):
         self.detail = detail
 
 
-def analyze_plain_cfg_block(tx_hash: str, block_id: str | int, force_refresh: bool = False) -> dict[str, Any]:
-    context_payload, context_meta = build_plain_cfg_block_context(tx_hash, block_id)
+def analyze_cfg_block(
+    tx_hash: str,
+    block_id: str | int,
+    mode: str = "plain",
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    normalized_mode = _normalize_cfg_mode(mode)
+    context_payload, context_meta = build_cfg_block_context(tx_hash, block_id, normalized_mode)
     target_block_id = context_meta["target_block_id"]
     context_json = json.dumps(context_payload, ensure_ascii=False, separators=(",", ":"))
     context_hash = hashlib.sha256(context_json.encode("utf-8")).hexdigest()
     _check_context_size(context_json)
 
     cache_data = _load_runtime_cache(tx_hash)
-    block_cache_key = str(target_block_id)
+    block_cache_key = f"{normalized_mode}:{target_block_id}"
     cached_item = cache_data["items"].get(block_cache_key)
     if (
         not force_refresh
@@ -64,7 +71,7 @@ def analyze_plain_cfg_block(tx_hash: str, block_id: str | int, force_refresh: bo
         }
 
     analysis = _generate_analysis(context_json)
-    model_name = os.environ.get("OPENAI_SEMANTIC_CFG_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    model_name = os.environ.get("DEEPSEEK_CFG_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
     cache_data["prompt_version"] = PROMPT_VERSION
     cache_data["items"][block_cache_key] = {
         "title": analysis["title"],
@@ -83,12 +90,47 @@ def analyze_plain_cfg_block(tx_hash: str, block_id: str | int, force_refresh: bo
     }
 
 
+def analyze_plain_cfg_block(tx_hash: str, block_id: str | int, force_refresh: bool = False) -> dict[str, Any]:
+    """Backward-compatible wrapper for older API callers."""
+    return analyze_cfg_block(tx_hash, block_id, "plain", force_refresh)
+
+
+def build_cfg_block_context(
+    tx_hash: str,
+    block_id: str | int,
+    mode: str = "plain",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    normalized_mode = _normalize_cfg_mode(mode)
+    if normalized_mode == "plain":
+        return build_plain_cfg_block_context(tx_hash, block_id)
+
+    ordered_blocks, steps = _load_folded_cfg_context_inputs(tx_hash)
+    target_idx = _find_target_index(ordered_blocks, block_id)
+    if target_idx is None:
+        raise PlainCfgLlmServiceError(404, f"Block {block_id} not found in folded CFG")
+    return _build_context_for_index(
+        tx_hash,
+        steps,
+        ordered_blocks,
+        target_idx,
+        mode="folded",
+        include_neighbors=False,
+    )
+
+
 def build_plain_cfg_block_context(tx_hash: str, block_id: str | int) -> tuple[dict[str, Any], dict[str, Any]]:
     ordered_blocks, steps = _load_plain_cfg_context_inputs(tx_hash)
     target_idx = _find_target_index(ordered_blocks, block_id)
     if target_idx is None:
         raise PlainCfgLlmServiceError(404, f"Block {block_id} not found in plain CFG")
     return _build_context_for_index(tx_hash, steps, ordered_blocks, target_idx)
+
+
+def _normalize_cfg_mode(mode: str) -> str:
+    normalized = str(mode).strip().lower()
+    if normalized not in {"folded", "plain"}:
+        raise PlainCfgLlmServiceError(400, "CFG mode must be folded or plain")
+    return normalized
 
 
 def build_plain_cfg_context_preview(
@@ -174,6 +216,29 @@ def _load_plain_cfg_context_inputs(
     return _build_ordered_plain_blocks(plain_info), steps
 
 
+def _load_folded_cfg_context_inputs(
+    tx_hash: str,
+) -> tuple[list[dict[str, Any]], list[Any] | dict[str, Any]]:
+    result_dir = _resolve_result_dir(tx_hash)
+    folded_info = _load_json_file(os.path.join(result_dir, "folded_blocks_information.json"))
+    semantics_path = os.path.join(result_dir, PLAIN_SEMANTICS_FILENAME)
+    if os.path.isfile(semantics_path):
+        semantics = _load_gzip_json_file(semantics_path)
+        blocks = semantics.get("blocks")
+        if not isinstance(blocks, dict):
+            raise PlainCfgLlmServiceError(
+                400,
+                f"{PLAIN_SEMANTICS_FILENAME} does not contain valid block semantics",
+            )
+        return _build_ordered_folded_blocks(folded_info), blocks
+
+    trace_data = _load_json_file(os.path.join(result_dir, "trace.json"))
+    steps = trace_data.get("steps")
+    if not isinstance(steps, list):
+        raise PlainCfgLlmServiceError(404, "trace.json is missing valid steps data")
+    return _build_ordered_folded_blocks(folded_info), steps
+
+
 def _load_gzip_json_file(file_path: str) -> dict[str, Any]:
     try:
         with gzip.open(file_path, "rt", encoding="utf-8") as handle:
@@ -196,16 +261,23 @@ def _build_context_for_index(
     steps: list[Any] | dict[str, Any],
     ordered_blocks: list[dict[str, Any]],
     target_idx: int,
+    mode: str = "plain",
+    include_neighbors: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    prev_block = ordered_blocks[target_idx - 1] if target_idx > 0 else None
+    prev_block = ordered_blocks[target_idx - 1] if include_neighbors and target_idx > 0 else None
     target_block = ordered_blocks[target_idx]
-    next_block = ordered_blocks[target_idx + 1] if target_idx + 1 < len(ordered_blocks) else None
+    next_block = (
+        ordered_blocks[target_idx + 1]
+        if include_neighbors and target_idx + 1 < len(ordered_blocks)
+        else None
+    )
     return _build_context_payload(
         tx_hash=tx_hash,
         steps=steps,
         target_block=target_block,
         prev_block=prev_block,
         next_block=next_block,
+        mode=mode,
     )
 
 
@@ -239,6 +311,43 @@ def _build_ordered_plain_blocks(plain_info: dict[str, Any]) -> list[dict[str, An
     return ordered_blocks
 
 
+def _build_ordered_folded_blocks(folded_info: dict[str, Any]) -> list[dict[str, Any]]:
+    ordered_blocks: list[dict[str, Any]] = []
+    for raw in folded_info.values():
+        if not isinstance(raw, dict) or "block_id" not in raw:
+            continue
+        ranges: list[dict[str, int]] = []
+        for raw_range in raw.get("step_ranges", []):
+            if not isinstance(raw_range, dict):
+                continue
+            try:
+                start_step = int(raw_range["start_step"])
+                end_step = int(raw_range["end_step"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if start_step >= 0 and end_step >= start_step:
+                ranges.append({"start_step": start_step, "end_step": end_step})
+        if not ranges:
+            continue
+        ranges.sort(key=lambda item: (item["start_step"], item["end_step"]))
+        ordered_blocks.append(
+            {
+                "block_id": raw["block_id"],
+                "address": raw.get("address", ""),
+                "start_step": ranges[0]["start_step"],
+                "end_step": ranges[-1]["end_step"],
+                "step_ranges": ranges,
+                "folded_blocks": list(raw.get("folded_blocks", [])),
+                "instructions": _as_str_list(raw.get("instructions")),
+                "actions": _normalize_actions(raw.get("actions")),
+            }
+        )
+    if not ordered_blocks:
+        raise PlainCfgLlmServiceError(404, "folded_blocks_information.json does not contain valid blocks")
+    ordered_blocks.sort(key=lambda block: (block["start_step"], str(block["block_id"])))
+    return ordered_blocks
+
+
 def _find_target_index(ordered_blocks: list[dict[str, Any]], block_id: str | int) -> int | None:
     target_key = str(block_id).strip()
     if not target_key:
@@ -260,6 +369,15 @@ def _extract_block_steps(
     block: dict[str, Any],
 ) -> list[Any]:
     if isinstance(steps, dict):
+        folded_block_ids = block.get("folded_blocks")
+        if isinstance(folded_block_ids, list):
+            folded_steps: list[Any] = []
+            for folded_block_id in folded_block_ids:
+                block_steps = steps.get(str(folded_block_id))
+                if isinstance(block_steps, list):
+                    folded_steps.extend(copy.deepcopy(block_steps))
+            if folded_steps:
+                return folded_steps
         block_steps = steps.get(str(block["block_id"]))
         if not isinstance(block_steps, list):
             raise PlainCfgLlmServiceError(
@@ -268,17 +386,23 @@ def _extract_block_steps(
             )
         return copy.deepcopy(block_steps)
 
-    start = block["start_step"]
-    end = block["end_step"]
-    if start < 0 or end < start:
-        raise PlainCfgLlmServiceError(
-            400, f"Invalid step range for block {block['block_id']}: {start}..{end}"
-        )
-    if end >= len(steps):
-        raise PlainCfgLlmServiceError(
-            400, f"Step range exceeds trace bounds for block {block['block_id']}: {start}..{end}"
-        )
-    return [_build_opcode_step_context(steps, idx) for idx in range(start, end + 1)]
+    ranges = block.get("step_ranges") or [
+        {"start_step": block["start_step"], "end_step": block["end_step"]}
+    ]
+    block_steps: list[Any] = []
+    for step_range in ranges:
+        start = step_range["start_step"]
+        end = step_range["end_step"]
+        if start < 0 or end < start:
+            raise PlainCfgLlmServiceError(
+                400, f"Invalid step range for block {block['block_id']}: {start}..{end}"
+            )
+        if end >= len(steps):
+            raise PlainCfgLlmServiceError(
+                400, f"Step range exceeds trace bounds for block {block['block_id']}: {start}..{end}"
+            )
+        block_steps.extend(_build_opcode_step_context(steps, idx) for idx in range(start, end + 1))
+    return block_steps
 
 
 def _build_context_payload(
@@ -287,6 +411,7 @@ def _build_context_payload(
     target_block: dict[str, Any],
     prev_block: dict[str, Any] | None,
     next_block: dict[str, Any] | None,
+    mode: str = "plain",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     context_blocks: list[dict[str, Any]] = []
 
@@ -298,6 +423,9 @@ def _build_context_payload(
                 "address": block["address"],
                 "start_step": block["start_step"],
                 "end_step": block["end_step"],
+                "step_ranges": copy.deepcopy(block.get("step_ranges", [])),
+                "folded_blocks": copy.deepcopy(block.get("folded_blocks", [])),
+                "instructions": copy.deepcopy(block.get("instructions", [])),
                 "actions": copy.deepcopy(block.get("actions", [])),
                 "trace_steps": _extract_block_steps(steps, block),
             }
@@ -311,7 +439,7 @@ def _build_context_payload(
 
     context_payload = {
         "tx_hash": tx_hash,
-        "mode": "plain_cfg_step_neighbor_opcode_focused",
+        "mode": f"{mode}_cfg_opcode_focused",
         "target_block_id": target_block["block_id"],
         "blocks": context_blocks,
     }
@@ -344,12 +472,13 @@ def _build_context_payload(
                 else None
             ),
         },
+        "cfg_mode": mode,
     }
     return context_payload, context_meta
 
 
 def _check_context_size(context_json: str) -> None:
-    raw_limit = os.environ.get("OPENAI_SEMANTIC_CFG_MAX_INPUT_CHARS", "").strip()
+    raw_limit = os.environ.get("DEEPSEEK_CFG_MAX_INPUT_CHARS", "").strip()
     try:
         limit = int(raw_limit) if raw_limit else DEFAULT_MAX_INPUT_CHARS
     except ValueError:
@@ -405,18 +534,18 @@ def _save_runtime_cache(tx_hash: str, cache_data: dict[str, Any]) -> None:
 
 
 def _generate_analysis(context_json: str) -> dict[str, str]:
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
-        raise PlainCfgLlmServiceError(500, "OPENAI_API_KEY is not configured")
+        raise PlainCfgLlmServiceError(500, "DEEPSEEK_API_KEY is not configured")
 
-    api_mode = os.environ.get("OPENAI_SEMANTIC_CFG_API_MODE", "chat_completions").strip().lower()
+    api_mode = os.environ.get("DEEPSEEK_CFG_API_MODE", "chat_completions").strip().lower()
     if api_mode != "chat_completions":
         raise PlainCfgLlmServiceError(
-            500, f"Unsupported OPENAI_SEMANTIC_CFG_API_MODE: {api_mode}. Expected chat_completions."
+            500, f"Unsupported DEEPSEEK_CFG_API_MODE: {api_mode}. Expected chat_completions."
         )
 
-    base_url = os.environ.get("OPENAI_BASE_URL", "").strip() or None
-    model_name = os.environ.get("OPENAI_SEMANTIC_CFG_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    base_url = os.environ.get("DEEPSEEK_BASE_URL", "").strip() or DEFAULT_BASE_URL
+    model_name = os.environ.get("DEEPSEEK_CFG_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
     timeout_seconds = _get_timeout_seconds()
     max_retries = _get_max_retries()
 
@@ -431,7 +560,7 @@ def _generate_analysis(context_json: str) -> dict[str, str]:
         "Interpret opcode behavior using opcode context plus stack and memory state transitions."
     )
     base_user_prompt = (
-        "Analyze the selected plain-CFG block with its step-neighbor context. "
+        "Analyze the selected folded-CFG or plain-CFG block using the supplied opcode context. "
         "Stay objective and evidence-based: do not assume the transaction is MEV or arbitrage, and do not assume "
         "the node must belong to predefined roles like core operation, profit calculation, or protection checks. "
         "Infer such roles only when the opcode/stack/memory evidence supports them.\n"
@@ -473,7 +602,7 @@ def _generate_analysis(context_json: str) -> dict[str, str]:
                 504,
                 (
                     f"LLM request timed out after {timeout_seconds:g}s. "
-                    "Check the upstream LLM gateway or increase OPENAI_SEMANTIC_CFG_TIMEOUT_SECONDS."
+                    "Check the upstream LLM gateway or increase DEEPSEEK_CFG_TIMEOUT_SECONDS."
                 ),
             ) from exc
         except Exception as exc:
@@ -557,7 +686,7 @@ def _count_sentences(text: str) -> int:
 
 
 def _get_timeout_seconds() -> float:
-    raw_timeout = os.environ.get("OPENAI_SEMANTIC_CFG_TIMEOUT_SECONDS", "").strip()
+    raw_timeout = os.environ.get("DEEPSEEK_CFG_TIMEOUT_SECONDS", "").strip()
     try:
         timeout = float(raw_timeout) if raw_timeout else DEFAULT_LLM_TIMEOUT_SECONDS
     except ValueError:
@@ -566,7 +695,7 @@ def _get_timeout_seconds() -> float:
 
 
 def _get_max_retries() -> int:
-    raw_retries = os.environ.get("OPENAI_SEMANTIC_CFG_MAX_RETRIES", "").strip()
+    raw_retries = os.environ.get("DEEPSEEK_CFG_MAX_RETRIES", "").strip()
     try:
         retries = int(raw_retries) if raw_retries else DEFAULT_LLM_MAX_RETRIES
     except ValueError:

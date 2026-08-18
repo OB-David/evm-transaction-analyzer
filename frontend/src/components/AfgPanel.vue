@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   fetchAddressBalances,
+  fetchBalanceTimeline,
   fetchArbitrageResult,
   fetchCallTreeEdgeLink,
   fetchBlockInformation,
@@ -9,6 +10,7 @@ import {
   fetchTfgSvg,
   fetchEdgeLink,
   fetchLegendData,
+  fetchTfgPlaybackRelayout,
   type AfgNavigationTarget,
   type ArbitrageCycle,
   type BlockId,
@@ -17,6 +19,7 @@ import {
   type CfgMode,
   type EdgeLink,
   type BlockInformation,
+  type BalanceTimelineEvent,
 } from '../api/analyze'
 import { THEME_DARK_COLORS, getDarkAccentForColor, getFillColorForColor } from '../visualTheme'
 import GraphExpandButton from './GraphExpandButton.vue'
@@ -51,6 +54,7 @@ type PlaybackStep = {
   visibleTransferOrder: number
   currentBlockId: BlockId | null
 }
+type RelayoutState = 'idle' | 'loading' | 'active' | 'error'
 
 const edgeLinks = ref<EdgeLink[]>([])
 const callTreeLinks = ref<CallTreeEdgeLink[]>([])
@@ -61,6 +65,9 @@ const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
 const linksLoading = ref(false)
 const mappingNotice = ref('')
+const fullSvgSource = ref('')
+const relayoutState = ref<RelayoutState>('idle')
+const relayoutError = ref('')
 
 const graphContainer = ref<HTMLElement | null>(null)
 let disposeSvgViewport: (() => void) | null = null
@@ -71,6 +78,7 @@ let playbackDataRequestId = 0
 let playbackTimer: number | null = null
 let playbackRunId = 0
 let playbackTargetIndex: number | null = null
+let relayoutRequestId = 0
 const AUTO_PLAY_INTERVAL_MS = 90
 
 const playbackSteps = ref<PlaybackStep[]>([])
@@ -102,6 +110,11 @@ const playbackPosition = computed(() => playbackSteps.value.length > 0
 const playbackUnavailable = computed(() => (
   !props.playbackReady || status.value !== 'success' || playbackSteps.value.length <= 1
 ))
+const canRelayoutPlayback = computed(() => (
+  isPlaybackActivated.value
+  && status.value === 'success'
+  && (currentPlaybackStep.value?.visibleTransferOrder ?? -1) >= 0
+))
 
 // 套利相关状态
 const isArbitrage = ref(false)
@@ -115,6 +128,8 @@ const arbNodeTitles = ref<Set<string>>(new Set())
 
 // 地址余额数据：地址(小写) -> { token -> 净变化量 }
 const addressBalances = ref<Record<string, Record<string, number>>>({})
+const balanceTimelineEvents = ref<BalanceTimelineEvent[]>([])
+const balanceTimelineLoaded = ref(false)
 // display name(小写) -> 地址(小写) 的反向映射，用于节点名匹配
 const nameToAddress = ref<Record<string, string>>({})
 const nameToColor = ref<Record<string, string>>({})
@@ -144,11 +159,16 @@ const tooltipX = ref(0)
 const tooltipY = ref(0)
 const tooltipName = ref('')
 const tooltipBalances = ref<Record<string, number>>({})
+const tooltipNodeId = ref<string | null>(null)
 
 watch(() => props.txHash, (newHash) => {
   loadRequestId += 1
   linkRequestId += 1
   playbackDataRequestId += 1
+  relayoutRequestId += 1
+  relayoutState.value = 'idle'
+  relayoutError.value = ''
+  fullSvgSource.value = ''
   disposeSvgViewport?.()
   disposeSvgViewport = null
   resetSvgViewport = null
@@ -221,17 +241,20 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
   arbShowOnly.value = false
   arbNodeTitles.value = new Set()
   addressBalances.value = {}
+  balanceTimelineEvents.value = []
+  balanceTimelineLoaded.value = false
   nameToAddress.value = {}   // ← 重置
   nameToColor.value = {}
   tokenAddressToName.value = {}
 
   try {
-    const [svg, links, callLinks, arb, balances, legend] = await Promise.all([
+    const [svg, links, callLinks, arb, balances, balanceTimeline, legend] = await Promise.all([
       fetchTfgSvg(txHash),
       fetchEdgeLink(txHash, cfgMode),
       fetchCallTreeEdgeLink(txHash),
       fetchArbitrageResult(txHash),
       fetchAddressBalances(txHash),
+      fetchBalanceTimeline(txHash).catch(() => null),
       fetchLegendData(txHash),
     ])
     if (requestId !== loadRequestId || props.txHash !== txHash) return
@@ -256,6 +279,10 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
     addressBalances.value = Object.fromEntries(
       Object.entries(balances).map(([addr, tokens]) => [addr.toLowerCase(), tokens])
     )
+    balanceTimelineLoaded.value = balanceTimeline?.schema_version === 1
+    balanceTimelineEvents.value = (balanceTimeline?.events || [])
+      .filter(event => Number.isFinite(Number(event.order)))
+      .sort((left, right) => left.order - right.order)
 
     // ← 建立 displayName -> address 反向映射
     const nameMap: Record<string, string> = {}
@@ -281,6 +308,7 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
     }
     tokenAddressToName.value = tokenNameMap
 
+    fullSvgSource.value = svg
     await nextTick()
     await renderGraph(svg, requestId)
     if (requestId === loadRequestId) status.value = 'success'
@@ -309,7 +337,7 @@ async function loadPlaybackSupportData(txHash: string) {
   }
 }
 
-async function renderGraph(svgSource: string, requestId: number) {
+async function renderGraph(svgSource: string, requestId: number, preservePlayback = false) {
   if (!graphContainer.value || !svgSource) return
 
   try {
@@ -321,7 +349,7 @@ async function renderGraph(svgSource: string, requestId: number) {
     const viewport = installSvgViewport(svg)
     disposeSvgViewport = viewport.dispose
     resetSvgViewport = viewport.reset
-    if (requestId === loadRequestId) attachInteractivity()
+    if (requestId === loadRequestId) attachInteractivity(!preservePlayback)
   } catch (e) {
     console.error('Graphviz render error:', e)
     errorMsg.value = 'Failed to render graph'
@@ -392,7 +420,7 @@ function installSvgViewport(svg: SVGSVGElement) {
   }
 }
 
-function attachInteractivity() {
+function attachInteractivity(resetPlaybackTimeline = true) {
   if (!graphContainer.value) return
 
   const svg = graphContainer.value.querySelector('svg')
@@ -409,22 +437,15 @@ function attachInteractivity() {
     // graphviz SVG 里 .node 的 <title> 存的是 DOT 节点名（display name 或地址）
     const titleEl = node.querySelector('title')
     const nodeId = titleEl?.textContent?.trim() || ''
-    const balances = findBalancesForNode(nodeId)
-
-    if (balances && Object.keys(balances).length > 0) {
-      const capturedName = nodeId
-      const capturedBalances = balances
-
-      nodeEl.addEventListener('mouseenter', (e) => {
-        showTooltip(e as MouseEvent, capturedName, capturedBalances)
-      })
-      nodeEl.addEventListener('mousemove', (e) => {
-        moveTooltip(e as MouseEvent)
-      })
-      nodeEl.addEventListener('mouseleave', () => {
-        hideTooltip()
-      })
-    }
+    nodeEl.addEventListener('mouseenter', (e) => {
+      showTooltip(e as MouseEvent, nodeId)
+    })
+    nodeEl.addEventListener('mousemove', (e) => {
+      moveTooltip(e as MouseEvent)
+    })
+    nodeEl.addEventListener('mouseleave', () => {
+      hideTooltip()
+    })
   })
 
   const edges = svg.querySelectorAll('.edge')
@@ -446,6 +467,7 @@ function attachInteractivity() {
     if (edgeId !== null) {
       const capturedId = edgeId
       edgeEl.setAttribute('data-edge-order', String(edgeId))
+      edgeEl.dataset.playbackOrder = String(edgeId)
 
       edgeEl.classList.add('interactive')
 
@@ -483,7 +505,11 @@ function attachInteractivity() {
   })
 
   applyArbCycleStyles()
-  initializePlayback()
+  if (resetPlaybackTimeline) {
+    initializePlayback()
+  } else {
+    applyPlaybackVisibility()
+  }
 }
 
 function getEdgeOrder(edge: Element): number | null {
@@ -698,6 +724,7 @@ function clearLinkedSelectionForPlayback() {
 
 function setPlaybackIndex(nextIndex: number, stopAutomatic = false) {
   if (playbackSteps.value.length === 0) return
+  if (relayoutState.value !== 'idle') void restoreFullTfgLayout()
   if (stopAutomatic) stopPlayback()
   const boundedIndex = Math.min(playbackSteps.value.length - 1, Math.max(0, nextIndex))
   isPlaybackActivated.value = true
@@ -705,9 +732,6 @@ function setPlaybackIndex(nextIndex: number, stopAutomatic = false) {
   clearLinkedSelectionForPlayback()
   applyPlaybackVisibility()
   emitPlaybackChange()
-  if (currentPlaybackStep.value?.kind === 'transfer') {
-    nextTick(() => fitVisibleGraphToViewport())
-  }
 }
 
 function stepBackward() {
@@ -804,11 +828,16 @@ function applyPlaybackVisibility() {
     node.classList.toggle('playback-hidden', !isVisible)
     node.setAttribute('aria-hidden', String(!isVisible))
   })
-  hideTooltip()
-}
-
-function fitVisibleGraphToViewport() {
-  fitGraphToViewport()
+  if (tooltipNodeId.value) {
+    const tooltipNode = Array.from(svg.querySelectorAll('.node')).find(node => (
+      node.querySelector('title')?.textContent?.trim() === tooltipNodeId.value
+    ))
+    if (!tooltipNode || tooltipNode.classList.contains('playback-hidden')) {
+      hideTooltip()
+    } else {
+      refreshTooltipBalances()
+    }
+  }
 }
 
 function harmonizeNodeAppearance(nodeEl: SVGElement) {
@@ -832,8 +861,12 @@ function harmonizeEdgeAppearance(edgeEl: SVGElement) {
   const edgeText = Array.from(edgeEl.querySelectorAll<SVGTextElement>('text'))
   const label = edgeText.map(el => el.textContent || '').join(' ').trim()
   const tokenName = inferTokenNameFromLabel(edgeText, label)
-  const accent = getDarkAccentForName(tokenName)
-  const textColor = getThemeDarkTextColor(tokenName)
+  // The backend colors every transfer from its canonical token address. Keep
+  // that color for ordinary transfers and mint/burn edges alike; parsing the
+  // visible symbol is only a fallback for older SVG artifacts.
+  const sourceColor = getGraphvizEdgeColor(edgeEl)
+  const accent = sourceColor || getDarkAccentForName(tokenName)
+  const textColor = sourceColor || getThemeDarkTextColor(tokenName)
 
   edgeEl.querySelectorAll<SVGPathElement>('path:not(.hit-area)').forEach((path) => {
     if (path.getAttribute('fill') === 'none') {
@@ -856,11 +889,22 @@ function harmonizeEdgeAppearance(edgeEl: SVGElement) {
   })
 }
 
+function getGraphvizEdgeColor(edgeEl: SVGElement): string | null {
+  const candidates = [
+    edgeEl.querySelector<SVGPathElement>('path:not(.hit-area)')?.getAttribute('stroke'),
+    edgeEl.querySelector<SVGPolygonElement>('polygon')?.getAttribute('fill'),
+    edgeEl.querySelector<SVGTextElement>('text')?.getAttribute('fill'),
+  ]
+  return candidates.find(color => color && color !== 'none' && color !== 'transparent') || null
+}
+
 function inferTokenNameFromLabel(texts: SVGTextElement[], label: string): string | null {
   const firstLine = texts[0]?.textContent?.trim() || ''
-  const firstLineMatch = firstLine.match(/^\(\d+\)\s+(.+)$/)
+  const firstLineMatch = firstLine.match(
+    /^\(\d+\)\s+(.+?)(?:\((?:mint|burn)\))?\s*:/i,
+  )
   if (firstLineMatch?.[1]) return firstLineMatch[1].trim()
-  const match = label.match(/\)\s+(.+?)(?:\(|:)/)
+  const match = label.match(/\)\s+(.+?)(?:\((?:mint|burn)\))?\s*:/i)
   return match?.[1]?.trim() || null
 }
 
@@ -888,28 +932,90 @@ function getThemeDarkTextColor(name: string | null) {
   return THEME_DARK_COLORS[Math.abs(hash) % THEME_DARK_COLORS.length] ?? '#6B7280'
 }
 
-// 根据节点 DOT 名查找余额
-// 匹配顺序：① legend name -> address 映射 ② 节点名本身就是地址
-function findBalancesForNode(nodeId: string): Record<string, number> | null {
+// 根据节点 DOT 名解析规范化地址。
+// 匹配顺序：① legend name -> address 映射 ② 节点名本身就是地址。
+function resolveAddressForNode(nodeId: string): string | null {
   if (!nodeId) return null
   const lower = nodeId.toLowerCase()
-
-  // ① 用 legend 映射把 display name 转成地址再查
   const addr = nameToAddress.value[lower]
-  if (addr && addressBalances.value[addr]) return addressBalances.value[addr]
-
-  // ② 节点名本身就是地址（0x...）
-  if (addressBalances.value[lower]) return addressBalances.value[lower]
-
+  if (addr) return addr
+  if (/^0x[0-9a-f]{40}$/.test(lower)) return lower
   return null
 }
 
+function findFinalBalancesForNode(nodeId: string): Record<string, number> {
+  const address = resolveAddressForNode(nodeId)
+  if (!address) return {}
+  return Object.fromEntries(
+    Object.entries(addressBalances.value[address] || {})
+      .filter(([, amount]) => Number(amount) !== 0),
+  )
+}
+
+function findPlaybackBalancesForNode(nodeId: string): Record<string, number> {
+  const address = resolveAddressForNode(nodeId)
+  if (!address) return {}
+  const cutoffOrder = currentPlaybackStep.value?.visibleTransferOrder ?? -1
+  const rawByToken = new Map<string, bigint>()
+  const metadata = new Map<string, { name: string; decimals: number }>()
+
+  for (const event of balanceTimelineEvents.value) {
+    if (event.order > cutoffOrder) break
+    const tokenAddress = (event.token_address || `unknown:${event.token_name}`).toLowerCase()
+    const matchingDeltas = event.deltas.filter(delta => delta.address.toLowerCase() === address)
+    if (matchingDeltas.length === 0) continue
+    metadata.set(tokenAddress, {
+      name: event.token_name || displayTokenAddress(tokenAddress),
+      decimals: Math.max(0, Math.min(255, Number(event.decimals) || 0)),
+    })
+    for (const delta of matchingDeltas) {
+      try {
+        rawByToken.set(tokenAddress, (rawByToken.get(tokenAddress) || 0n) + BigInt(delta.amount_raw))
+      } catch {
+        console.warn('Ignoring invalid raw balance delta:', delta.amount_raw)
+      }
+    }
+  }
+
+  const nonZeroBalances = Array.from(rawByToken.entries())
+    .filter(([, rawAmount]) => rawAmount !== 0n)
+  const nameCounts = new Map<string, number>()
+  nonZeroBalances.forEach(([tokenAddress]) => {
+    const name = metadata.get(tokenAddress)!.name.toLowerCase()
+    nameCounts.set(name, (nameCounts.get(name) || 0) + 1)
+  })
+  const result: Record<string, number> = {}
+  nonZeroBalances.forEach(([tokenAddress, rawAmount]) => {
+    const token = metadata.get(tokenAddress)!
+    const duplicateName = (nameCounts.get(token.name.toLowerCase()) || 0) > 1
+    const shortAddress = tokenAddress.length > 14
+      ? `${tokenAddress.slice(0, 8)}…${tokenAddress.slice(-4)}`
+      : tokenAddress.toUpperCase()
+    const label = duplicateName ? `${token.name} · ${shortAddress}` : token.name
+    result[label] = Number(rawAmount) / (10 ** token.decimals)
+  })
+  return result
+}
+
+function balancesForTooltipNode(nodeId: string): Record<string, number> {
+  if (isPlaybackActivated.value && balanceTimelineLoaded.value) {
+    return findPlaybackBalancesForNode(nodeId)
+  }
+  return findFinalBalancesForNode(nodeId)
+}
+
 // tooltip 显示 / 移动 / 隐藏
-function showTooltip(e: MouseEvent, name: string, balances: Record<string, number>) {
-  tooltipName.value = name
-  tooltipBalances.value = balances
+function showTooltip(e: MouseEvent, nodeId: string) {
+  tooltipNodeId.value = nodeId
+  tooltipName.value = nodeId
+  refreshTooltipBalances()
   tooltipVisible.value = true
   moveTooltip(e)
+}
+
+function refreshTooltipBalances() {
+  if (!tooltipNodeId.value) return
+  tooltipBalances.value = balancesForTooltipNode(tooltipNodeId.value)
 }
 
 function moveTooltip(e: MouseEvent) {
@@ -924,6 +1030,7 @@ function moveTooltip(e: MouseEvent) {
 
 function hideTooltip() {
   tooltipVisible.value = false
+  tooltipNodeId.value = null
 }
 
 // 格式化余额：正数显示 +，负数显示 -，保留5位有效数字
@@ -1075,6 +1182,43 @@ function fitGraphToViewport() {
   resetSvgViewport?.()
 }
 
+async function restoreFullTfgLayout() {
+  relayoutRequestId += 1
+  relayoutState.value = 'idle'
+  relayoutError.value = ''
+  if (!fullSvgSource.value) return
+  await renderGraph(fullSvgSource.value, loadRequestId, true)
+}
+
+async function togglePlaybackRelayout() {
+  if (relayoutState.value === 'active') {
+    await restoreFullTfgLayout()
+    return
+  }
+  const maxOrder = currentPlaybackStep.value?.visibleTransferOrder ?? -1
+  if (
+    !props.txHash
+    || !canRelayoutPlayback.value
+    || relayoutState.value === 'loading'
+    || maxOrder < 0
+  ) return
+
+  const txHash = props.txHash
+  const requestId = ++relayoutRequestId
+  relayoutState.value = 'loading'
+  relayoutError.value = ''
+  try {
+    const svgSource = await fetchTfgPlaybackRelayout(txHash, maxOrder)
+    if (requestId !== relayoutRequestId || props.txHash !== txHash) return
+    relayoutState.value = 'active'
+    await renderGraph(svgSource, loadRequestId, true)
+  } catch (error: any) {
+    if (requestId !== relayoutRequestId) return
+    relayoutState.value = 'error'
+    relayoutError.value = error?.message || 'Failed to relayout the TFG playback prefix'
+  }
+}
+
 onBeforeUnmount(() => {
   stopPlayback()
   disposeSvgViewport?.()
@@ -1130,7 +1274,12 @@ onBeforeUnmount(() => {
       </div>
       <GraphFitButton
         graph-name="token flow graph"
-        @fit="fitGraphToViewport"
+        :disabled="!canRelayoutPlayback"
+        :loading="relayoutState === 'loading'"
+        :active="relayoutState === 'active'"
+        :action-label="`Relayout TFG playback prefix through transfer ${currentPlaybackStep?.visibleTransferOrder ?? 0}`"
+        active-label="Restore full token flow graph layout"
+        @fit="togglePlaybackRelayout"
       />
       <GraphExpandButton
         graph-name="token flow graph"
@@ -1198,15 +1347,23 @@ onBeforeUnmount(() => {
       <div v-if="mappingNotice" class="mapping-notice" role="status">
         {{ mappingNotice }}
       </div>
+      <div v-if="relayoutError" class="mapping-notice relayout-error" role="alert">
+        {{ relayoutError }}
+      </div>
 
       <!-- 节点余额悬浮卡片 -->
       <div
         v-if="tooltipVisible"
         class="node-tooltip"
         :style="{ left: tooltipX + 'px', top: tooltipY + 'px' }"
+        role="status"
+        aria-live="polite"
       >
         <div class="tooltip-title">{{ tooltipName }}</div>
         <div class="tooltip-divider"></div>
+        <div v-if="Object.keys(tooltipBalances).length === 0" class="tooltip-empty">
+          No balance change yet
+        </div>
         <div
           v-for="(val, token) in tooltipBalances"
           :key="token"
@@ -1444,6 +1601,14 @@ onBeforeUnmount(() => {
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
 }
 
+.relayout-error {
+  top: 10px;
+  bottom: auto;
+  border-color: rgba(220, 38, 38, 0.35);
+  color: #991b1b;
+  background: rgba(254, 242, 242, 0.97);
+}
+
 .graph-viewport {
   flex: 1;
   min-width: 0;
@@ -1532,43 +1697,54 @@ onBeforeUnmount(() => {
   pointer-events: none;
   background: var(--panel-bg, #1a1a2e);
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 7px;
-  padding: 8px 11px;
-  min-width: 160px;
-  max-width: 220px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  border-radius: 5px;
+  padding: 5px 7px;
+  min-width: 128px;
+  max-width: 190px;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.32);
 }
 
 .tooltip-title {
-  font-size: 10px;
+  font-size: 9px;
   color: var(--muted, #888);
-  margin-bottom: 6px;
+  margin-bottom: 3px;
   word-break: break-all;
-  line-height: 1.4;
+  line-height: 1.25;
+}
+
+.tooltip-empty {
+  color: #94a3b8;
+  font-size: 9px;
+  line-height: 1.25;
+}
+
+.tooltip-empty {
+  padding: 1px 0;
+  font-style: italic;
 }
 
 .tooltip-divider {
   height: 1px;
   background: rgba(255, 255, 255, 0.08);
-  margin-bottom: 6px;
+  margin-bottom: 3px;
 }
 
 .tooltip-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 10px;
-  padding: 2px 0;
+  gap: 7px;
+  padding: 1px 0;
 }
 
 .tooltip-token {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text, #ccc);
   font-weight: 500;
 }
 
 .tooltip-amount {
-  font-size: 11px;
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }

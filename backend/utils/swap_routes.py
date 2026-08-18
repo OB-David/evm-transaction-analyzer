@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 MAX_ROUTE_HOPS = 8
 MAX_AMOUNT_RELATIVE_GAP = 0.01
-DETECTOR_SCHEMA_VERSION = 8
+DETECTOR_SCHEMA_VERSION = 10
 NATIVE_TOKEN_ADDRESS = "eth"
 # Canonical Ethereum mainnet WETH.  This is an address-level asset identity,
 # not a contract name, selector, ABI, event, or public-interface dependency.
@@ -324,6 +324,22 @@ def _callback_prefund_anchor(
     return callback
 
 
+def _is_inverse_callback(frame: _Frame, frames: dict[int, _Frame]) -> bool:
+    """Return whether ``frame`` calls back into its direct caller.
+
+    A route executor entered as ``route -> venue -> route`` is a settlement
+    callback, not another venue merely because it receives one asset before
+    forwarding another.  Treating that inverse frame as a venue creates a
+    synthetic SwapLeg from the outer venue's output to the callback payment.
+    """
+    parent = frames.get(frame.parent_call_id) if frame.parent_call_id is not None else None
+    return bool(
+        parent is not None
+        and frame.from_address == parent.to_address
+        and frame.to_address == parent.from_address
+    )
+
+
 def _scope_candidate(
     *,
     kind: str,
@@ -346,6 +362,37 @@ def _scope_candidate(
         "input_edges": [input_edge],
         "output_edges": [output_edge],
         "strength": 2 if kind == "common_scope" else 1,
+    }
+
+
+def _post_settlement_scope_candidate(
+    *,
+    venue: str,
+    input_edge: dict[str, Any],
+    output_edge: dict[str, Any],
+    input_scope: _Frame,
+    output_scope: _Frame,
+    envelope: _Frame,
+) -> dict[str, Any]:
+    """Build an output-first leg settled by a later sibling venue call."""
+    return {
+        "kind": "callback_post_settled",
+        "venue_address": venue,
+        "anchor_call_ids": [output_scope.call_id, input_scope.call_id, envelope.call_id],
+        # Economic route order follows settlement for an output-first leg.
+        # Its output edge can then connect backwards through a shared TFG edge
+        # while non-shared predecessor legs remain chronologically increasing.
+        "logical_step": input_edge["step_min"],
+        "start_step": min(
+            output_edge["step_min"], output_scope.entry_step, envelope.entry_step
+        ),
+        "end_step": max(
+            input_edge["step_max"], input_scope.exit_step, envelope.exit_step
+        ),
+        "depth": max(input_scope.depth, output_scope.depth),
+        "input_edges": [input_edge],
+        "output_edges": [output_edge],
+        "strength": 2,
     }
 
 
@@ -413,13 +460,57 @@ def extract_swap_scopes(
                     ))
                     continue
 
-                # Strict pre-transfer case: input precedes the deepest venue
-                # frame containing the output.  Prefer one parent domain, or
-                # require a proven inverse callback for a prefunded sibling.
+                input_scope = _deepest_venue_ancestor(
+                    input_edge["evidence_call_id"], venue, frames, parents
+                )
                 output_scope = _deepest_venue_ancestor(
                     output_edge["evidence_call_id"], venue, frames, parents
                 )
+
+                # Output-first callback settlement:
+                #
+                #   route -> venue
+                #     venue -> route (inverse callback envelope)
+                #       route -> venue (venue sends token_out)
+                #       ... execute route ...
+                #       route -> venue (venue receives token_in)
+                #
+                # Both venue calls must be ordered siblings inside one proven
+                # inverse callback.  This is deliberately stricter than a
+                # time-window heuristic and does not rely on ABI/protocol names.
+                if (
+                    input_scope is not None
+                    and output_scope is not None
+                    and input_scope.call_id != output_scope.call_id
+                    and input_scope.parent_call_id is not None
+                    and input_scope.parent_call_id == output_scope.parent_call_id
+                    and output_scope.exit_step < input_scope.entry_step
+                    and output_edge["step_max"] < input_edge["step_min"]
+                ):
+                    envelope = frames.get(input_scope.parent_call_id)
+                    if envelope is not None and _is_inverse_callback(envelope, frames):
+                        candidates.append(_post_settlement_scope_candidate(
+                            venue=venue,
+                            input_edge=input_edge,
+                            output_edge=output_edge,
+                            input_scope=input_scope,
+                            output_scope=output_scope,
+                            envelope=envelope,
+                        ))
+                        continue
+
+                # Strict pre-transfer case: input precedes the deepest venue
+                # frame containing the output.  Prefer one parent domain, or
+                # require a proven inverse callback for a prefunded sibling.
                 if output_scope is None or input_edge["step_max"] >= output_scope.entry_step:
+                    continue
+                # A transfer received while an earlier invocation of this
+                # venue is already active is an output/credit of that call,
+                # not a prefund for a later invocation.  Without this guard a
+                # subsequent profit withdrawal can become a pseudo SwapLeg.
+                if input_scope is not None:
+                    continue
+                if _is_inverse_callback(output_scope, frames):
                     continue
                 same_parent_domain = _same_parent_domain(
                     input_edge["evidence_call_id"], output_scope.parent_call_id, parents
@@ -564,6 +655,119 @@ def _custody_compatible(first: dict[str, Any], second: dict[str, Any]) -> bool:
     return recipient in {second["payer"], second["venue_address"]}
 
 
+def _flow_events(
+    paired: list[dict[str, Any]],
+    pending_erc20: list[dict[str, Any]] | None,
+) -> dict[int, dict[str, Any]]:
+    """Build canonical directed asset events for route-boundary accounting."""
+    events: dict[int, dict[str, Any]] = {}
+
+    for transfer in paired:
+        edge_id = _integer(transfer.get("order"))
+        amount = _transfer_amount_raw(transfer)
+        if edge_id is None or amount is None:
+            continue
+        steps = _transfer_steps(transfer)
+        events[edge_id] = {
+            "edge_id": edge_id,
+            "token_address": _address(transfer.get("token_addr") or transfer.get("token")),
+            "from_address": _address(transfer.get("from")),
+            "to_address": _address(transfer.get("to")),
+            "amount_raw": amount,
+            "step_min": min(steps) if steps else edge_id,
+            "step_max": max(steps) if steps else edge_id,
+            "kind": "transfer",
+        }
+
+    for change in pending_erc20 or []:
+        edge_id = _integer(change.get("order"))
+        raw_value = _integer(change.get("value"))
+        if edge_id is None or raw_value is None or raw_value == 0:
+            continue
+        token_address = _address(change.get("token_addr") or change.get("token"))
+        user = _address(change.get("user"))
+        steps = _transfer_steps(change)
+        events[edge_id] = {
+            "edge_id": edge_id,
+            "token_address": token_address,
+            "from_address": user if raw_value < 0 else token_address,
+            "to_address": token_address if raw_value < 0 else user,
+            "amount_raw": abs(raw_value),
+            "step_min": min(steps) if steps else edge_id,
+            "step_max": max(steps) if steps else edge_id,
+            "kind": "burn" if raw_value < 0 else "mint",
+        }
+
+    return events
+
+
+def _raw_amounts_compatible(available: int, required: int) -> tuple[bool, float]:
+    denominator = max(available, required)
+    if denominator == 0:
+        return False, 1.0
+    gap = abs(available - required) / denominator
+    return gap <= MAX_AMOUNT_RELATIVE_GAP, gap
+
+
+def _trace_route_origin(
+    first_leg: dict[str, Any],
+    flow_events: dict[int, dict[str, Any]],
+) -> tuple[str, list[int]]:
+    """Trace same-economic-asset custody backwards from a first SwapLeg.
+
+    This collapses exact/near-exact helper forwarding and explicit ETH/WETH
+    mirror events without guessing across a token conversion.  The returned
+    connector orders are real TFG edges and remain visible in the full path.
+    """
+    current_account = _address(first_leg.get("payer"))
+    current_token = _address(first_leg.get("token_in_address"))
+    current_amount = int(first_leg.get("amount_in_raw", 0))
+    input_orders = [int(value) for value in first_leg.get("input_edge_ids", [])]
+    if not current_account or not input_orders or current_amount <= 0:
+        return current_account, []
+
+    cutoff = min(input_orders)
+    connectors: list[int] = []
+    visited: set[int] = set(input_orders)
+    for _ in range(MAX_ROUTE_HOPS):
+        candidates: list[tuple[int, int, float, dict[str, Any]]] = []
+        for edge_id, event in flow_events.items():
+            if edge_id in visited or edge_id >= cutoff:
+                continue
+            if event["to_address"] != current_account:
+                continue
+            if not _route_tokens_compatible(event["token_address"], current_token):
+                continue
+            # Only ETH/WETH supply boundaries represent an explicit asset
+            # conversion here.  Arbitrary ERC-20 mint/burn events are not
+            # custody forwarding and must never be absorbed into a route.
+            if (
+                event["kind"] != "transfer"
+                and _economic_asset(event["token_address"]) != "native"
+            ):
+                continue
+            compatible, gap = _raw_amounts_compatible(
+                int(event["amount_raw"]), current_amount
+            )
+            if not compatible:
+                continue
+            candidates.append((event["step_max"], edge_id, -gap, event))
+        if not candidates:
+            break
+        _, edge_id, _, predecessor = max(candidates)
+        connectors.append(edge_id)
+        visited.add(edge_id)
+        cutoff = edge_id
+        current_account = predecessor["from_address"]
+        current_token = predecessor["token_address"]
+        current_amount = int(predecessor["amount_raw"])
+        if not current_account:
+            break
+
+    connectors.reverse()
+    return current_account, connectors
+
+
 def build_ordered_leg_graph(swap_legs: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     graph: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for first in swap_legs:
@@ -610,79 +814,57 @@ def build_ordered_leg_graph(swap_legs: list[dict[str, Any]]) -> dict[str, list[d
 def find_primitive_cycles(
     swap_legs: list[dict[str, Any]],
     graph: dict[str, list[dict[str, Any]]],
+    flow_events: dict[int, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     by_id = {leg["swap_leg_id"]: leg for leg in swap_legs}
     candidates: list[dict[str, Any]] = []
     seen: set[tuple[str, ...]] = set()
 
-    def cycle_asset(path: list[str]) -> tuple[str, str, int]:
-        """Find the asset/account with distinct incoming and outgoing TFG edges."""
-        edges: dict[int, dict[str, Any]] = {}
-        for leg_id in path:
-            leg = by_id[leg_id]
-            for edge_id in leg["input_edge_ids"]:
-                edges.setdefault(edge_id, {
-                    "token": leg["token_in_address"],
-                    "from": leg["payer"],
-                    "to": leg["venue_address"],
-                    "step": max(leg["input_step_range"]),
-                    "amount": int(leg.get("input_edge_amounts_raw", {}).get(
-                        str(edge_id), leg["amount_in_raw"]
-                    )),
-                })
-            for edge_id in leg["output_edge_ids"]:
-                edges.setdefault(edge_id, {
-                    "token": leg["token_out_address"],
-                    "from": leg["venue_address"],
-                    "to": leg["recipient"],
-                    "step": max(leg["output_step_range"]),
-                    "amount": int(leg.get("output_edge_amounts_raw", {}).get(
-                        str(edge_id), leg["amount_out_raw"]
-                    )),
-                })
+    def cycle_asset(edge_orders: set[int], route_account: str) -> tuple[str, str, int]:
+        """Find the strongest canonical-asset delta at the route boundary."""
+        grouped: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+        for edge_id in edge_orders:
+            edge = flow_events.get(edge_id)
+            if edge is not None:
+                grouped[_economic_asset(edge["token_address"])].append(edge)
 
-        grouped: defaultdict[str, list[tuple[int, dict[str, Any]]]] = defaultdict(list)
-        for edge_id, edge in edges.items():
-            grouped[_economic_asset(edge["token"])].append((edge_id, edge))
-
-        matches: list[tuple[float, int, int, str, str, int]] = []
-        for asset, asset_edges in grouped.items():
-            if len(asset_edges) < 2:
+        matches: list[tuple[float, int, int, str, int]] = []
+        for asset_edges in grouped.values():
+            outgoing = [edge for edge in asset_edges if edge["from_address"] == route_account]
+            incoming = [edge for edge in asset_edges if edge["to_address"] == route_account]
+            if not outgoing or not incoming:
                 continue
-            addresses = {
-                edge[address]
-                for _, edge in asset_edges
-                for address in ("from", "to")
-            }
-            for address in addresses:
-                outgoing = [item for item in asset_edges if item[1]["from"] == address]
-                incoming = [item for item in asset_edges if item[1]["to"] == address]
-                if not outgoing or not incoming:
-                    continue
-                amount_out = sum(item[1]["amount"] for item in outgoing)
-                amount_in = sum(item[1]["amount"] for item in incoming)
-                denominator = max(amount_in, amount_out)
-                relative_change = (
-                    abs(amount_in - amount_out) / denominator if denominator else 0.0
-                )
-                latest_edge = max(asset_edges, key=lambda item: (item[1]["step"], item[0]))[1]
-                matches.append((
-                    relative_change,
-                    len(asset_edges),
-                    latest_edge["step"],
-                    address,
-                    latest_edge["token"],
-                    amount_in - amount_out,
-                ))
+            amount_out = sum(int(edge["amount_raw"]) for edge in outgoing)
+            amount_in = sum(int(edge["amount_raw"]) for edge in incoming)
+            denominator = max(amount_in, amount_out)
+            relative_change = (
+                abs(amount_in - amount_out) / denominator if denominator else 0.0
+            )
+            latest_edge = max(asset_edges, key=lambda edge: (edge["step_max"], edge["edge_id"]))
+            matches.append((
+                relative_change,
+                len(asset_edges),
+                latest_edge["step_max"],
+                latest_edge["token_address"],
+                amount_in - amount_out,
+            ))
 
         if matches:
-            _, _, _, account, token, delta = max(matches)
-            return token, account, delta
+            _, _, _, token, delta = max(matches)
+            return token, route_account, delta
         # Defensive fallback for incomplete transfer evidence.
-        last = by_id[path[-1]]
-        return last["token_out_address"], last["recipient"], 0
+        selected = [flow_events[edge_id] for edge_id in edge_orders if edge_id in flow_events]
+        if selected:
+            latest = max(selected, key=lambda edge: (edge["step_max"], edge["edge_id"]))
+            return latest["token_address"], route_account, 0
+        return "", route_account, 0
 
-    def visit(path: list[str], gaps: list[float], route_account: str) -> None:
+    def visit(
+        path: list[str],
+        gaps: list[float],
+        route_account: str,
+        connector_orders: list[int],
+    ) -> None:
         first = by_id[path[0]]
         last = by_id[path[-1]]
         settlement_closure = bool(
@@ -719,19 +901,43 @@ def find_primitive_cycles(
                 )
                 reported_path = path[rotation:] + path[:rotation]
                 reported_route_account = by_id[reported_path[0]]["payer"]
-            reported_first = by_id[reported_path[0]]
-            reported_last = by_id[reported_path[-1]]
+            swap_edge_orders = {
+                edge_id
+                for leg_id in path
+                for edge_id in by_id[leg_id]["input_edge_ids"] + by_id[leg_id]["output_edge_ids"]
+            }
+            edge_order_set = swap_edge_orders | set(connector_orders)
+            edge_orders = sorted(edge_order_set)
+            arbitrage_token_address, reported_route_account, asset_delta = cycle_asset(
+                edge_order_set, reported_route_account
+            )
+
+            # Present a closed route from the beneficiary's arbitrage asset
+            # when that boundary is explicit.  This turns an output-first
+            # settlement rotation such as USDC -> USDT -> WETH -> USDC into
+            # the economically clearer WETH -> USDC -> USDT -> WETH.
+            asset_rotation = next(
+                (
+                    index for index, leg_id in enumerate(reported_path)
+                    if _route_tokens_compatible(
+                        by_id[leg_id]["token_in_address"], arbitrage_token_address
+                    )
+                    and by_id[leg_id]["payer"] == reported_route_account
+                ),
+                None,
+            )
+            if asset_rotation is not None:
+                reported_path = (
+                    reported_path[asset_rotation:] + reported_path[:asset_rotation]
+                )
+
             key = tuple(reported_path)
             if key in seen:
                 return
             seen.add(key)
-            edge_orders = sorted({
-                edge_id
-                for leg_id in path
-                for edge_id in by_id[leg_id]["input_edge_ids"] + by_id[leg_id]["output_edge_ids"]
-            })
+            reported_first = by_id[reported_path[0]]
+            reported_last = by_id[reported_path[-1]]
             path_final_token_address = reported_last["token_out_address"]
-            arbitrage_token_address, reported_route_account, asset_delta = cycle_asset(path)
             closure_kind = (
                 "exact"
                 if path_final_token_address == reported_first["token_in_address"]
@@ -750,8 +956,13 @@ def find_primitive_cycles(
                     "increase" if asset_delta > 0 else "decrease" if asset_delta < 0 else "unchanged"
                 ),
                 "transfer_edge_orders": edge_orders,
+                "swap_transfer_edge_orders": sorted(swap_edge_orders),
+                "connector_edge_orders": list(connector_orders),
                 "route_account": reported_route_account,
-                "start_step": min(by_id[leg_id]["logical_step"] for leg_id in path),
+                "start_step": min(
+                    [by_id[leg_id]["logical_step"] for leg_id in path]
+                    + [flow_events[edge_id]["step_min"] for edge_id in connector_orders]
+                ),
                 "end_step": max(
                     step
                     for leg_id in path
@@ -771,11 +982,17 @@ def find_primitive_cycles(
             next_id = successor["next_leg_id"]
             if next_id in path:
                 continue
-            visit(path + [next_id], gaps + [successor["amount_relative_gap"]], route_account)
+            visit(
+                path + [next_id],
+                gaps + [successor["amount_relative_gap"]],
+                route_account,
+                connector_orders,
+            )
 
     for leg in swap_legs:
         if leg["payer"]:
-            visit([leg["swap_leg_id"]], [], leg["payer"])
+            route_account, connector_orders = _trace_route_origin(leg, flow_events)
+            visit([leg["swap_leg_id"]], [], route_account, connector_orders)
 
     candidates.sort(key=lambda cycle: (
         cycle["start_step"], cycle["end_step"], cycle["ordered_swap_leg_ids"]
@@ -836,12 +1053,12 @@ def detect_arbitrage(
     trace_tree: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return strict-step SwapLeg evidence and independently selected cycles."""
-    del pending_erc20  # Mint/burn deltas are not ordinary SwapLeg transfers.
     mapped, diagnostics, frames, parents = map_transfers_to_token_calls(paired, trace_tree)
     scopes = extract_swap_scopes(mapped, frames, parents)
     swap_legs = extract_swap_legs(scopes)
     graph = build_ordered_leg_graph(swap_legs)
-    candidates = find_primitive_cycles(swap_legs, graph)
+    flow_events = _flow_events(paired, pending_erc20)
+    candidates = find_primitive_cycles(swap_legs, graph, flow_events)
     selected = select_disjoint_cycles(candidates)
     cycles = [cycle["transfer_edge_orders"] for cycle in selected]
     arb_edge_orders = {

@@ -21,6 +21,7 @@ import {
   type StepRange,
   type SwapPatternResult,
   fetchBlockInformation,
+  fetchFoldedCfgRelayout,
 } from '../api/analyze'
 import { CFG_EDGE_COLORS, getDarkAccentForColor, getFillColorForColor } from '../visualTheme'
 import GraphExpandButton from './GraphExpandButton.vue'
@@ -52,6 +53,7 @@ const emit = defineEmits<{
 
 type CfgEdgeType = 'NORMAL' | 'JUMP' | 'CALL' | 'DELEGATECALL' | 'TERMINATE'
 type LlmAnalysisState = 'idle' | 'loading' | 'success' | 'error'
+type RelayoutState = 'idle' | 'loading' | 'active' | 'error'
 type SwapHighlightGroup = {
   key: string
   nodes: string[]
@@ -129,6 +131,8 @@ const showEdgeTypes = ref(false)
 const llmAnalysisState = ref<LlmAnalysisState>('idle')
 const llmAnalysisResponse = ref<PlainBlockLlmAnalysisResponse | null>(null)
 const llmAnalysisError = ref('')
+const relayoutState = ref<RelayoutState>('idle')
+const relayoutError = ref('')
 const sequenceCallMapping = ref<CallTreePayload | null>(null)
 const swapSeedNodesByMode = ref<Record<CfgMode, Set<string>>>({
   folded: new Set(),
@@ -144,12 +148,24 @@ let resizeObserver: ResizeObserver | null = null
 let edgeTooltipHideTimer: number | null = null
 let focusFrameId: number | null = null
 let cfgLoadRequestId = 0
+let relayoutRequestId = 0
 
 const cfgModeBadge = computed(() => cfgMode.value === 'folded' ? 'Folded CFG' : 'Plain CFG')
 const toggleButtonLabel = computed(() => cfgMode.value === 'folded' ? 'Plain CFG' : 'Folded CFG')
 const hasSelection = computed(() => Boolean(selectedBlockInfo.value))
 const currentInformationReady = computed(() => informationLoadedByMode.value[cfgMode.value])
 const currentInformationError = computed(() => informationErrorByMode.value[cfgMode.value])
+const canRelayoutPlayback = computed(() => (
+  cfgMode.value === 'folded'
+  && status.value === 'success'
+  && currentInformationReady.value
+  && props.playbackActive
+  && props.playbackCutoffStep !== null
+))
+const selectedStepSpan = computed<string | null>(() => {
+  const cutoff = props.playbackCutoffStep
+  return cfgMode.value === 'folded' && cutoff !== null ? String(cutoff) : null
+})
 const selectedFoldedStepRanges = computed<StepRange[]>(
   () => selectedBlockInfo.value?.step_ranges ?? [],
 )
@@ -165,6 +181,9 @@ const selectedActionDisplays = computed<ActionDisplay[]>(() => {
 
 watch(() => props.txHash, (newHash) => {
   cfgLoadRequestId += 1
+  relayoutRequestId += 1
+  relayoutState.value = 'idle'
+  relayoutError.value = ''
   resetSelection()
   if (newHash) {
     loadCfgData(newHash)
@@ -211,6 +230,7 @@ watch([
   () => props.playbackActive,
   () => props.playbackCurrentBlockId,
 ], ([cutoffStep, active, currentBlockId]) => {
+  if (relayoutState.value !== 'idle') restoreFullFoldedLayout()
   if (selectedNodeName.value && !isPlaybackNodeVisible(selectedNodeName.value)) {
     resetSelection()
   }
@@ -281,17 +301,6 @@ watch(() => props.plainInformationReady, (ready) => {
   if (ready) void loadCfgInformation('plain')
 })
 
-watch(
-  [() => props.txHash, () => cfgMode.value, () => selectedBlockInfo.value?.block_id],
-  ([txHash, mode, selectedBlockId]) => {
-    if (!txHash || mode !== 'plain' || selectedBlockId === undefined || selectedBlockId === null) {
-      resetLlmAnalysis()
-      return
-    }
-    void loadLlmAnalysis(txHash, selectedBlockId)
-  },
-)
-
 async function loadCfgData(txHash: string) {
   const requestId = cfgLoadRequestId
   status.value = 'loading'
@@ -350,6 +359,9 @@ async function switchCfgMode(mode: CfgMode) {
   const nextView = getCfgView(mode) ?? await ensureCfgView(mode)
   if (!nextView || requestId !== cfgLoadRequestId) return
 
+  relayoutRequestId += 1
+  relayoutState.value = 'idle'
+  relayoutError.value = ''
   cfgMode.value = mode
   const cachedInformation = blockInformationByMode.value[mode]
   const nextInformation = Object.keys(cachedInformation).length > 0
@@ -1221,6 +1233,7 @@ function handleNodeClick(nodeName: string) {
     return
   }
 
+  resetLlmAnalysis()
   selectedNodeName.value = nodeName
   nodeNameToEl.value.get(nodeName)?.classList.add('selected')
 
@@ -1252,14 +1265,29 @@ function resetLlmAnalysis() {
   llmAnalysisError.value = ''
 }
 
-async function loadLlmAnalysis(txHash: string, blockId: BlockId) {
+function requestLlmAnalysis() {
+  if (!props.txHash || !selectedBlockInfo.value || llmAnalysisState.value === 'loading') return
+  void loadLlmAnalysis(
+    props.txHash,
+    selectedBlockInfo.value.block_id,
+    cfgMode.value,
+    llmAnalysisState.value === 'success',
+  )
+}
+
+async function loadLlmAnalysis(
+  txHash: string,
+  blockId: BlockId,
+  mode: CfgMode,
+  forceRefresh: boolean = false,
+) {
   const requestToken = ++llmRequestToken
   llmAnalysisState.value = 'loading'
   llmAnalysisResponse.value = null
   llmAnalysisError.value = ''
 
   try {
-    const response = await fetchPlainBlockLlmAnalysis(txHash, blockId)
+    const response = await fetchPlainBlockLlmAnalysis(txHash, blockId, mode, forceRefresh)
     if (requestToken !== llmRequestToken) return
     llmAnalysisResponse.value = response
     llmAnalysisState.value = 'success'
@@ -1657,8 +1685,61 @@ function resetZoom() {
   fitGraphToViewport({ animate: true })
 }
 
+function restoreFullFoldedLayout() {
+  relayoutRequestId += 1
+  relayoutState.value = 'idle'
+  relayoutError.value = ''
+  const foldedView = getCfgView('folded')
+  if (cfgMode.value === 'folded' && foldedView) {
+    renderSvg(foldedView.svgContent)
+  }
+}
+
+function collectPlaybackLayoutElements(): { nodeIds: string[], edgeTitles: string[] } {
+  const svg = graphContainer.value?.querySelector('svg')
+  if (!svg) return { nodeIds: [], edgeTitles: [] }
+  const nodeIds = Array.from(svg.querySelectorAll('.node:not(.playback-hidden)'))
+    .map(node => getNodeName(node))
+    .filter(Boolean)
+  const edgeTitles = Array.from(svg.querySelectorAll('.edge:not(.playback-hidden)'))
+    .map(edge => getEdgeTitle(edge))
+    .filter(Boolean)
+  return { nodeIds, edgeTitles }
+}
+
+async function togglePlaybackRelayout() {
+  if (relayoutState.value === 'active') {
+    restoreFullFoldedLayout()
+    return
+  }
+  if (!props.txHash || !canRelayoutPlayback.value || relayoutState.value === 'loading') return
+
+  const txHash = props.txHash
+  const { nodeIds, edgeTitles } = collectPlaybackLayoutElements()
+  if (nodeIds.length === 0) return
+  const requestId = ++relayoutRequestId
+  relayoutState.value = 'loading'
+  relayoutError.value = ''
+
+  try {
+    const svgContent = await fetchFoldedCfgRelayout(txHash, nodeIds, edgeTitles)
+    if (
+      requestId !== relayoutRequestId
+      || props.txHash !== txHash
+      || cfgMode.value !== 'folded'
+    ) return
+    relayoutState.value = 'active'
+    renderSvg(svgContent)
+  } catch (error: any) {
+    if (requestId !== relayoutRequestId) return
+    relayoutState.value = 'error'
+    relayoutError.value = error?.message || 'Failed to relayout the folded CFG playback prefix'
+  }
+}
+
 function resetFilter() {
   activeEdgeType.value = null
+  if (relayoutState.value !== 'idle') restoreFullFoldedLayout()
   emit('cfg-navigate', null)
   if (!props.filteredEdgeIds?.length && !props.selectedStepRange && !props.highlightedBlockId?.length) {
     clearFilterState()
@@ -1949,7 +2030,14 @@ onBeforeUnmount(() => {
     <div class="graph-actions">
       <GraphFitButton
         graph-name="control flow graph"
-        @fit="resetZoom"
+        :disabled="cfgMode === 'folded' ? !canRelayoutPlayback : false"
+        :loading="cfgMode === 'folded' && relayoutState === 'loading'"
+        :active="cfgMode === 'folded' && relayoutState === 'active'"
+        :action-label="cfgMode === 'folded'
+          ? `Relayout folded CFG playback prefix${selectedStepSpan ? ` through step ${selectedStepSpan}` : ''}`
+          : undefined"
+        active-label="Restore full folded CFG layout"
+        @fit="cfgMode === 'folded' ? togglePlaybackRelayout() : resetZoom()"
       />
       <GraphExpandButton
         graph-name="control flow graph"
@@ -1968,6 +2056,20 @@ onBeforeUnmount(() => {
 
     <div v-else-if="status === 'success'" class="cfg-container">
       <div class="graph-stage">
+        <div
+          v-if="relayoutError"
+          class="relayout-message error"
+          role="alert"
+        >
+          {{ relayoutError }}
+        </div>
+        <div
+          v-else-if="relayoutState === 'active'"
+          class="relayout-message"
+          aria-live="polite"
+        >
+          Playback layout{{ selectedStepSpan ? ` · through step ${selectedStepSpan}` : '' }}
+        </div>
         <div
           v-if="!currentInformationReady"
           class="information-pending"
@@ -2069,13 +2171,27 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
 
-                <div v-if="cfgMode === 'plain'" class="info-card llm-analysis-group">
+                <div class="info-card llm-analysis-group">
                   <div class="info-card-header llm-header-row">
-                    <span class="info-card-title">LLM Analysis</span>
-                    <span v-if="llmAnalysisResponse?.source === 'cache'" class="llm-cache-badge">cached</span>
+                    <div class="llm-heading">
+                      <span class="info-card-title">AI Summary</span>
+                      <span v-if="llmAnalysisResponse?.source === 'cache'" class="llm-cache-badge">cached</span>
+                    </div>
+                    <button
+                      type="button"
+                      class="llm-analyze-button"
+                      :disabled="llmAnalysisState === 'loading'"
+                      @click="requestLlmAnalysis"
+                    >
+                      {{ llmAnalysisState === 'loading'
+                        ? 'Analyzing…'
+                        : llmAnalysisState === 'success'
+                          ? 'Analyze again'
+                          : 'Analyze with AI' }}
+                    </button>
                   </div>
                   <div v-if="llmAnalysisState === 'loading'" class="llm-status">
-                    Analyzing block intent...
+                    DeepSeek is analyzing this {{ cfgMode === 'folded' ? 'folded' : 'plain' }} CFG block...
                   </div>
                   <div v-else-if="llmAnalysisState === 'error'" class="llm-status error">
                     {{ llmAnalysisError }}
@@ -2086,6 +2202,9 @@ onBeforeUnmount(() => {
                   >
                     <div class="llm-title">{{ llmAnalysisResponse.analysis.title }}</div>
                     <div class="llm-description">{{ llmAnalysisResponse.analysis.description }}</div>
+                  </div>
+                  <div v-else class="llm-status">
+                    AI analysis starts only when you click the button.
                   </div>
                 </div>
 
@@ -2383,6 +2502,32 @@ onBeforeUnmount(() => {
   z-index: 10;
 }
 
+.relayout-message {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 11;
+  max-width: min(70%, 420px);
+  transform: translateX(-50%);
+  padding: 5px 10px;
+  border: 1px solid rgba(59, 130, 246, 0.24);
+  border-radius: 999px;
+  background: rgba(239, 246, 255, 0.96);
+  color: #1e3a5f;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+}
+
+.relayout-message.error {
+  border-color: rgba(220, 38, 38, 0.28);
+  background: rgba(254, 242, 242, 0.97);
+  color: #991b1b;
+}
+
 .status-overlay {
   position: absolute;
   top: 50%;
@@ -2593,6 +2738,41 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.llm-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.llm-analyze-button {
+  flex: 0 0 auto;
+  border: 1px solid #64748b;
+  border-radius: 5px;
+  background: #ffffff;
+  color: #334155;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 1.2;
+  padding: 4px 7px;
+}
+
+.llm-analyze-button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.llm-analyze-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.llm-analyze-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 
 .llm-cache-badge {

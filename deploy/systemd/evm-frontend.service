@@ -1,0 +1,17 @@
+[Unit]
+Description=EVM Transaction Analyzer Frontend
+Wants=network-online.target evm-backend.service
+After=network-online.target evm-backend.service
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/disk2/junming.ren/work/evm-transaction-analyzer/frontend
+Environment=PATH=/mnt/disk2/junming.ren/.nvm/versions/node/v22.17.0/bin:/usr/local/bin:/usr/bin:/bin
+ExecStartPre=/mnt/disk2/junming.ren/.nvm/versions/node/v22.17.0/bin/npm run build
+ExecStart=/mnt/disk2/junming.ren/.nvm/versions/node/v22.17.0/bin/npm run preview -- --host 0.0.0.0 --port 9006
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

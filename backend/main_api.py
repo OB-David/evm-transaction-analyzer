@@ -25,6 +25,7 @@ from utils.extract_token_changes import (
     build_link_artifact,
     detect_arbitrage,
     compute_address_balances,
+    build_balance_timeline,
 )
 from utils.swap_routes import build_arbitrage_artifact, build_swap_legs_artifact
 from utils.indentify_swap import filter_to_file
@@ -189,6 +190,7 @@ def run(tx_hash: str):
         arb_result = detect_arbitrage(pairs, pending_erc20, tree_data)
     with timings.measure("compute_address_balances"):
         addr_balances = compute_address_balances(pairs, pending_erc20)
+        balance_timeline = build_balance_timeline(pairs, pending_erc20)
 
     # 4. 保存文件
     # Persist compact evidence contracts. The full trace remains process-local.
@@ -216,6 +218,9 @@ def run(tx_hash: str):
 
         with open(os.path.join(result_dir, "address_balances.json"), "w", encoding="utf-8") as f:
             json.dump(addr_balances, f, indent=2, ensure_ascii=False)
+
+        with open(os.path.join(result_dir, "balance_timeline.json"), "w", encoding="utf-8") as f:
+            json.dump(balance_timeline, f, indent=2, ensure_ascii=False)
 
     def publish_graph_stage(stage: str) -> None:
         emit_analysis_stage(stage)

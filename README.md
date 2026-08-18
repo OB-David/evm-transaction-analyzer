@@ -52,6 +52,9 @@ Environment variables (configured in `backend/.env`):
 | Variable | Description |
 |----------|-------------|
 | `GETH_API` | URL of the Geth JSON-RPC endpoint |
+| `QUICKNODE_RPC_URL` | Full QuickNode Ethereum RPC URL used for historical opcode traces |
+| `QUICKNODE_ENDPOINT_NAME` | Optional QuickNode endpoint subdomain when the URL is assembled from a token |
+| `QUICKNODE_API_KEY` | QuickNode endpoint token; a `QN_...` platform key alone is not an RPC URL |
 | `POSTGRESQL_HOST` | PostgreSQL server host |
 
 ### Frontend

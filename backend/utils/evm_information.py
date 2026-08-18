@@ -6,10 +6,10 @@ from web3 import Web3
 import subprocess
 from functools import lru_cache
 
-from utils.drpc_trace import (
-    DrpcTraceError,
+from utils.quicknode_trace import (
+    QuicknodeTraceError,
     _memory_words,
-    fetch_drpc_trace,
+    fetch_quicknode_trace,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -19,7 +19,6 @@ GETH_TRACE_START_BLOCK = 25676797
 GETH_RPC_TIMEOUT_SECONDS = 600
 GETH_TRACE_RETRIES = 2
 GETH_RETRY_DELAY_SECONDS = 1.0
-DRPC_CHUNK_GAS_THRESHOLD = 2000000
 
 # Geth's native struct logger efficiently records opcode/stack data, but full
 # memory and cumulative storage make its response enormous. This second,
@@ -231,6 +230,13 @@ class TraceFormatter:
                 continue
         return ""
 
+    def _read_token_label(self, checksum_addr: str) -> str:
+        """Prefer the ERC-20 symbol for display, falling back to its name."""
+        return (
+            self._read_token_text(checksum_addr, "symbol")
+            or self._read_token_text(checksum_addr, "name")
+        )
+
 
     # 识别ERC20 token合约，包括逻辑合约识别
     def identify_erc20_contracts(self, initial_contracts: Set[str], steps: List[StandardizedStep]) -> Tuple[Dict[str, str], Set[str]]:
@@ -268,19 +274,16 @@ class TraceFormatter:
                 # --------------------------
                 # 1. 基础 ERC20 检查
                 # --------------------------
-                token_name = (
-                    self._read_token_text(checksum_addr, "name")
-                    or self._read_token_text(checksum_addr, "symbol")
-                )
+                token_name = self._read_token_label(checksum_addr)
                 decimals = token_contract.functions.decimals().call()
 
                 # 必须是合法小数位
                 if not isinstance(decimals, int) or not (0 <= decimals <= 18):
                     continue
 
-                # 【修复空名称问题】严格过滤：名称为空/空白 → 不识别为代币
+                # symbol 和 name 都为空/空白时，不识别为代币。
                 if not token_name:
-                    logger.debug(f"[{norm_addr}] 代币名称为空，跳过")
+                    logger.debug(f"[{norm_addr}] 代币 symbol/name 为空，跳过")
                     continue
 
                 # --------------------------
@@ -585,7 +588,7 @@ class TraceFormatter:
             if isinstance(memory, str):
                 try:
                     current_memory = _memory_words(memory)
-                except DrpcTraceError as exc:
+                except QuicknodeTraceError as exc:
                     raise TraceFetchError(
                         f"Geth memory 增量 step {index} 无效: {exc}"
                     ) from exc
@@ -644,30 +647,26 @@ class TraceFormatter:
         block_number: int,
         gas_used: Optional[int] = None,
     ) -> Dict:
-        prefer_drpc_chunks = (
-            gas_used is not None and gas_used >= DRPC_CHUNK_GAS_THRESHOLD
-        )
+        # Kept in the signature for callers that already provide receipt data.
+        # QuickNode returns the complete native struct trace in one request.
+        _ = gas_used
         if block_number < GETH_TRACE_START_BLOCK:
             logger.info(
-                "交易 %s 位于区块 %d（早于 %d），直接使用 dRPC trace",
+                "交易 %s 位于区块 %d（早于 %d），直接使用 QuickNode trace",
                 tx_hash,
                 block_number,
                 GETH_TRACE_START_BLOCK,
             )
             try:
-                drpc_trace = (
-                    fetch_drpc_trace(tx_hash, prefer_chunks=True)
-                    if prefer_drpc_chunks
-                    else fetch_drpc_trace(tx_hash)
-                )
+                quicknode_trace = fetch_quicknode_trace(tx_hash)
                 return self._validate_raw_trace(
-                    drpc_trace,
-                    "dRPC",
+                    quicknode_trace,
+                    "QuickNode",
                 )
             except NoOpcodeTraceError:
                 raise
-            except (DrpcTraceError, TraceFetchError) as exc:
-                raise TraceFetchError(f"dRPC trace 请求失败: {exc}") from exc
+            except (QuicknodeTraceError, TraceFetchError) as exc:
+                raise TraceFetchError(f"QuickNode trace 请求失败: {exc}") from exc
 
         try:
             raw_trace = self._fetch_geth_trace(tx_hash)
@@ -677,26 +676,22 @@ class TraceFormatter:
             raise
         except TraceFetchError as geth_error:
             logger.warning(
-                "Geth trace 获取失败，回退 dRPC: tx=%s block=%d error=%s",
+                "Geth trace 获取失败，回退 QuickNode: tx=%s block=%d error=%s",
                 tx_hash,
                 block_number,
                 geth_error,
             )
             try:
-                drpc_trace = (
-                    fetch_drpc_trace(tx_hash, prefer_chunks=True)
-                    if prefer_drpc_chunks
-                    else fetch_drpc_trace(tx_hash)
-                )
+                quicknode_trace = fetch_quicknode_trace(tx_hash)
                 return self._validate_raw_trace(
-                    drpc_trace,
-                    "dRPC",
+                    quicknode_trace,
+                    "QuickNode",
                 )
-            except (DrpcTraceError, TraceFetchError) as drpc_error:
+            except (QuicknodeTraceError, TraceFetchError) as quicknode_error:
                 raise TraceFetchError(
-                    f"Geth 和 dRPC trace 均失败；Geth: {geth_error}；"
-                    f"dRPC: {drpc_error}"
-                ) from drpc_error
+                    f"Geth 和 QuickNode trace 均失败；Geth: {geth_error}；"
+                    f"QuickNode: {quicknode_error}"
+                ) from quicknode_error
 
     # 获取并标准化trace,计算contract address，并在遍历 CALL 时分类 addresses
     # 改用 foundry 的 cast 方法
@@ -727,7 +722,7 @@ class TraceFormatter:
                 receipt = self.web3.eth.get_transaction_receipt(tx_hash)
                 gas_used = int(receipt.get("gasUsed", 0))
             except Exception as exc:
-                logger.warning("无法获取 gasUsed，将由 dRPC 自动选择请求方式: %s", exc)
+                logger.warning("无法获取 gasUsed，不影响 QuickNode trace 请求: %s", exc)
             raw_trace = self._fetch_raw_trace(
                 tx_hash,
                 int(block_number),

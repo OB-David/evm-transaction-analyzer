@@ -1,0 +1,17 @@
+[Unit]
+Description=EVM Transaction Analyzer Backend
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/disk2/junming.ren/work/evm-transaction-analyzer/backend
+ExecStart=/usr/local/bin/uv run uvicorn server:app --host 127.0.0.1 --port 9008
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/mnt/disk2/junming.ren/miniconda3/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=default.target

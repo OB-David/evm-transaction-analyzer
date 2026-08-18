@@ -9,7 +9,7 @@ from utils.evm_information import TraceFormatter
 from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
 from utils.render_cfg import get_valid_nodes_and_colors, render_transaction
-from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_fcfg, afg_to_pcfg, afg_to_call_tree, build_link_artifact, detect_arbitrage, compute_address_balances, filter_asset_flow_user_addresses
+from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_fcfg, afg_to_pcfg, afg_to_call_tree, build_link_artifact, detect_arbitrage, compute_address_balances, build_balance_timeline, filter_asset_flow_user_addresses
 from utils.swap_routes import build_arbitrage_artifact, build_swap_legs_artifact
 from utils.call_tree import build_refined_hierarchical_trace, write_call_tree_json
 from utils.indentify_swap import filter_to_file
@@ -170,6 +170,7 @@ def main():
         print(f"共提取到 {len(all_changes)} 条资产变更事件，配对成功 {len(pairs)} 对交易流,存在孤立变动{len(annotations)}条\n")
         arb_result = detect_arbitrage(pairs, pending_erc20, tree_data)
         addr_balances = compute_address_balances(pairs, pending_erc20)
+        balance_timeline = build_balance_timeline(pairs, pending_erc20)
 
         # 8. 保存折叠后Block ID与Instructions映射数据
         print("正在导出可见Block ID与Instructions映射...")
@@ -217,6 +218,10 @@ def main():
         addr_balances_path = os.path.join(result_dir, "address_balances.json")
         with open(addr_balances_path, "w", encoding="utf-8") as f:
             json.dump(addr_balances, f, indent=2, ensure_ascii=False)
+
+        balance_timeline_path = os.path.join(result_dir, "balance_timeline.json")
+        with open(balance_timeline_path, "w", encoding="utf-8") as f:
+            json.dump(balance_timeline, f, indent=2, ensure_ascii=False)
 
         print("\n===== 处理完成 =====")
         print(f"所有结果已保存到: {os.path.abspath(result_dir)}")

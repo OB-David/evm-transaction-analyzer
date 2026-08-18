@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 from dotenv import load_dotenv
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from typing import Any, Literal
 from utils.block_exploration import (
     fetch_block_gas_data,
@@ -33,11 +33,12 @@ from labels.coordinator import (
 from utils.plain_cfg_llm import (
     PLAIN_SEMANTICS_FILENAME,
     PlainCfgLlmServiceError,
-    analyze_plain_cfg_block,
+    analyze_cfg_block,
     clear_plain_cfg_runtime_cache,
 )
 from utils.swap_routes import DETECTOR_SCHEMA_VERSION
 from utils.tfg_layout import render_tfg_svg
+from utils.cfg_slice import build_cfg_subset_dot
 
 load_dotenv()
 
@@ -133,6 +134,37 @@ class BlockRequest(BaseModel):
     block_number: int
 
 
+class CfgRelayoutRequest(BaseModel):
+    node_ids: list[str]
+    edge_titles: list[str] = Field(default_factory=list)
+
+    @field_validator("node_ids")
+    @classmethod
+    def validate_node_ids(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("node_ids must not be empty")
+        if len(value) > 2_000:
+            raise ValueError("node_ids may contain at most 2000 items")
+        return value
+
+    @field_validator("edge_titles")
+    @classmethod
+    def validate_edge_titles(cls, value: list[str]) -> list[str]:
+        if len(value) > 8_000:
+            raise ValueError("edge_titles may contain at most 8000 items")
+        return value
+
+
+class TfgRelayoutRequest(BaseModel):
+    max_order: int
+
+    @field_validator("max_order")
+    @classmethod
+    def validate_max_order(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("max_order must be non-negative")
+        return value
+
 class TransactionGasInfo(BaseModel):
     index: int
     hash: str
@@ -192,6 +224,7 @@ class BlocksHeatmapResponse(BaseModel):
 class PlainBlockAnalysisRequest(BaseModel):
     tx_hash: str
     block_id: int | str
+    mode: Literal["folded", "plain"] = "plain"
     force_refresh: bool = False
 
     @field_validator("tx_hash")
@@ -587,6 +620,50 @@ async def render_cfg_svg(tx_hash: str, mode: str):
     )
 
 
+@app.post("/api/cfg/{tx_hash}/folded/relayout.svg")
+async def relayout_folded_cfg(tx_hash: str, request: CfgRelayoutRequest):
+    """Render only the selected folded-CFG topology without changing artifacts."""
+    if not TX_HASH_RE.match(tx_hash):
+        raise HTTPException(status_code=400, detail="Invalid tx_hash format")
+
+    dot_path = os.path.join(_analysis_result_dir(tx_hash), "folded_cfg.dot")
+    if not os.path.isfile(dot_path):
+        raise HTTPException(status_code=404, detail="Folded CFG DOT source not found")
+
+    try:
+        with open(dot_path, "r", encoding="utf-8") as source_file:
+            subset_dot = build_cfg_subset_dot(
+                source_file.read(),
+                request.node_ids,
+                request.edge_titles,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def run_graphviz() -> bytes:
+        completed = subprocess.run(
+            ["dot", "-Tsvg"],
+            input=subset_dot.encode("utf-8"),
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
+        return completed.stdout
+
+    try:
+        svg = await asyncio.to_thread(run_graphviz)
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="CFG relayout timed out") from exc
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise HTTPException(status_code=500, detail="CFG relayout failed") from exc
+
+    return Response(
+        content=svg,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/api/tfg/{tx_hash}.svg")
 async def render_token_flow_svg(tx_hash: str):
     """Render the persisted TFG using the topology-petal layout."""
@@ -600,6 +677,24 @@ async def render_token_flow_svg(tx_hash: str):
         raise
     except (OSError, subprocess.CalledProcessError) as exc:
         raise HTTPException(status_code=500, detail="TFG rendering failed") from exc
+    return Response(
+        content=svg,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/api/tfg/{tx_hash}/relayout.svg")
+async def relayout_token_flow_svg(tx_hash: str, request: TfgRelayoutRequest):
+    """Render the TFG playback prefix through one transfer order."""
+    if not TX_HASH_RE.match(tx_hash):
+        raise HTTPException(status_code=400, detail="Invalid tx_hash format")
+    try:
+        svg = await asyncio.to_thread(render_tfg_svg, tx_hash, request.max_order)
+    except HTTPException:
+        raise
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise HTTPException(status_code=500, detail="TFG relayout failed") from exc
     return Response(
         content=svg,
         media_type="image/svg+xml",
@@ -686,12 +781,19 @@ async def get_arbitrage(tx_hash: str):
 
 @app.post("/api/llm/plain-block-analysis", response_model=PlainBlockAnalysisResponse)
 async def plain_block_analysis(req: PlainBlockAnalysisRequest):
+    """Compatibility endpoint retained for existing clients."""
+    req.mode = "plain"
+    return await cfg_block_analysis(req)
+
+
+@app.post("/api/llm/cfg-block-analysis", response_model=PlainBlockAnalysisResponse)
+async def cfg_block_analysis(req: PlainBlockAnalysisRequest):
     loop = asyncio.get_event_loop()
 
     try:
         result = await loop.run_in_executor(
             executor,
-            lambda: _analyze_plain_cfg_block_when_ready(req),
+            lambda: _analyze_cfg_block_when_ready(req),
         )
     except PlainCfgLlmServiceError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
@@ -722,10 +824,11 @@ def _wait_for_plain_semantics(tx_hash: str) -> None:
         )
 
 
-def _analyze_plain_cfg_block_when_ready(req: PlainBlockAnalysisRequest) -> dict[str, Any]:
+def _analyze_cfg_block_when_ready(req: PlainBlockAnalysisRequest) -> dict[str, Any]:
     _wait_for_plain_semantics(req.tx_hash)
-    return analyze_plain_cfg_block(
+    return analyze_cfg_block(
         tx_hash=req.tx_hash,
         block_id=req.block_id,
+        mode=req.mode,
         force_refresh=req.force_refresh,
     )
