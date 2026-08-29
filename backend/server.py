@@ -242,15 +242,23 @@ class PlainBlockAnalysisRequest(BaseModel):
         return v
 
 
-class LlmAnalysisResult(BaseModel):
-    title: str
-    description: str = ""
+class ReconstructionValidation(BaseModel):
+    format: Literal["validated"]
+    evidence_items: int
 
 
-class PlainBlockAnalysisResponse(BaseModel):
+class SolidityReconstructionResult(BaseModel):
+    kind: Literal["solidity_statement_block"]
+    solidity: str
+    confidence: Literal["high", "medium", "low"]
+    unresolved: list[str]
+    validation: ReconstructionValidation
+
+
+class PlainBlockSolidityResponse(BaseModel):
     status: Literal["success"]
     source: Literal["cache", "llm"]
-    analysis: LlmAnalysisResult
+    reconstruction: SolidityReconstructionResult
     context_meta: dict[str, Any]
 
 
@@ -779,14 +787,21 @@ async def get_arbitrage(tx_hash: str):
         return json.load(f)
 
 
-@app.post("/api/llm/plain-block-analysis", response_model=PlainBlockAnalysisResponse)
-async def plain_block_analysis(req: PlainBlockAnalysisRequest):
-    """Compatibility endpoint retained for existing clients."""
+@app.post("/api/llm/plain-block-solidity", response_model=PlainBlockSolidityResponse)
+async def plain_block_solidity(req: PlainBlockAnalysisRequest):
+    """Generate a validated Solidity-like statement block for one plain CFG node."""
     req.mode = "plain"
     return await cfg_block_analysis(req)
 
 
-@app.post("/api/llm/cfg-block-analysis", response_model=PlainBlockAnalysisResponse)
+@app.post("/api/llm/plain-block-analysis", response_model=PlainBlockSolidityResponse)
+async def plain_block_analysis(req: PlainBlockAnalysisRequest):
+    """Compatibility alias for clients using the former analysis route."""
+    req.mode = "plain"
+    return await cfg_block_analysis(req)
+
+
+@app.post("/api/llm/cfg-block-analysis", response_model=PlainBlockSolidityResponse)
 async def cfg_block_analysis(req: PlainBlockAnalysisRequest):
     loop = asyncio.get_event_loop()
 
@@ -798,7 +813,7 @@ async def cfg_block_analysis(req: PlainBlockAnalysisRequest):
     except PlainCfgLlmServiceError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
-    return PlainBlockAnalysisResponse(**result)
+    return PlainBlockSolidityResponse(**result)
 
 
 def _wait_for_plain_semantics(tx_hash: str) -> None:

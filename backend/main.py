@@ -120,7 +120,10 @@ def main():
 
         print("正在生成调用树")
         # 2. 生成调用树
-        tree_data = build_refined_hierarchical_trace(standardized_trace["steps"])
+        tree_data = build_refined_hierarchical_trace(
+            standardized_trace["steps"],
+            root_calldata=tx.get("input"),
+        )
 
         # 3. 提取关键映射数据
         contracts_addresses = standardized_trace.get("contracts_addresses", [])

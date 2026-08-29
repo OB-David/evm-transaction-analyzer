@@ -179,7 +179,10 @@ def run(tx_hash: str):
     with timings.measure("pair_asset_transfers"):
         pairs, annotations, pending_erc20 = pair_transactions(original_transfer, all_changes, token_decimals_map)
     with timings.measure("build_sequence_tree"):
-        tree_data = build_refined_hierarchical_trace(standardized_trace["steps"])
+        tree_data = build_refined_hierarchical_trace(
+            standardized_trace["steps"],
+            root_calldata=tx.get("input"),
+        )
     with timings.measure("map_afg_to_folded_cfg"):
         edge_link_fcfg = afg_to_fcfg(pairs, pending_erc20, folded_cfg)
     with timings.measure("map_afg_to_plain_cfg"):

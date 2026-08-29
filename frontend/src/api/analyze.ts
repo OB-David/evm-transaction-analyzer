@@ -318,16 +318,21 @@ export interface CfgViewData {
   blockInformation?: BlockInformationMap
 }
 
-export interface PlainBlockLlmAnalysisRequest {
+export interface PlainBlockSolidityRequest {
   tx_hash: string
   block_id: BlockId
-  mode: CfgMode
   force_refresh?: boolean
 }
 
-export interface PlainBlockLlmAnalysisContent {
-  title: string
-  description: string
+export interface PlainBlockSolidityReconstruction {
+  kind: 'solidity_statement_block'
+  solidity: string
+  confidence: 'high' | 'medium' | 'low'
+  unresolved: string[]
+  validation: {
+    format: 'validated'
+    evidence_items: number
+  }
 }
 
 export interface PlainBlockStepRange {
@@ -345,12 +350,15 @@ export interface PlainBlockLlmContextMeta {
     target: PlainBlockStepRange
     next: PlainBlockStepRange | null
   }
+  cfg_mode: 'plain'
+  active_call_selector?: string | null
+  signature_candidates?: string[]
 }
 
-export interface PlainBlockLlmAnalysisResponse {
+export interface PlainBlockSolidityResponse {
   status: 'success'
   source: 'cache' | 'llm'
-  analysis: PlainBlockLlmAnalysisContent
+  reconstruction: PlainBlockSolidityReconstruction
   context_meta: PlainBlockLlmContextMeta
 }
 
@@ -388,20 +396,18 @@ export async function fetchCfgViewData(txHash: string, mode: CfgMode = 'folded')
   return { mode, svgContent }
 }
 
-export async function fetchPlainBlockLlmAnalysis(
+export async function fetchPlainBlockSolidity(
   txHash: string,
   blockId: BlockId,
-  mode: CfgMode = 'plain',
   forceRefresh: boolean = false,
-): Promise<PlainBlockLlmAnalysisResponse> {
-  const payload: PlainBlockLlmAnalysisRequest = {
+): Promise<PlainBlockSolidityResponse> {
+  const payload: PlainBlockSolidityRequest = {
     tx_hash: txHash,
     block_id: blockId,
-    mode,
     force_refresh: forceRefresh,
   }
 
-  const res = await fetch(`${API_BASE}/api/llm/cfg-block-analysis`, {
+  const res = await fetch(`${API_BASE}/api/llm/plain-block-solidity`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -415,11 +421,11 @@ export async function fetchPlainBlockLlmAnalysis(
   }
 
   if (!res.ok) {
-    const detail = body?.detail || `Failed to fetch CFG block LLM analysis: ${res.status}`
+    const detail = body?.detail || `Failed to reconstruct plain CFG block: ${res.status}`
     throw new Error(detail)
   }
 
-  return body as PlainBlockLlmAnalysisResponse
+  return body as PlainBlockSolidityResponse
 }
 
 export interface EdgeStepEntry {
@@ -500,6 +506,9 @@ export interface CallTreePayload {
   root: {
     address: string
     name: string
+    selector?: string
+    calldata?: string[]
+    probable_text_signatures?: string[]
   }
   calls: CallTreeEntry[]
 }
