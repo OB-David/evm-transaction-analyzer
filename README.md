@@ -56,6 +56,12 @@ Environment variables (configured in `backend/.env`):
 | `QUICKNODE_ENDPOINT_NAME` | Optional QuickNode endpoint subdomain when the URL is assembled from a token |
 | `QUICKNODE_API_KEY` | QuickNode endpoint token; a `QN_...` platform key alone is not an RPC URL |
 | `POSTGRESQL_HOST` | PostgreSQL server host |
+| `DEEPSEEK_API_KEY` | API key used for plain-CFG Solidity reconstruction |
+| `DEEPSEEK_BASE_URL` | DeepSeek-compatible API base URL |
+| `DEEPSEEK_CFG_MODEL` | Model used for local Solidity reconstruction |
+| `DEEPSEEK_CFG_API_MODE` | `responses` for strict JSON Schema output (default), or `chat_completions` for compatibility |
+| `DEEPSEEK_CFG_MAX_INPUT_CHARS` | Maximum serialized evidence-context size; oversized blocks fail without silent truncation |
+| `DEEPSEEK_CFG_MAX_OUTPUT_TOKENS` | Maximum reconstruction response tokens |
 
 ### Frontend
 
@@ -70,10 +76,10 @@ npm install
 
 ```bash
 cd backend
-uv run uvicorn server:app --port 8001
+uv run uvicorn server:app --host 127.0.0.1 --port 9008
 ```
 
-The API server starts at `http://localhost:8001`.
+The API server starts at `http://localhost:9008`.
 
 ### Start the frontend dev server
 
@@ -85,7 +91,7 @@ npm run dev
 The frontend starts at `http://localhost:9006`.
 
 The frontend uses same-origin `/api` requests. During development, Vite proxies
-these requests to `http://127.0.0.1:8000`. Set `VITE_API_BASE` when the API is
+these requests to `http://127.0.0.1:9008`. Set `VITE_API_BASE` when the API is
 hosted separately (for example, `VITE_API_BASE=https://api.example.com`).
 
 ### Standalone analysis (no server)
@@ -141,6 +147,20 @@ jq . data_base/analysis/<tx-hash-without-0x>/analysis_timing.json
 | POST | `/api/block` | Get block gas data for heatmap |
 | GET | `/api/blocks` | Get block-level gas summary (paginated) |
 | GET | `/api/transaction/{tx_hash}/block` | Get block number for a transaction |
+| POST | `/api/llm/plain-block-solidity` | Reconstruct the selected plain-CFG execution slice as a validated Solidity-like statement block |
+
+### Plain-CFG Solidity reconstruction
+
+Select a node in the plain CFG and use **Generate source** to reconstruct only
+that node's executed trace interval. The model receives the target opcode,
+stack, memory, storage/call/log evidence, a small predecessor/successor boundary,
+and the active call-tree frame (including selector/signature candidates when
+available). It does not receive or reconstruct an entire contract.
+
+The returned fragment is constrained to one `{ ... }` statement block and is
+checked against target step ranges and observed side-effect opcodes. It is a
+trace-grounded, Solidity-like reconstruction—not proof of the original source,
+unexecuted branches, names, types, or storage layout.
 
 ## Key Backend Modules
 

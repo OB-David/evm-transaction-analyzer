@@ -7,7 +7,7 @@ import {
   type BlockId,
   fetchCfgViewData,
   fetchLegendData,
-  fetchPlainBlockLlmAnalysis,
+  fetchPlainBlockSolidity,
   fetchCallTreeData,
   fetchSwapPatternResult,
   type BlockAction,
@@ -16,7 +16,7 @@ import {
   type CfgMode,
   type CfgViewData,
   type EdgeStepMap,
-  type PlainBlockLlmAnalysisResponse,
+  type PlainBlockSolidityResponse,
   type CallTreePayload,
   type StepRange,
   type SwapPatternResult,
@@ -117,6 +117,7 @@ const blockInformationByMode = ref<Record<CfgMode, BlockInformationMap>>({ folde
 const selectedNodeName = ref<string | null>(null)
 const selectedBlockInfo = ref<BlockInformation | null>(null)
 const stepRangesExpanded = ref(false)
+const cfgContainer = ref<HTMLElement | null>(null)
 const graphContainer = ref<HTMLElement | null>(null)
 const addressNameMap = ref<Map<string, string>>(new Map())
 const highlightedNodes = ref<Set<string>>(new Set())
@@ -129,8 +130,16 @@ const edgeFirstStepByTitle = ref<Map<string, number>>(new Map())
 const activeEdgeType = ref<CfgEdgeType | null>(null)
 const showEdgeTypes = ref(false)
 const llmAnalysisState = ref<LlmAnalysisState>('idle')
-const llmAnalysisResponse = ref<PlainBlockLlmAnalysisResponse | null>(null)
+const llmAnalysisResponse = ref<PlainBlockSolidityResponse | null>(null)
 const llmAnalysisError = ref('')
+const llmLimitationsExpanded = ref(false)
+const INFORMATION_WIDTH_STORAGE_KEY = 'cfg-information-width-ratio'
+const DEFAULT_INFORMATION_WIDTH_RATIO = 0.3
+const MIN_INFORMATION_WIDTH_PX = 240
+const MIN_GRAPH_WIDTH_PX = 280
+const MAX_INFORMATION_WIDTH_RATIO = 0.72
+const informationWidthRatio = ref(loadInformationWidthRatio())
+const informationResizing = ref(false)
 const relayoutState = ref<RelayoutState>('idle')
 const relayoutError = ref('')
 const sequenceCallMapping = ref<CallTreePayload | null>(null)
@@ -149,6 +158,7 @@ let edgeTooltipHideTimer: number | null = null
 let focusFrameId: number | null = null
 let cfgLoadRequestId = 0
 let relayoutRequestId = 0
+let informationResizePointerId: number | null = null
 
 const cfgModeBadge = computed(() => cfgMode.value === 'folded' ? 'Folded CFG' : 'Plain CFG')
 const toggleButtonLabel = computed(() => cfgMode.value === 'folded' ? 'Plain CFG' : 'Folded CFG')
@@ -178,6 +188,222 @@ const selectedActionDisplays = computed<ActionDisplay[]>(() => {
   const actions = selectedBlockInfo.value?.actions ?? []
   return actions.flatMap((action, index) => buildActionDisplays(action, index))
 })
+const informationPanelStyle = computed<Record<string, string>>(() => ({
+  '--cfg-information-width': `${(informationWidthRatio.value * 100).toFixed(3)}%`,
+}))
+const informationWidthPercent = computed(() => Math.round(informationWidthRatio.value * 100))
+const highlightedSolidity = computed(() => (
+  highlightSolidity(llmAnalysisResponse.value?.reconstruction.solidity ?? '')
+))
+const llmLimitations = computed(() => buildLlmLimitations(
+  llmAnalysisResponse.value?.reconstruction.unresolved ?? [],
+))
+const llmConfidenceLabel = computed(() => {
+  const confidence = llmAnalysisResponse.value?.reconstruction.confidence
+  return confidence ? `${confidence[0]!.toUpperCase()}${confidence.slice(1)} confidence` : ''
+})
+
+const SOLIDITY_KEYWORDS = new Set([
+  'assembly', 'break', 'calldata', 'case', 'catch', 'constant', 'constructor',
+  'continue', 'contract', 'default', 'delete', 'do', 'else', 'emit', 'enum',
+  'error', 'event', 'external', 'fallback', 'for', 'from', 'function', 'if',
+  'immutable', 'import', 'indexed', 'interface', 'internal', 'is', 'library',
+  'mapping', 'memory', 'modifier', 'new', 'override', 'payable', 'pragma',
+  'private', 'public', 'receive', 'returns', 'return', 'storage', 'struct',
+  'switch', 'try', 'unchecked', 'using', 'view', 'virtual', 'while',
+])
+const SOLIDITY_TYPES = new Set([
+  'address', 'bool', 'byte', 'bytes', 'bytes1', 'bytes2', 'bytes4', 'bytes8',
+  'bytes16', 'bytes20', 'bytes32', 'int', 'int8', 'int16', 'int32', 'int64',
+  'int128', 'int256', 'string', 'uint', 'uint8', 'uint16', 'uint32', 'uint64',
+  'uint128', 'uint160', 'uint256',
+])
+const YUL_BUILTINS = new Set([
+  'add', 'address', 'and', 'balance', 'basefee', 'blobbasefee', 'blobhash',
+  'blockhash', 'byte', 'call', 'caller', 'callcode', 'calldatacopy',
+  'calldataload', 'calldatasize', 'callvalue', 'chainid', 'codecopy', 'codesize',
+  'coinbase', 'create', 'create2', 'delegatecall', 'difficulty', 'div', 'eq',
+  'exp', 'extcodecopy', 'extcodehash', 'extcodesize', 'gas', 'gaslimit',
+  'gasprice', 'gt', 'invalid', 'iszero', 'keccak256', 'log0', 'log1', 'log2',
+  'log3', 'log4', 'lt', 'mcopy', 'mload', 'mod', 'msize', 'mstore', 'mstore8',
+  'mul', 'not', 'number', 'or', 'origin', 'pop', 'prevrandao', 'return',
+  'returndatacopy', 'returndatasize', 'revert', 'sar', 'sdiv', 'selfbalance',
+  'selfdestruct', 'sgt', 'sha3', 'shl', 'shr', 'signextend', 'sload', 'slt',
+  'smod', 'sstore', 'staticcall', 'stop', 'sub', 'timestamp', 'xor',
+])
+
+function loadInformationWidthRatio(): number {
+  try {
+    const stored = window.localStorage.getItem(INFORMATION_WIDTH_STORAGE_KEY)
+    const parsed = stored === null ? Number.NaN : Number(stored)
+    if (Number.isFinite(parsed)) {
+      return Math.min(MAX_INFORMATION_WIDTH_RATIO, Math.max(0.15, parsed))
+    }
+  } catch {
+    // Storage is optional; the default ratio remains fully functional.
+  }
+  return DEFAULT_INFORMATION_WIDTH_RATIO
+}
+
+function persistInformationWidthRatio() {
+  try {
+    window.localStorage.setItem(
+      INFORMATION_WIDTH_STORAGE_KEY,
+      String(informationWidthRatio.value),
+    )
+  } catch {
+    // Ignore private-mode or storage-policy failures.
+  }
+}
+
+function clampInformationWidth(width: number, containerWidth: number): number {
+  const minWidth = Math.min(MIN_INFORMATION_WIDTH_PX, containerWidth * 0.55)
+  const maxWidth = Math.max(
+    minWidth,
+    Math.min(containerWidth * MAX_INFORMATION_WIDTH_RATIO, containerWidth - MIN_GRAPH_WIDTH_PX),
+  )
+  return Math.min(maxWidth, Math.max(minWidth, width))
+}
+
+function updateInformationWidth(clientX: number) {
+  const container = cfgContainer.value
+  if (!container) return
+  const bounds = container.getBoundingClientRect()
+  if (bounds.width <= 0) return
+  const width = clampInformationWidth(bounds.right - clientX, bounds.width)
+  informationWidthRatio.value = width / bounds.width
+}
+
+function startInformationResize(event: PointerEvent) {
+  if (event.button !== 0) return
+  event.preventDefault()
+  informationResizePointerId = event.pointerId
+  informationResizing.value = true
+  updateInformationWidth(event.clientX)
+  window.addEventListener('pointermove', handleInformationResize)
+  window.addEventListener('pointerup', stopInformationResize)
+  window.addEventListener('pointercancel', stopInformationResize)
+}
+
+function handleInformationResize(event: PointerEvent) {
+  if (informationResizePointerId !== event.pointerId) return
+  updateInformationWidth(event.clientX)
+}
+
+function stopInformationResize(event?: PointerEvent) {
+  if (
+    event
+    && informationResizePointerId !== null
+    && event.pointerId !== informationResizePointerId
+  ) return
+  informationResizePointerId = null
+  informationResizing.value = false
+  window.removeEventListener('pointermove', handleInformationResize)
+  window.removeEventListener('pointerup', stopInformationResize)
+  window.removeEventListener('pointercancel', stopInformationResize)
+  persistInformationWidthRatio()
+}
+
+function handleInformationResizeKeydown(event: KeyboardEvent) {
+  const container = cfgContainer.value
+  if (!container) return
+  const width = container.getBoundingClientRect().width
+  if (width <= 0) return
+  let nextWidth = informationWidthRatio.value * width
+  if (event.key === 'ArrowLeft') nextWidth += 24
+  else if (event.key === 'ArrowRight') nextWidth -= 24
+  else if (event.key === 'Home') nextWidth = MIN_INFORMATION_WIDTH_PX
+  else if (event.key === 'End') nextWidth = width * MAX_INFORMATION_WIDTH_RATIO
+  else return
+  event.preventDefault()
+  informationWidthRatio.value = clampInformationWidth(nextWidth, width) / width
+  persistInformationWidthRatio()
+}
+
+function escapeHighlightHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function highlightSolidity(source: string): string {
+  const tokenPattern = /\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|0x[0-9a-fA-F]+|\b\d+\b|\b[A-Za-z_$][\w$]*\b/g
+  let output = ''
+  let cursor = 0
+  for (const match of source.matchAll(tokenPattern)) {
+    const index = match.index ?? 0
+    const token = match[0]
+    output += escapeHighlightHtml(source.slice(cursor, index))
+    let tone = ''
+    if (token.startsWith('//') || token.startsWith('/*')) tone = 'comment'
+    else if (token.startsWith('"') || token.startsWith("'")) tone = 'string'
+    else if (/^(?:0x[0-9a-fA-F]+|\d+)$/.test(token)) tone = 'number'
+    else if (token === 'true' || token === 'false') tone = 'literal'
+    else if (SOLIDITY_TYPES.has(token)) tone = 'type'
+    else if (SOLIDITY_KEYWORDS.has(token)) tone = 'keyword'
+    else if (YUL_BUILTINS.has(token)) tone = 'builtin'
+    const escaped = escapeHighlightHtml(token)
+    output += tone ? `<span class="sol-token ${tone}">${escaped}</span>` : escaped
+    cursor = index + token.length
+  }
+  return output + escapeHighlightHtml(source.slice(cursor))
+}
+
+function buildLlmLimitations(unresolved: string[]): string[] {
+  const limitations: string[] = []
+  const consumed = new Set<number>()
+  const technicalPattern = /duplicat|free[- ]pointer|bookkeeping|memory use|represents the observed caller|160-bit/i
+
+  unresolved.forEach((item, index) => {
+    if (technicalPattern.test(item)) {
+      consumed.add(index)
+    }
+  })
+
+  const pathIndexes = unresolved
+    .map((item, index) => ({ item, index }))
+    .filter(({ item, index }) => !consumed.has(index) && /unexecuted|executed path|failure|revert|branch/i.test(item))
+    .map(({ index }) => index)
+  if (pathIndexes.length > 0) {
+    limitations.push(
+      'Only the executed path is reconstructed; unexecuted branches and failure/revert bodies are omitted.',
+    )
+    pathIndexes.forEach(index => consumed.add(index))
+  }
+
+  const signatureIndexes = unresolved
+    .map((item, index) => ({ item, index }))
+    .filter(({ item, index }) => !consumed.has(index) && /selector|signature|original abi|candidate/i.test(item))
+    .map(({ index }) => index)
+  if (signatureIndexes.length > 0) {
+    limitations.push(
+      'The function signature is inferred from selector, calldata and trace evidence—not recovered from the original ABI.',
+    )
+    signatureIndexes.forEach(index => consumed.add(index))
+  }
+
+  const namesAndStorageIndexes = unresolved
+    .map((item, index) => ({ item, index }))
+    .filter(({ item, index }) => (
+      !consumed.has(index)
+      && /parameter names?|state variable|mapping names?|storage (?:layout|slots?|types?)|calldata words?|raw slots?/i.test(item)
+    ))
+    .map(({ index }) => index)
+  if (namesAndStorageIndexes.length > 0) {
+    limitations.push(
+      'Original parameter names, state-variable names and storage types are unavailable; raw calldata offsets and storage slots are used.',
+    )
+    namesAndStorageIndexes.forEach(index => consumed.add(index))
+  }
+
+  unresolved.forEach((item, index) => {
+    if (!consumed.has(index)) limitations.push(item)
+  })
+  return limitations
+}
 
 watch(() => props.txHash, (newHash) => {
   cfgLoadRequestId += 1
@@ -692,7 +918,8 @@ function toFiniteStep(value: unknown): number | null {
 function formatCompactCallSignature(signatures: string[]): string {
   if (!signatures.length) return ''
   const first = signatures[0]!
-  if (PRIORITY_SIGNATURES.has(first)) {
+  const functionName = first.includes('(') ? `${first.slice(0, first.indexOf('('))}()` : first
+  if (PRIORITY_SIGNATURES.has(functionName)) {
     return `${first}/...`
   }
   const top2 = signatures.slice(0, 2).join('/')
@@ -1263,14 +1490,19 @@ function resetLlmAnalysis() {
   llmAnalysisState.value = 'idle'
   llmAnalysisResponse.value = null
   llmAnalysisError.value = ''
+  llmLimitationsExpanded.value = false
 }
 
 function requestLlmAnalysis() {
-  if (!props.txHash || !selectedBlockInfo.value || llmAnalysisState.value === 'loading') return
+  if (
+    cfgMode.value !== 'plain'
+    || !props.txHash
+    || !selectedBlockInfo.value
+    || llmAnalysisState.value === 'loading'
+  ) return
   void loadLlmAnalysis(
     props.txHash,
     selectedBlockInfo.value.block_id,
-    cfgMode.value,
     llmAnalysisState.value === 'success',
   )
 }
@@ -1278,16 +1510,16 @@ function requestLlmAnalysis() {
 async function loadLlmAnalysis(
   txHash: string,
   blockId: BlockId,
-  mode: CfgMode,
   forceRefresh: boolean = false,
 ) {
   const requestToken = ++llmRequestToken
   llmAnalysisState.value = 'loading'
   llmAnalysisResponse.value = null
   llmAnalysisError.value = ''
+  llmLimitationsExpanded.value = false
 
   try {
-    const response = await fetchPlainBlockLlmAnalysis(txHash, blockId, mode, forceRefresh)
+    const response = await fetchPlainBlockSolidity(txHash, blockId, forceRefresh)
     if (requestToken !== llmRequestToken) return
     llmAnalysisResponse.value = response
     llmAnalysisState.value = 'success'
@@ -1295,9 +1527,9 @@ async function loadLlmAnalysis(
     if (requestToken !== llmRequestToken) return
     llmAnalysisState.value = 'error'
     llmAnalysisResponse.value = null
-    const message = e?.message || 'Failed to generate LLM analysis'
+    const message = e?.message || 'Failed to reconstruct Solidity for this block'
     llmAnalysisError.value = message.includes('exceeds limit')
-      ? 'Context too large. Strict context mode is enabled, so this block cannot be analyzed.'
+      ? 'This execution slice is too large for the configured model context.'
       : message
   }
 }
@@ -1957,6 +2189,7 @@ const edgeTypes: Array<{ type: CfgEdgeType, color: string, desc: string, aliases
 ]
 
 onBeforeUnmount(() => {
+  stopInformationResize()
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null
@@ -1973,7 +2206,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="cfg-panel">
+  <div
+    class="cfg-panel"
+    :class="{ 'information-resizing': informationResizing }"
+    :style="informationPanelStyle"
+  >
     <span class="panel-label">
       (E) Control Flow Graph
       <span class="mode-badge" :class="cfgMode">{{ cfgModeBadge }}</span>
@@ -2054,7 +2291,7 @@ onBeforeUnmount(() => {
       {{ errorMsg }}
     </div>
 
-    <div v-else-if="status === 'success'" class="cfg-container">
+    <div v-else-if="status === 'success'" ref="cfgContainer" class="cfg-container">
       <div class="graph-stage">
         <div
           v-if="relayoutError"
@@ -2095,6 +2332,18 @@ onBeforeUnmount(() => {
           class="side-panel"
           :class="{ 'side-panel-folded': cfgMode === 'folded', 'side-panel-plain': cfgMode === 'plain' }"
         >
+          <div
+            class="information-resize-handle"
+            role="separator"
+            aria-label="Resize information panel"
+            aria-orientation="vertical"
+            :aria-valuemin="15"
+            :aria-valuemax="Math.round(MAX_INFORMATION_WIDTH_RATIO * 100)"
+            :aria-valuenow="informationWidthPercent"
+            tabindex="0"
+            @pointerdown="startInformationResize"
+            @keydown="handleInformationResizeKeydown"
+          ><span aria-hidden="true"></span></div>
           <div class="panel-section-header">information</div>
           <div class="information-content">
             <template v-if="selectedBlockInfo">
@@ -2146,6 +2395,77 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
 
+                <div v-if="cfgMode === 'plain'" class="info-card llm-analysis-group">
+                  <div class="info-card-header llm-header-row">
+                    <div class="llm-heading">
+                      <span class="info-card-title">AI Solidity</span>
+                      <span v-if="llmAnalysisResponse?.source === 'cache'" class="llm-cache-badge">cached</span>
+                    </div>
+                    <button
+                      type="button"
+                      class="llm-analyze-button"
+                      :disabled="llmAnalysisState === 'loading'"
+                      @click="requestLlmAnalysis"
+                    >
+                      {{ llmAnalysisState === 'loading'
+                        ? 'Reconstructing…'
+                        : llmAnalysisState === 'success'
+                          ? 'Generate again'
+                          : 'Generate source' }}
+                    </button>
+                  </div>
+                  <div v-if="llmAnalysisState === 'loading'" class="llm-status">
+                    AI is reconstructing only this executed plain-CFG slice...
+                  </div>
+                  <div v-else-if="llmAnalysisState === 'error'" class="llm-status error">
+                    {{ llmAnalysisError }}
+                  </div>
+                  <div
+                    v-else-if="llmAnalysisState === 'success' && llmAnalysisResponse"
+                    class="llm-analysis-content"
+                  >
+                    <pre class="llm-solidity"><code v-html="highlightedSolidity"></code></pre>
+                    <div
+                      class="llm-validation-note"
+                      title="Format, step ranges and observed side effects passed deterministic trace checks."
+                    >
+                      <span class="llm-validation-check" aria-hidden="true">✓</span>
+                      <span>Trace validation passed</span>
+                      <span class="llm-validation-separator">·</span>
+                      <span
+                        class="llm-validation-confidence"
+                        :class="`confidence-${llmAnalysisResponse.reconstruction.confidence}`"
+                      >{{ llmConfidenceLabel }}</span>
+                    </div>
+                    <div
+                      v-if="llmLimitations.length > 0"
+                      class="llm-limitations"
+                    >
+                      <button
+                        type="button"
+                        class="llm-disclosure-toggle"
+                        :aria-expanded="llmLimitationsExpanded"
+                        @click="llmLimitationsExpanded = !llmLimitationsExpanded"
+                      >
+                        <span>Assumptions &amp; limitations</span>
+                        <span class="llm-disclosure-count">{{ llmLimitations.length }}</span>
+                        <svg viewBox="0 0 12 12" aria-hidden="true" :class="{ expanded: llmLimitationsExpanded }">
+                          <path d="M2.5 4.25 6 7.75l3.5-3.5" />
+                        </svg>
+                      </button>
+                      <ul v-if="llmLimitationsExpanded">
+                        <li
+                          v-for="(item, index) in llmLimitations"
+                          :key="`${index}-${item}`"
+                        >{{ item }}</li>
+                      </ul>
+                    </div>
+                  </div>
+                  <div v-else class="llm-status">
+                    Generates a local Solidity-like statement block for this selected execution slice.
+                  </div>
+                </div>
+
                 <div v-if="selectedActionDisplays.length > 0" class="info-card">
                   <div class="info-card-header">
                     <span class="info-card-title">Actions</span>
@@ -2168,43 +2488,6 @@ onBeforeUnmount(() => {
                         <span class="action-detail-value">{{ detail.value }}</span>
                       </div>
                     </div>
-                  </div>
-                </div>
-
-                <div class="info-card llm-analysis-group">
-                  <div class="info-card-header llm-header-row">
-                    <div class="llm-heading">
-                      <span class="info-card-title">AI Summary</span>
-                      <span v-if="llmAnalysisResponse?.source === 'cache'" class="llm-cache-badge">cached</span>
-                    </div>
-                    <button
-                      type="button"
-                      class="llm-analyze-button"
-                      :disabled="llmAnalysisState === 'loading'"
-                      @click="requestLlmAnalysis"
-                    >
-                      {{ llmAnalysisState === 'loading'
-                        ? 'Analyzing…'
-                        : llmAnalysisState === 'success'
-                          ? 'Analyze again'
-                          : 'Analyze with AI' }}
-                    </button>
-                  </div>
-                  <div v-if="llmAnalysisState === 'loading'" class="llm-status">
-                    DeepSeek is analyzing this {{ cfgMode === 'folded' ? 'folded' : 'plain' }} CFG block...
-                  </div>
-                  <div v-else-if="llmAnalysisState === 'error'" class="llm-status error">
-                    {{ llmAnalysisError }}
-                  </div>
-                  <div
-                    v-else-if="llmAnalysisState === 'success' && llmAnalysisResponse"
-                    class="llm-analysis-content"
-                  >
-                    <div class="llm-title">{{ llmAnalysisResponse.analysis.title }}</div>
-                    <div class="llm-description">{{ llmAnalysisResponse.analysis.description }}</div>
-                  </div>
-                  <div v-else class="llm-status">
-                    AI analysis starts only when you click the button.
                   </div>
                 </div>
 
@@ -2239,6 +2522,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .cfg-panel {
+  --cfg-information-width: 30%;
   position: relative;
   background: var(--panel-bg);
   display: flex;
@@ -2313,7 +2597,7 @@ onBeforeUnmount(() => {
 }
 
 .cfg-panel.graph-panel-expanded .cfg-container {
-  padding-right: calc(var(--expanded-legend-width) + 6px);
+  padding-right: 0;
 }
 
 .cfg-panel.graph-panel-expanded .graph-actions {
@@ -2325,7 +2609,7 @@ onBeforeUnmount(() => {
   top: calc(50% + 3px);
   right: 0;
   bottom: 0;
-  width: var(--expanded-legend-width);
+  width: clamp(240px, var(--cfg-information-width), 72%);
   border-top: 1px solid rgba(123, 143, 173, 0.24);
   z-index: 20;
 }
@@ -2554,15 +2838,60 @@ onBeforeUnmount(() => {
 }
 
 .side-panel {
+  position: relative;
   background: linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(241, 245, 249, 0.96));
   border-left: 1px solid rgba(123, 143, 173, 0.24);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
   flex-shrink: 0;
   min-height: 0;
-  width: 324px;
+  width: clamp(240px, var(--cfg-information-width), 72%);
   box-sizing: border-box;
+}
+
+.cfg-panel.information-resizing,
+.cfg-panel.information-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+.information-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -6px;
+  z-index: 35;
+  width: 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.information-resize-handle span {
+  position: absolute;
+  top: 50%;
+  left: 5px;
+  width: 3px;
+  height: 44px;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: rgba(123, 143, 173, 0.44);
+  transition: height 150ms ease, background 150ms ease, box-shadow 150ms ease;
+}
+
+.information-resize-handle:hover span,
+.information-resize-handle:focus-visible span,
+.cfg-panel.information-resizing .information-resize-handle span {
+  height: 64px;
+  background: #64748b;
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.16);
+}
+
+.information-resize-handle:focus-visible {
+  outline: none;
 }
 
 .drawer-enter-active,
@@ -2802,18 +3131,167 @@ onBeforeUnmount(() => {
   gap: 6px;
 }
 
-.llm-title {
-  font-size: 11px;
-  font-weight: 700;
-  color: #1e293b;
-  line-height: 1.35;
+.llm-solidity {
+  max-height: 360px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid rgba(100, 116, 139, 0.22);
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1f2937;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 9px;
+  line-height: 1.55;
+  padding: 9px 10px;
+  tab-size: 4;
+  white-space: pre;
 }
 
-.llm-description {
-  font-size: 10px;
+.llm-solidity code {
+  display: block;
+  min-width: max-content;
+  color: inherit;
+  font: inherit;
+}
+
+.llm-solidity :deep(.sol-token.comment) {
+  color: #5f7f50;
+  font-style: italic;
+}
+
+.llm-solidity :deep(.sol-token.keyword) {
+  color: #7c3aed;
+  font-weight: 650;
+}
+
+.llm-solidity :deep(.sol-token.type) {
+  color: #075985;
+  font-weight: 650;
+}
+
+.llm-solidity :deep(.sol-token.builtin) {
+  color: #0369a1;
+}
+
+.llm-solidity :deep(.sol-token.number) {
+  color: #b45309;
+}
+
+.llm-solidity :deep(.sol-token.string) {
+  color: #b91c1c;
+}
+
+.llm-solidity :deep(.sol-token.literal) {
+  color: #be185d;
+  font-weight: 650;
+}
+
+.llm-validation-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
   color: #475569;
-  line-height: 1.55;
-  white-space: pre-wrap;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.llm-validation-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgba(34, 197, 94, 0.14);
+  color: #15803d;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.llm-validation-separator {
+  color: #94a3b8;
+}
+
+.llm-validation-confidence {
+  font-weight: 700;
+}
+
+.llm-validation-confidence.confidence-high {
+  color: #15803d;
+}
+
+.llm-validation-confidence.confidence-medium {
+  color: #a16207;
+}
+
+.llm-validation-confidence.confidence-low {
+  color: #b91c1c;
+}
+
+.llm-limitations {
+  border-left: 2px solid #f59e0b;
+  color: #78350f;
+  font-size: 9px;
+  line-height: 1.45;
+  padding-left: 8px;
+}
+
+.llm-disclosure-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: #78350f;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+}
+
+.llm-disclosure-toggle:focus-visible {
+  outline: 2px solid #f59e0b;
+  outline-offset: 2px;
+}
+
+.llm-disclosure-count {
+  min-width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.16);
+  color: #92400e;
+  font-size: 8px;
+}
+
+.llm-disclosure-toggle svg {
+  width: 12px;
+  height: 12px;
+  margin-left: auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  transition: transform 150ms ease;
+}
+
+.llm-disclosure-toggle svg.expanded {
+  transform: rotate(180deg);
+}
+
+.llm-limitations ul {
+  margin: 5px 0 0;
+  padding-left: 14px;
+}
+
+.llm-limitations li + li {
+  margin-top: 3px;
 }
 
 .summary-line {
