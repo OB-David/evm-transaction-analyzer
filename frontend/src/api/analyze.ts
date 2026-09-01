@@ -454,6 +454,7 @@ export interface TfgAtomicAddressCycle {
   nodes: string[]
   edge_orders: number[]
   token_address_path: string[]
+  token_identity_path: string[]
   amount_raw_path: string[]
   edge_count: number
 }
@@ -462,11 +463,13 @@ export interface TfgStructuralPath {
   path_id: string
   anchor_address: string
   token_address_path: string[]
+  token_identity_path: string[]
   atomic_cycle_ids: string[]
   address_cycle_paths: string[][]
   cycle_edge_orders: number[][]
   transfer_edge_orders: number[]
   arbitrage_token_address: string
+  arbitrage_token_identity: string
   arbitrage_amount_delta_raw: string
   edge_count: number
   atomic_cycle_count: number
@@ -475,6 +478,10 @@ export interface TfgStructuralPath {
 export interface TfgCycleResult {
   schema_version: number
   detection_basis: 'tfg_address_cycle_structure'
+  token_equivalences: Array<{
+    identity: string
+    token_addresses: string[]
+  }>
   objective: ['transfer_edge_count', 'atomic_cycle_count']
   selection_objective: [
     'edge_disjoint',
@@ -504,7 +511,7 @@ export interface SwapPatternResult {
 export async function fetchTfgCycleResult(txHash: string): Promise<TfgCycleResult> {
   const result = await fetchJsonFile<TfgCycleResult>('tfg_cycles.json', txHash)
   if (
-    result.schema_version !== 4
+    result.schema_version !== 5
     || !Array.isArray(result.atomic_cycles)
     || !Array.isArray(result.minimal_paths)
     || !Array.isArray(result.selected_paths)

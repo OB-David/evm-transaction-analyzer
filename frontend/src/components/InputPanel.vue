@@ -8,7 +8,7 @@ const emit = defineEmits<{
   'block-number-changed': [blockNumber: number]
 }>()
 
-const EXAMPLE_TX_HASH = '0x840ecb2b5d55a682afd529138b36e97992eda9706e206237b57ec4697e4f8186'
+const EXAMPLE_TX_HASH = '0x2d3f9a03793741f8155fc22371af0829ba934d4719f2ab54f58fbe0f37be4ea1'
 const blockNumber = ref('')
 const txHash = ref('')
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')

@@ -27,7 +27,16 @@ from itertools import count
 from typing import Any
 
 
-TFG_CYCLE_SCHEMA_VERSION = 4
+TFG_CYCLE_SCHEMA_VERSION = 5
+
+NATIVE_ETH_TOKEN_IDENTITY = "eth"
+ETHEREUM_MAINNET_WETH_ADDRESS = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+TOKEN_EQUIVALENCES = {
+    NATIVE_ETH_TOKEN_IDENTITY: frozenset({
+        NATIVE_ETH_TOKEN_IDENTITY,
+        ETHEREUM_MAINNET_WETH_ADDRESS,
+    }),
+}
 
 
 def _normalized(value: Any) -> str:
@@ -43,12 +52,22 @@ def _integer(value: Any) -> int | None:
         return None
 
 
+def _token_identity(token_address: Any) -> str:
+    """Return the asset identity used only for token-cycle closure checks."""
+    normalized = _normalized(token_address)
+    for identity, equivalent_addresses in TOKEN_EQUIVALENCES.items():
+        if normalized in equivalent_addresses:
+            return identity
+    return normalized
+
+
 @dataclass(frozen=True)
 class _Edge:
     edge_id: int
     source: str
     target: str
     token_address: str
+    token_identity: str
     amount_raw: int
 
 
@@ -80,6 +99,7 @@ def _transfer_edges(paired: list[dict[str, Any]]) -> list[_Edge]:
             source=source,
             target=target,
             token_address=token_address,
+            token_identity=_token_identity(token_address),
             amount_raw=amount_raw,
         ))
     return sorted(edges, key=lambda edge: edge.edge_id)
@@ -193,6 +213,7 @@ def enumerate_atomic_address_cycles(
             "nodes": path_nodes,
             "edge_orders": list(signature),
             "token_address_path": [edge.token_address for edge in path_edges],
+            "token_identity_path": [edge.token_identity for edge in path_edges],
             "amount_raw_path": [str(edge.amount_raw) for edge in path_edges],
             "edge_count": len(path_edges),
         })
@@ -207,6 +228,7 @@ def _anchor_options(
         nodes = cycle["nodes"][:-1]
         edge_orders = cycle["edge_orders"]
         tokens = cycle["token_address_path"]
+        token_identities = cycle["token_identity_path"]
         amounts = cycle["amount_raw_path"]
         for index, anchor in enumerate(nodes):
             rotation = list(range(index, len(nodes))) + list(range(0, index))
@@ -215,8 +237,10 @@ def _anchor_options(
                 "atomic_cycle_id": cycle["cycle_id"],
                 "anchor_address": anchor,
                 "token_in_address": tokens[index],
+                "token_in_identity": token_identities[index],
                 "amount_in_raw": amounts[index],
                 "token_out_address": tokens[index - 1],
+                "token_out_identity": token_identities[index - 1],
                 "amount_out_raw": amounts[index - 1],
                 "rotated_nodes": [nodes[position] for position in rotation] + [anchor],
                 "rotated_edge_orders": [edge_orders[position] for position in rotation],
@@ -234,9 +258,9 @@ def find_minimal_structural_paths(
     by_anchor_token: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     start_tokens: dict[str, set[str]] = defaultdict(set)
     for option in options:
-        key = (option["anchor_address"], option["token_in_address"])
+        key = (option["anchor_address"], option["token_in_identity"])
         by_anchor_token[key].append(option)
-        start_tokens[option["anchor_address"]].add(option["token_in_address"])
+        start_tokens[option["anchor_address"]].add(option["token_in_identity"])
     for candidates in by_anchor_token.values():
         candidates.sort(key=lambda option: (
             option["edge_count"], option["atomic_cycle_id"], option["option_id"]
@@ -271,7 +295,7 @@ def find_minimal_structural_paths(
                     option_edges = frozenset(option["edge_orders"])
                     if cycle_id in used_cycles or option_edges & used_edges:
                         continue
-                    next_token = option["token_out_address"]
+                    next_token = option["token_out_identity"]
                     next_edge_count = len(used_edges | option_edges)
                     next_cycle_count = cycle_count + 1
                     next_cost = (next_edge_count, next_cycle_count)
@@ -291,7 +315,14 @@ def find_minimal_structural_paths(
                         if next_cost == best_cost:
                             closures.append({
                                 "anchor_address": anchor,
-                                "token_address_path": list(next_token_path),
+                                "token_address_path": [
+                                    next_option_path[0]["token_in_address"],
+                                    *[
+                                        item["token_out_address"]
+                                        for item in next_option_path
+                                    ],
+                                ],
+                                "token_identity_path": list(next_token_path),
                                 "atomic_cycle_ids": [
                                     item["atomic_cycle_id"] for item in next_option_path
                                 ],
@@ -306,7 +337,10 @@ def find_minimal_structural_paths(
                                     for item in next_option_path
                                     for edge_id in item["rotated_edge_orders"]
                                 ],
-                                "arbitrage_token_address": start_token,
+                                "arbitrage_token_address": (
+                                    next_option_path[0]["token_in_address"]
+                                ),
+                                "arbitrage_token_identity": start_token,
                                 "arbitrage_amount_delta_raw": str(amount_delta_raw),
                                 "_arbitrage_token_order": (
                                     next_option_path[0]["rotated_edge_orders"][0]
@@ -340,6 +374,7 @@ def find_minimal_structural_paths(
             closure["edge_count"],
             closure["atomic_cycle_count"],
             closure["_arbitrage_token_order"],
+            closure["token_identity_path"],
             closure["token_address_path"],
             closure["atomic_cycle_ids"],
         )
@@ -348,6 +383,7 @@ def find_minimal_structural_paths(
             existing["edge_count"],
             existing["atomic_cycle_count"],
             existing["_arbitrage_token_order"],
+            existing["token_identity_path"],
             existing["token_address_path"],
             existing["atomic_cycle_ids"],
         ):
@@ -358,6 +394,7 @@ def find_minimal_structural_paths(
         path["atomic_cycle_count"],
         path["anchor_address"],
         path["_arbitrage_token_order"],
+        path["token_identity_path"],
         path["token_address_path"],
         path["transfer_edge_orders"],
     ))
@@ -474,6 +511,13 @@ def detect_tfg_cycles(paired: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "schema_version": TFG_CYCLE_SCHEMA_VERSION,
         "detection_basis": "tfg_address_cycle_structure",
+        "token_equivalences": [
+            {
+                "identity": identity,
+                "token_addresses": sorted(addresses),
+            }
+            for identity, addresses in sorted(TOKEN_EQUIVALENCES.items())
+        ],
         "objective": ["transfer_edge_count", "atomic_cycle_count"],
         "selection_objective": [
             "edge_disjoint",
