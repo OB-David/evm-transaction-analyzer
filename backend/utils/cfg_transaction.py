@@ -439,7 +439,9 @@ class CFGConstructor:
             return None
 
         # 1. 获取 Layer 2：Layer 1 的直接子节点
-        layer2_nodes = list(self._get_unique_children(cfg, layer1))
+        # Keep branch serialization stable across runs. The graph helper returns
+        # a set, whose iteration order must not leak into the instruction view.
+        layer2_nodes = sorted(self._get_unique_children(cfg, layer1), key=lambda node: node.id)
         
         # 规则 1：Layer 1 必须有分叉 (>= 2)
         if len(layer2_nodes) < 2:
@@ -514,7 +516,10 @@ class CFGConstructor:
         return {
             "root": layer1,
             "mids": mid_nodes,
-            "end": target_end_node
+            "end": target_end_node,
+            # Triangle form: one branch jumps from root directly to the merge
+            # point and therefore has no block/opcode body of its own.
+            "has_direct_branch": target_end_node in layer2_nodes,
         }
 
     def _fold_dianmond_patterns(self, cfg: CFG) -> Dict[str, List[str]]:
@@ -558,6 +563,15 @@ class CFGConstructor:
                             "from_id": m_node.id
                         })
                         root.instructions.extend(m_node.instructions)
+
+                    if pattern.get("has_direct_branch"):
+                        root.instructions.append({
+                            "pc": "---",
+                            "opcode": "DIRECT_BRANCH_TO_MERGE",
+                            "is_boundary": True,
+                            "from_id": root.id,
+                            "to_id": end.id,
+                        })
                     
                     root.instructions.append({
                         "pc": "---", 
@@ -803,6 +817,13 @@ class CFGConstructor:
                         })
                         # 插入 M 的原始指令
                         new_instructions.extend(m_node.instructions)
+                        # 明确标出共享 dispatch 逻辑结束、目标块开始。
+                        new_instructions.append({
+                            "pc": "---",
+                            "opcode": "DISPATCH_TARGET_START",
+                            "is_boundary": True,
+                            "from_id": child.id,
+                        })
                         # 拼接子块原有的指令
                         new_instructions.extend(child.instructions)
                         # 更新子块指令集
@@ -949,12 +970,9 @@ class CFGConstructor:
             self._plain_node_counter += 1
 
             for i, node in enumerate(stack):
-                merged_node.instructions.append({
-                    "pc": "---",
-                    "opcode": f"TIMELINE_SEG_{i}",
-                    "is_boundary": True,
-                    "from_id": node.id
-                })
+                # This is a linear/timeline merge. Preserve opcode order
+                # directly; boundary markers are reserved for non-linear
+                # control-flow semantics such as branches and loops.
                 merged_node.instructions.extend(node.instructions)
 
                 if merged_node.id not in result_node_map:

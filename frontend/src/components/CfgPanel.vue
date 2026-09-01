@@ -60,6 +60,14 @@ type ActionDisplay = {
   tone: ActionTone
   details: Array<{ label: string, value: string }>
 }
+type InstructionBoundaryKind = 'branch' | 'merge' | 'feedback' | 'dispatch' | 'loop' | 'generic'
+type InstructionDisplay = {
+  key: string
+  raw: string
+  text: string
+  boundary: boolean
+  boundaryKind: InstructionBoundaryKind
+}
 
 const ACTION_NODE_STROKE = '#DC2626'
 const ACTION_NODE_GLOW = 'rgba(239, 68, 68, 0.82)'
@@ -1587,7 +1595,44 @@ function isBoundaryInstruction(instr: string): boolean {
   return /['"]is_boundary['"]\s*:\s*(True|true)/.test(instr)
 }
 
+function getBoundaryOpcode(instr: string): string {
+  return extractQuotedField(instr, 'opcode') || ''
+}
+
+function isLegacyLinearBoundary(instr: string): boolean {
+  return isBoundaryInstruction(instr) && getBoundaryOpcode(instr).startsWith('TIMELINE_SEG_')
+}
+
+function getBoundaryKind(opcode: string): InstructionBoundaryKind {
+  if (opcode.startsWith('BRANCH_SEGMENT_') || opcode === 'DIRECT_BRANCH_TO_MERGE') return 'branch'
+  if (opcode === 'MERGE_POINT_SEGMENT') return 'merge'
+  if (opcode.startsWith('FEEDBACK_LOOP_')) return 'feedback'
+  if (opcode.startsWith('DISPATCH_')) return 'dispatch'
+  if (opcode === 'SELF_LOOP_DETECTED') return 'loop'
+  return 'generic'
+}
+
+function formatBoundaryInstruction(instr: string): string {
+  const opcode = getBoundaryOpcode(instr)
+  const branchMatch = /^BRANCH_SEGMENT_(\d+)$/.exec(opcode)
+
+  if (branchMatch?.[1]) {
+    return `Branch ${branchMatch[1]} starts`
+  }
+  if (opcode === 'DIRECT_BRANCH_TO_MERGE') {
+    return 'Direct branch to merge · no branch-body opcodes'
+  }
+  if (opcode === 'MERGE_POINT_SEGMENT') return 'Merge point'
+  if (opcode === 'FEEDBACK_LOOP_START') return 'Feedback path starts'
+  if (opcode === 'FEEDBACK_LOOP_END') return 'Feedback path ends · returns to the loop header'
+  if (opcode === 'SELF_LOOP_DETECTED') return 'Self-loop folded · this block may execute repeatedly'
+  if (opcode === 'DISPATCH_LOGIC_SINK') return 'Shared dispatch logic starts'
+  if (opcode === 'DISPATCH_TARGET_START') return 'Dispatch target starts'
+  return opcode
+}
+
 function formatInstruction(instr: string): string {
+
   const tupleMatch = instr.match(/^\(\s*([^,]+)\s*,\s*'([^']+)'\s*\)$/)
   if (tupleMatch?.[1] !== undefined && tupleMatch[2] !== undefined) {
     const pc = tupleMatch[1].trim().replace(/^['"]|['"]$/g, '')
@@ -1600,6 +1645,22 @@ function formatInstruction(instr: string): string {
 
   return instr
 }
+
+const selectedInstructionDisplays = computed<InstructionDisplay[]>(() => (
+  (selectedBlockInfo.value?.instructions || []).flatMap((raw, index) => {
+    if (isLegacyLinearBoundary(raw)) return []
+
+    const boundary = isBoundaryInstruction(raw)
+    const opcode = boundary ? getBoundaryOpcode(raw) : ''
+    return [{
+      key: `${index}-${raw}`,
+      raw,
+      text: boundary ? formatBoundaryInstruction(raw) : formatInstruction(raw),
+      boundary,
+      boundaryKind: boundary ? getBoundaryKind(opcode) : 'generic',
+    }]
+  })
+))
 
 function addrToName(addr: string): string {
   if (!addr) return addr
@@ -1960,18 +2021,22 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
 
-                <div v-if="(selectedBlockInfo.instructions?.length ?? 0) > 0" class="info-card">
+                <div v-if="selectedInstructionDisplays.length > 0" class="info-card">
                   <div class="info-card-header">
                     <span class="info-card-title">Instructions</span>
                   </div>
                   <div class="block-section selected">
                     <div class="block-instructions">
                       <div
-                        v-for="(instr, idx) in (selectedBlockInfo.instructions || []).filter(i => !isBoundaryInstruction(i))"
-                        :key="idx"
+                        v-for="entry in selectedInstructionDisplays"
+                        :key="entry.key"
                         class="instruction-line"
+                        :class="entry.boundary ? ['instruction-boundary', `boundary-${entry.boundaryKind}`] : undefined"
+                        :role="entry.boundary ? 'separator' : undefined"
+                        :aria-label="entry.boundary ? entry.text : undefined"
+                        :title="entry.boundary ? entry.raw : undefined"
                       >
-                        {{ formatInstruction(instr) }}
+                        {{ entry.text }}
                       </div>
                     </div>
                   </div>
@@ -2567,8 +2632,42 @@ onBeforeUnmount(() => {
 }
 
 .instruction-line.instruction-boundary {
-  color: #8698B2;
-  font-weight: 600;
+  margin: 5px 0 2px;
+  padding: 5px 8px;
+  border-left: 2px solid #64748b;
+  border-radius: 0 6px 6px 0;
+  background: #f1f5f9;
+  color: #334155;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: 0.35px;
+  white-space: normal;
+}
+
+.instruction-line.instruction-boundary.boundary-branch {
+  border-left-color: #7c3aed;
+  background: #f5f3ff;
+  color: #5b21b6;
+}
+
+.instruction-line.instruction-boundary.boundary-merge {
+  border-left-color: #047857;
+  background: #ecfdf5;
+  color: #065f46;
+}
+
+.instruction-line.instruction-boundary.boundary-feedback,
+.instruction-line.instruction-boundary.boundary-loop {
+  border-left-color: #b45309;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.instruction-line.instruction-boundary.boundary-dispatch {
+  border-left-color: #0369a1;
+  background: #f0f9ff;
+  color: #075985;
 }
 
 .action-line {

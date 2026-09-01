@@ -70,10 +70,10 @@ npm install
 
 ```bash
 cd backend
-uv run uvicorn server:app --port 8001
+uv run uvicorn server:app --port 9008
 ```
 
-The API server starts at `http://localhost:8001`.
+The API server starts at `http://localhost:9008`.
 
 ### Start the frontend dev server
 
@@ -85,7 +85,7 @@ npm run dev
 The frontend starts at `http://localhost:9006`.
 
 The frontend uses same-origin `/api` requests. During development, Vite proxies
-these requests to `http://127.0.0.1:8000`. Set `VITE_API_BASE` when the API is
+these requests to `http://127.0.0.1:9008`. Set `VITE_API_BASE` when the API is
 hosted separately (for example, `VITE_API_BASE=https://api.example.com`).
 
 ### Standalone analysis (no server)
