@@ -7,8 +7,6 @@ import {
   type BlockId,
   fetchCfgViewData,
   fetchLegendData,
-  fetchPlainBlockLlmAnalysis,
-  fetchCallTreeData,
   fetchSwapPatternResult,
   type BlockAction,
   type BlockInformation,
@@ -16,8 +14,6 @@ import {
   type CfgMode,
   type CfgViewData,
   type EdgeStepMap,
-  type PlainBlockLlmAnalysisResponse,
-  type CallTreePayload,
   type StepRange,
   type SwapPatternResult,
   fetchBlockInformation,
@@ -52,7 +48,6 @@ const emit = defineEmits<{
 }>()
 
 type CfgEdgeType = 'NORMAL' | 'JUMP' | 'CALL' | 'DELEGATECALL' | 'TERMINATE'
-type LlmAnalysisState = 'idle' | 'loading' | 'success' | 'error'
 type RelayoutState = 'idle' | 'loading' | 'active' | 'error'
 type SwapHighlightGroup = {
   key: string
@@ -70,40 +65,6 @@ const ACTION_NODE_STROKE = '#DC2626'
 const ACTION_NODE_GLOW = 'rgba(239, 68, 68, 0.82)'
 const ACTION_NODE_GLOW_SOFT = 'rgba(248, 113, 113, 0.48)'
 const ACTION_NODE_GLOW_WIDE = 'rgba(252, 165, 165, 0.28)'
-const PRIORITY_SIGNATURES = new Set<string>([
-  'transfer()',
-  'transferFrom()',
-  'approve()',
-  'safeTransfer()',
-  'safeTransferFrom()',
-  'swapExactTokensForTokens()',
-  'swapTokensForExactTokens()',
-  'swapExactETHForTokens()',
-  'swapTokensForExactETH()',
-  'swapExactTokensForETH()',
-  'swap()',
-  'exactInputSingle()',
-  'exactOutputSingle()',
-  'multicall()',
-  'flashLoan()',
-  'flashSwap()',
-  'executeOperation()',
-  'flashLoanSimple()',
-  'getReserves()',
-  'getAmountOut()',
-  'getAmountIn()',
-  'balanceOf()',
-  'decimals()',
-  'factory()',
-  'pairFor()',
-  'getPool()',
-  'deposit()',
-  'withdraw()',
-  'safeApprove()',
-  'pull()',
-  'call()',
-])
-
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMsg = ref('')
 const cfgMode = ref<CfgMode>('folded')
@@ -128,17 +89,12 @@ const edgeIdToSvgTitle = ref<Map<string, string>>(new Map())
 const edgeFirstStepByTitle = ref<Map<string, number>>(new Map())
 const activeEdgeType = ref<CfgEdgeType | null>(null)
 const showEdgeTypes = ref(false)
-const llmAnalysisState = ref<LlmAnalysisState>('idle')
-const llmAnalysisResponse = ref<PlainBlockLlmAnalysisResponse | null>(null)
-const llmAnalysisError = ref('')
 const relayoutState = ref<RelayoutState>('idle')
 const relayoutError = ref('')
-const sequenceCallMapping = ref<CallTreePayload | null>(null)
 const swapSeedNodesByMode = ref<Record<CfgMode, Set<string>>>({
   folded: new Set(),
   plain: new Set(),
 })
-let llmRequestToken = 0
 const PLAIN_SCALE_MULTIPLIER = 1.35
 const PLAIN_MIN_WIDTH_RATIO = 1.15
 const PLAIN_VIEW_PADDING = 20
@@ -178,7 +134,6 @@ const selectedActionDisplays = computed<ActionDisplay[]>(() => {
   const actions = selectedBlockInfo.value?.actions ?? []
   return actions.flatMap((action, index) => buildActionDisplays(action, index))
 })
-
 watch(() => props.txHash, (newHash) => {
   cfgLoadRequestId += 1
   relayoutRequestId += 1
@@ -190,7 +145,6 @@ watch(() => props.txHash, (newHash) => {
   } else {
     status.value = 'idle'
     cfgViews.value = {}
-    sequenceCallMapping.value = null
     blockInformation.value = {}
     blockInformationByMode.value = { folded: {}, plain: {} }
     informationLoadedByMode.value = { folded: false, plain: false }
@@ -310,22 +264,19 @@ async function loadCfgData(txHash: string) {
   informationLoadedByMode.value = { folded: false, plain: false }
   informationLoadingByMode.value = { folded: false, plain: false }
   informationErrorByMode.value = { folded: '', plain: '' }
-  sequenceCallMapping.value = null
   blockInformation.value = {}
   blockInformationByMode.value = { folded: {}, plain: {} }
   clearFilterState()
   resetSelection()
 
   try {
-    const [foldedView, legend, callMapping] = await Promise.all([
+    const [foldedView, legend] = await Promise.all([
       fetchCfgViewData(txHash, 'folded'),
       fetchLegendData(txHash),
-      fetchCallTreeData(txHash).catch(() => null),
     ])
     if (requestId !== cfgLoadRequestId || props.txHash !== txHash) return
 
     cfgViews.value = { folded: foldedView }
-    sequenceCallMapping.value = callMapping
     swapSeedNodesByMode.value = {
       folded: new Set(),
       plain: new Set(),
@@ -598,7 +549,6 @@ function attachInteractivity() {
   if (!svg) return
 
   prepareSvgMetadata(svg)
-  annotatePlainCallEdges(svg as SVGSVGElement)
   nodeNameToEl.value.clear()
 
   svg.addEventListener('click', (event) => {
@@ -689,16 +639,6 @@ function toFiniteStep(value: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-function formatCompactCallSignature(signatures: string[]): string {
-  if (!signatures.length) return ''
-  const first = signatures[0]!
-  if (PRIORITY_SIGNATURES.has(first)) {
-    return `${first}/...`
-  }
-  const top2 = signatures.slice(0, 2).join('/')
-  return signatures.length > 2 ? `${top2}/...` : top2
-}
-
 function buildPlainStepBlocks(): PlainStepBlock[] {
   const blocks: PlainStepBlock[] = []
   Object.values(blockInformation.value).forEach((block) => {
@@ -729,111 +669,6 @@ function findPlainNodeByStep(step: number, blocks: PlainStepBlock[]): string | n
     }
   }
   return null
-}
-
-function getEdgeLabelPlacement(edgeEl: SVGGElement, fallbackBox: DOMRect | SVGRect) {
-  const pathCandidates = Array.from(edgeEl.querySelectorAll<SVGPathElement>('path'))
-  const mainPath =
-    pathCandidates.find((path) => path.getAttribute('fill') === 'none') ||
-    pathCandidates[0] ||
-    null
-
-  if (mainPath && typeof mainPath.getTotalLength === 'function') {
-    try {
-      const total = mainPath.getTotalLength()
-      if (Number.isFinite(total) && total > 0) {
-        const midLen = total * 0.5
-        const sample = Math.min(4, total * 0.2)
-        const pMid = mainPath.getPointAtLength(midLen)
-        const pPrev = mainPath.getPointAtLength(Math.max(0, midLen - sample))
-        const pNext = mainPath.getPointAtLength(Math.min(total, midLen + sample))
-
-        const tx = pNext.x - pPrev.x
-        const ty = pNext.y - pPrev.y
-        const norm = Math.hypot(tx, ty) || 1
-        const nx = -ty / norm
-        const ny = tx / norm
-        const offset = 16
-
-        return {
-          x: pMid.x + nx * offset,
-          y: pMid.y + ny * offset,
-          anchor: nx >= 0 ? 'start' : 'end',
-        } as const
-      }
-    } catch {
-      // Fall through to bbox placement
-    }
-  }
-
-  return {
-    x: fallbackBox.x + fallbackBox.width + 24,
-    y: fallbackBox.y + fallbackBox.height * 0.5,
-    anchor: 'start',
-  } as const
-}
-
-function annotatePlainCallEdges(svg: SVGSVGElement) {
-  if (cfgMode.value !== 'plain') return
-
-  svg.querySelectorAll('.call-signature-label').forEach((el) => el.remove())
-
-  const mapping = sequenceCallMapping.value
-  if (!mapping?.calls?.length) return
-
-  const blocks = buildPlainStepBlocks()
-  if (!blocks.length) return
-
-  const edgeByTitle = new Map<string, SVGGElement>()
-  svg.querySelectorAll<SVGGElement>('.edge').forEach((edgeEl) => {
-    const title = getEdgeTitle(edgeEl)
-    if (title) edgeByTitle.set(title, edgeEl)
-  })
-  if (!edgeByTitle.size) return
-
-  const labelByEdgeTitle = new Map<string, string>()
-  for (const call of mapping.calls) {
-    const signatures = call.probable_text_signatures || []
-    if (!signatures.length) continue
-
-    const signatureLabel = formatCompactCallSignature(signatures)
-    if (!signatureLabel) continue
-
-    const callStep = toFiniteStep(call.entry_step)
-    if (callStep === null) continue
-
-    const sourceNode = findPlainNodeByStep(callStep, blocks)
-    const targetNode = findPlainNodeByStep(callStep + 1, blocks)
-    if (!sourceNode || !targetNode) continue
-
-    const edgeTitle = `${sourceNode}->${targetNode}`
-    const edgeEl = edgeByTitle.get(edgeTitle)
-    if (!edgeEl) continue
-
-    const edgeType = getEdgeType(edgeEl)
-    if (edgeType && edgeType !== 'CALL' && edgeType !== 'DELEGATECALL') continue
-    if (!labelByEdgeTitle.has(edgeTitle)) {
-      labelByEdgeTitle.set(edgeTitle, signatureLabel)
-    }
-  }
-
-  for (const [edgeTitle, label] of labelByEdgeTitle.entries()) {
-    const edgeEl = edgeByTitle.get(edgeTitle)
-    if (!edgeEl) continue
-
-    const edgeBox = edgeEl.getBBox()
-    if (edgeBox.width <= 0 || edgeBox.height <= 0) continue
-
-    const placement = getEdgeLabelPlacement(edgeEl, edgeBox)
-    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text')
-    text.setAttribute('class', 'call-signature-label')
-    text.setAttribute('x', String(placement.x))
-    text.setAttribute('y', String(placement.y))
-    text.setAttribute('text-anchor', placement.anchor)
-    text.setAttribute('dominant-baseline', 'middle')
-    text.textContent = label
-    edgeEl.appendChild(text)
-  }
 }
 
 function harmonizeNodeAppearance(node: SVGGElement) {
@@ -1233,7 +1068,6 @@ function handleNodeClick(nodeName: string) {
     return
   }
 
-  resetLlmAnalysis()
   selectedNodeName.value = nodeName
   nodeNameToEl.value.get(nodeName)?.classList.add('selected')
 
@@ -1255,51 +1089,6 @@ function resetSelection() {
   selectedNodeName.value = null
   selectedBlockInfo.value = null
   stepRangesExpanded.value = false
-  resetLlmAnalysis()
-}
-
-function resetLlmAnalysis() {
-  llmRequestToken += 1
-  llmAnalysisState.value = 'idle'
-  llmAnalysisResponse.value = null
-  llmAnalysisError.value = ''
-}
-
-function requestLlmAnalysis() {
-  if (!props.txHash || !selectedBlockInfo.value || llmAnalysisState.value === 'loading') return
-  void loadLlmAnalysis(
-    props.txHash,
-    selectedBlockInfo.value.block_id,
-    cfgMode.value,
-    llmAnalysisState.value === 'success',
-  )
-}
-
-async function loadLlmAnalysis(
-  txHash: string,
-  blockId: BlockId,
-  mode: CfgMode,
-  forceRefresh: boolean = false,
-) {
-  const requestToken = ++llmRequestToken
-  llmAnalysisState.value = 'loading'
-  llmAnalysisResponse.value = null
-  llmAnalysisError.value = ''
-
-  try {
-    const response = await fetchPlainBlockLlmAnalysis(txHash, blockId, mode, forceRefresh)
-    if (requestToken !== llmRequestToken) return
-    llmAnalysisResponse.value = response
-    llmAnalysisState.value = 'success'
-  } catch (e: any) {
-    if (requestToken !== llmRequestToken) return
-    llmAnalysisState.value = 'error'
-    llmAnalysisResponse.value = null
-    const message = e?.message || 'Failed to generate LLM analysis'
-    llmAnalysisError.value = message.includes('exceeds limit')
-      ? 'Context too large. Strict context mode is enabled, so this block cannot be analyzed.'
-      : message
-  }
 }
 
 function fitGraphToViewport(options: { animate?: boolean } = {}) {
@@ -2171,43 +1960,6 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
 
-                <div class="info-card llm-analysis-group">
-                  <div class="info-card-header llm-header-row">
-                    <div class="llm-heading">
-                      <span class="info-card-title">AI Summary</span>
-                      <span v-if="llmAnalysisResponse?.source === 'cache'" class="llm-cache-badge">cached</span>
-                    </div>
-                    <button
-                      type="button"
-                      class="llm-analyze-button"
-                      :disabled="llmAnalysisState === 'loading'"
-                      @click="requestLlmAnalysis"
-                    >
-                      {{ llmAnalysisState === 'loading'
-                        ? 'Analyzing…'
-                        : llmAnalysisState === 'success'
-                          ? 'Analyze again'
-                          : 'Analyze with AI' }}
-                    </button>
-                  </div>
-                  <div v-if="llmAnalysisState === 'loading'" class="llm-status">
-                    DeepSeek is analyzing this {{ cfgMode === 'folded' ? 'folded' : 'plain' }} CFG block...
-                  </div>
-                  <div v-else-if="llmAnalysisState === 'error'" class="llm-status error">
-                    {{ llmAnalysisError }}
-                  </div>
-                  <div
-                    v-else-if="llmAnalysisState === 'success' && llmAnalysisResponse"
-                    class="llm-analysis-content"
-                  >
-                    <div class="llm-title">{{ llmAnalysisResponse.analysis.title }}</div>
-                    <div class="llm-description">{{ llmAnalysisResponse.analysis.description }}</div>
-                  </div>
-                  <div v-else class="llm-status">
-                    AI analysis starts only when you click the button.
-                  </div>
-                </div>
-
                 <div v-if="(selectedBlockInfo.instructions?.length ?? 0) > 0" class="info-card">
                   <div class="info-card-header">
                     <span class="info-card-title">Instructions</span>
@@ -2413,19 +2165,6 @@ onBeforeUnmount(() => {
 .graph-viewport :deep(.node.action-node path),
 .graph-viewport :deep(.node.action-node rect) {
   filter: drop-shadow(0 0 12px rgba(239, 68, 68, 0.82)) drop-shadow(0 0 28px rgba(248, 113, 113, 0.48)) drop-shadow(0 0 52px rgba(252, 165, 165, 0.28));
-}
-
-.graph-viewport :deep(.call-signature-label) {
-  fill: #000000;
-  font-size: 28px;
-  font-family: 'Consolas', 'Monaco', monospace;
-  font-weight: 800;
-  paint-order: stroke;
-  stroke: rgba(255, 255, 255, 0.85);
-  stroke-width: 4px;
-  stroke-linejoin: round;
-  letter-spacing: 0.2px;
-  pointer-events: none;
 }
 
 .graph-viewport :deep(.node.filtered-out),
@@ -2725,95 +2464,6 @@ onBeforeUnmount(() => {
 .step-ranges-toggle:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-}
-
-.llm-analysis-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.llm-header-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.llm-heading {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.llm-analyze-button {
-  flex: 0 0 auto;
-  border: 1px solid #64748b;
-  border-radius: 5px;
-  background: #ffffff;
-  color: #334155;
-  cursor: pointer;
-  font-size: 9px;
-  font-weight: 650;
-  line-height: 1.2;
-  padding: 4px 7px;
-}
-
-.llm-analyze-button:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.llm-analyze-button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.llm-analyze-button:disabled {
-  cursor: wait;
-  opacity: 0.6;
-}
-
-.llm-cache-badge {
-  border-radius: 999px;
-  background: rgba(34, 197, 94, 0.15);
-  color: #166534;
-  font-size: 9px;
-  line-height: 1;
-  padding: 2px 6px;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
-
-.llm-status {
-  font-size: 10px;
-  color: #64748b;
-  line-height: 1.45;
-}
-
-.llm-status.error {
-  color: #b91c1c;
-}
-
-.llm-analysis-content {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.llm-title {
-  font-size: 11px;
-  font-weight: 700;
-  color: #1e293b;
-  line-height: 1.35;
-}
-
-.llm-description {
-  font-size: 10px;
-  color: #475569;
-  line-height: 1.55;
-  white-space: pre-wrap;
 }
 
 .summary-line {

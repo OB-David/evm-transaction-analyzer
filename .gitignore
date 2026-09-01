@@ -21,6 +21,7 @@ htmlcov/
 .vscode/
 .claude/
 .codex/
+.playwright-cli/
 *.swp
 *.swo
 
@@ -28,3 +29,5 @@ htmlcov/
 /data_base/
 /testcode/
 /历史方案文档/
+/llm_draft/
+/backend/tests/

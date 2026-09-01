@@ -23,13 +23,11 @@ from utils.extract_token_changes import (
     afg_to_pcfg,
     afg_to_call_tree,
     build_link_artifact,
-    detect_arbitrage,
     compute_address_balances,
     build_balance_timeline,
 )
-from utils.swap_routes import build_arbitrage_artifact, build_swap_legs_artifact
+from utils.tfg_cycles import detect_tfg_cycles
 from utils.indentify_swap import filter_to_file
-from utils.plain_cfg_llm import PLAIN_SEMANTICS_FILENAME, write_plain_semantics_artifact
 from utils.call_tree import build_refined_hierarchical_trace
 from main import create_result_directory, save_graphs
 
@@ -179,15 +177,18 @@ def run(tx_hash: str):
     with timings.measure("pair_asset_transfers"):
         pairs, annotations, pending_erc20 = pair_transactions(original_transfer, all_changes, token_decimals_map)
     with timings.measure("build_sequence_tree"):
-        tree_data = build_refined_hierarchical_trace(standardized_trace["steps"])
+        tree_data = build_refined_hierarchical_trace(
+            standardized_trace["steps"],
+            root_calldata=tx.get("input"),
+        )
     with timings.measure("map_afg_to_folded_cfg"):
         edge_link_fcfg = afg_to_fcfg(pairs, pending_erc20, folded_cfg)
     with timings.measure("map_afg_to_plain_cfg"):
         edge_link_pcfg = afg_to_pcfg(pairs, pending_erc20, plain_cfg)
     with timings.measure("map_afg_to_call_tree"):
         edge_link_call_tree = afg_to_call_tree(pairs, pending_erc20, tree_data)
-    with timings.measure("detect_arbitrage_candidates"):
-        arb_result = detect_arbitrage(pairs, pending_erc20, tree_data)
+    with timings.measure("detect_tfg_cycles"):
+        tfg_cycle_result = detect_tfg_cycles(pairs)
     with timings.measure("compute_address_balances"):
         addr_balances = compute_address_balances(pairs, pending_erc20)
         balance_timeline = build_balance_timeline(pairs, pending_erc20)
@@ -209,12 +210,8 @@ def run(tx_hash: str):
             if os.path.isfile(legacy_path):
                 os.remove(legacy_path)
 
-        # Arbitrage & Balances
-        with open(os.path.join(result_dir, "arbitrage.json"), "w", encoding="utf-8") as f:
-            json.dump(build_arbitrage_artifact(arb_result), f, indent=2, ensure_ascii=False)
-
-        with open(os.path.join(result_dir, "swap_legs.json"), "w", encoding="utf-8") as f:
-            json.dump(build_swap_legs_artifact(arb_result), f, indent=2, ensure_ascii=False)
+        with open(os.path.join(result_dir, "tfg_cycles.json"), "w", encoding="utf-8") as f:
+            json.dump(tfg_cycle_result, f, indent=2, ensure_ascii=False)
 
         with open(os.path.join(result_dir, "address_balances.json"), "w", encoding="utf-8") as f:
             json.dump(addr_balances, f, indent=2, ensure_ascii=False)
@@ -237,7 +234,6 @@ def run(tx_hash: str):
         annotations=annotations,
         pending_erc20=pending_erc20,
         tree_data=tree_data,
-        arb_result=arb_result,
         progress_callback=publish_graph_stage,
         timing_callback=timings.record,
     )
@@ -261,39 +257,9 @@ def run(tx_hash: str):
             json.dump(plain_blocks_map, f, indent=2, ensure_ascii=False)
         filter_to_file(plain_blocks_path, os.path.join(result_dir, "swap_in_pcfg.json"))
 
-    # The graph contract is complete at this point. Plain-block LLM semantics
-    # are an optional warm cache and must never delay graph availability.
     timings.write(complete=True)
     emit_analysis_stage("complete")
     print(f"RESULT_DIR={os.path.abspath(result_dir)}")
-    _warm_plain_semantics(result_dir, standardized_trace["steps"], plain_blocks_map)
-
-
-def _warm_plain_semantics(result_dir: str, steps: list[Any], plain_blocks_map: Dict[str, Any]) -> None:
-    """Build click-only LLM context after graph completion, at lower priority."""
-    semantics_path = os.path.join(result_dir, PLAIN_SEMANTICS_FILENAME)
-    temp_path = f"{semantics_path}.tmp"
-    try:
-        if os.name != "nt":
-            try:
-                os.nice(10)
-            except OSError:
-                pass
-        started = perf_counter()
-        write_plain_semantics_artifact(semantics_path, steps, plain_blocks_map)
-        print(
-            f"PLAIN_SEMANTICS_WARMUP_MS={round((perf_counter() - started) * 1000, 3)}",
-            flush=True,
-        )
-    except Exception as exc:
-        # Graph artifacts are already complete. A warm-cache failure must not
-        # turn a successful visualization analysis into a failed analysis.
-        try:
-            if os.path.isfile(temp_path):
-                os.remove(temp_path)
-        except OSError:
-            pass
-        print(f"WARNING: plain semantics warmup failed: {exc}", flush=True)
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:

@@ -9,11 +9,10 @@ from utils.evm_information import TraceFormatter
 from utils.basic_block import BasicBlockProcessor
 from utils.cfg_transaction import CFGConstructor
 from utils.render_cfg import get_valid_nodes_and_colors, render_transaction
-from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_fcfg, afg_to_pcfg, afg_to_call_tree, build_link_artifact, detect_arbitrage, compute_address_balances, build_balance_timeline, filter_asset_flow_user_addresses
-from utils.swap_routes import build_arbitrage_artifact, build_swap_legs_artifact
+from utils.extract_token_changes import pair_transactions, render_asset_flow, afg_to_fcfg, afg_to_pcfg, afg_to_call_tree, build_link_artifact, compute_address_balances, build_balance_timeline, filter_asset_flow_user_addresses
+from utils.tfg_cycles import detect_tfg_cycles
 from utils.call_tree import build_refined_hierarchical_trace, write_call_tree_json
 from utils.indentify_swap import filter_to_file
-from utils.plain_cfg_llm import PLAIN_SEMANTICS_FILENAME, write_plain_semantics_artifact
 from utils.analysis_paths import analysis_directory
 
 CONTRACT_COLORS = [
@@ -120,7 +119,10 @@ def main():
 
         print("正在生成调用树")
         # 2. 生成调用树
-        tree_data = build_refined_hierarchical_trace(standardized_trace["steps"])
+        tree_data = build_refined_hierarchical_trace(
+            standardized_trace["steps"],
+            root_calldata=tx.get("input"),
+        )
 
         # 3. 提取关键映射数据
         contracts_addresses = standardized_trace.get("contracts_addresses", [])
@@ -168,7 +170,7 @@ def main():
         edge_link_call_tree = afg_to_call_tree(pairs, pending_erc20, tree_data)
         
         print(f"共提取到 {len(all_changes)} 条资产变更事件，配对成功 {len(pairs)} 对交易流,存在孤立变动{len(annotations)}条\n")
-        arb_result = detect_arbitrage(pairs, pending_erc20, tree_data)
+        tfg_cycle_result = detect_tfg_cycles(pairs)
         addr_balances = compute_address_balances(pairs, pending_erc20)
         balance_timeline = build_balance_timeline(pairs, pending_erc20)
 
@@ -207,13 +209,9 @@ def main():
                 os.remove(legacy_path)
         print(f"图关联数据已保存到: {link_path}")
 
-        arb_json_path = os.path.join(result_dir, "arbitrage.json")
-        with open(arb_json_path, "w", encoding="utf-8") as f:
-            json.dump(build_arbitrage_artifact(arb_result), f, indent=2, ensure_ascii=False)
-
-        swap_legs_path = os.path.join(result_dir, "swap_legs.json")
-        with open(swap_legs_path, "w", encoding="utf-8") as f:
-            json.dump(build_swap_legs_artifact(arb_result), f, indent=2, ensure_ascii=False)
+        tfg_cycles_path = os.path.join(result_dir, "tfg_cycles.json")
+        with open(tfg_cycles_path, "w", encoding="utf-8") as f:
+            json.dump(tfg_cycle_result, f, indent=2, ensure_ascii=False)
 
         addr_balances_path = os.path.join(result_dir, "address_balances.json")
         with open(addr_balances_path, "w", encoding="utf-8") as f:
@@ -229,14 +227,7 @@ def main():
         # 12. 渲染并保存三个核心图
         save_graphs(result_dir=result_dir, plain_cfg=plain_cfg, folded_cfg = folded_cfg, full_address_name_map = full_address_name_map, erc20_token_map=erc20_token_map, 
                     users_addresses=users_addresses, pairs=pairs, annotations=annotations, pending_erc20=pending_erc20,
-                    tree_data = tree_data, arb_result  = arb_result)
-
-        # Click-only LLM context is deliberately generated after all graphs.
-        write_plain_semantics_artifact(
-            os.path.join(result_dir, PLAIN_SEMANTICS_FILENAME),
-            standardized_trace["steps"],
-            plain_blocks_map,
-        )
+                    tree_data=tree_data)
 
     except Exception as e:
         import traceback
@@ -250,7 +241,7 @@ def create_result_directory(tx_hash: str) -> str:
     result_dir.mkdir(parents=True, exist_ok=True)
     return str(result_dir)
 
-def save_graphs(result_dir: str, plain_cfg: object,folded_cfg:object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]], tree_data, arb_result, progress_callback: Optional[Callable[[str], None]] = None, timing_callback: Optional[Callable[[str, float], None]] = None):
+def save_graphs(result_dir: str, plain_cfg: object,folded_cfg:object, full_address_name_map: Dict[str, str], erc20_token_map: Dict[str, Any], users_addresses: List[str], pairs: List[Dict[str, Any]], annotations: List[Dict[str, Any]], pending_erc20: List[Dict[str, Any]], tree_data, progress_callback: Optional[Callable[[str], None]] = None, timing_callback: Optional[Callable[[str, float], None]] = None):
     '''保存可重建图源；SVG 只按请求渲染，不进入分析目录。'''
 
     # Re-analysis may reuse a result directory created by an older version.
@@ -277,7 +268,6 @@ def save_graphs(result_dir: str, plain_cfg: object,folded_cfg:object, full_addre
         _, _, addr_color_map = get_valid_nodes_and_colors(plain_cfg, CONTRACT_COLORS)
 
     # 保存代币交易流图的DOT文件
-    arb_orders  = arb_result["arb_edge_orders"]
     token_flow_dot_path = os.path.join(result_dir, "asset_flow.dot")
     tfg_user_addresses = filter_asset_flow_user_addresses(
         users_addresses, pairs, pending_erc20
@@ -286,7 +276,7 @@ def save_graphs(result_dir: str, plain_cfg: object,folded_cfg:object, full_addre
         render_asset_flow(pairs, annotations, tfg_user_addresses,
                       full_address_name_map, pending_erc20,
                       addr_color_map, token_flow_dot_path,
-                      arb_edge_orders=arb_orders)
+                      erc20_token_map=erc20_token_map)
     print(f"代币交易流图DOT文件已保存到: {token_flow_dot_path}.dot")
 
     # TFG 完成后再构建 legend，只保留真实参与 TFG 的用户地址。

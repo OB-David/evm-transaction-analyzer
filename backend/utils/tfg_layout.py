@@ -29,6 +29,8 @@ NUMBER_RE = re.compile(r"-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 ET.register_namespace("", SVG_NAMESPACE)
 ET.register_namespace("xlink", XLINK_NAMESPACE)
 
+NODE_CLEARANCE_POINTS = 12.0
+
 
 # Artifact loading and DOT parsing
 
@@ -665,17 +667,131 @@ def topology_positions(
     return positions
 
 
+def _separate_overlapping_nodes(
+    positions: dict[str, tuple[float, float]],
+    node_sizes: dict[str, tuple[float, float]],
+    center: str,
+    clearance: float = NODE_CLEARANCE_POINTS,
+) -> dict[str, tuple[float, float]]:
+    """Push only colliding nodes outward while preserving their petal angles."""
+    adjusted = dict(positions)
+    positioned_nodes = [node for node in adjusted if node in node_sizes]
+
+    def overlaps(first: str, second: str) -> bool:
+        first_x, first_y = adjusted[first]
+        second_x, second_y = adjusted[second]
+        first_width, first_height = node_sizes[first]
+        second_width, second_height = node_sizes[second]
+        return (
+            abs(first_x - second_x) < (first_width + second_width) / 2 + clearance
+            and abs(first_y - second_y) < (first_height + second_height) / 2 + clearance
+        )
+
+    def axis_exit_distance(delta: float, direction: float, boundary: float) -> float:
+        if abs(delta) >= boundary:
+            return 0.0
+        if abs(direction) < 1e-9:
+            return math.inf
+        candidates = [
+            distance for distance in (
+                (boundary - delta) / direction,
+                (-boundary - delta) / direction,
+            )
+            if distance >= 0.0
+        ]
+        return min(candidates, default=math.inf)
+
+    def outward_distance(moving: str, fixed: str) -> float:
+        moving_x, moving_y = adjusted[moving]
+        radius = math.hypot(moving_x, moving_y)
+        if radius < 1e-9:
+            return math.inf
+        fixed_x, fixed_y = adjusted[fixed]
+        moving_width, moving_height = node_sizes[moving]
+        fixed_width, fixed_height = node_sizes[fixed]
+        return min(
+            axis_exit_distance(
+                moving_x - fixed_x,
+                moving_x / radius,
+                (moving_width + fixed_width) / 2 + clearance,
+            ),
+            axis_exit_distance(
+                moving_y - fixed_y,
+                moving_y / radius,
+                (moving_height + fixed_height) / 2 + clearance,
+            ),
+        )
+
+    for _ in range(max(len(positioned_nodes) ** 2, 1)):
+        collisions = [
+            (first, second)
+            for first_index, first in enumerate(positioned_nodes)
+            for second in positioned_nodes[first_index + 1:]
+            if overlaps(first, second)
+        ]
+        if not collisions:
+            break
+        moved = False
+        for first, second in collisions:
+            if not overlaps(first, second):
+                continue
+            first_distance = math.inf if first == center else outward_distance(first, second)
+            second_distance = math.inf if second == center else outward_distance(second, first)
+            moving, distance = (
+                (first, first_distance)
+                if first_distance <= second_distance
+                else (second, second_distance)
+            )
+            if not math.isfinite(distance):
+                continue
+            x, y = adjusted[moving]
+            radius = math.hypot(x, y)
+            padding = distance + 0.5
+            adjusted[moving] = (
+                x + x / radius * padding,
+                y + y / radius * padding,
+            )
+            moved = True
+        if not moved:
+            break
+    return adjusted
+
+
+def _measure_node_sizes(dot_source: str) -> dict[str, tuple[float, float]]:
+    """Ask Graphviz for final label-aware node sizes, returned in points."""
+    completed = subprocess.run(
+        ["neato", "-n2", "-Tplain"],
+        input=dot_source.encode("utf-8"),
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    node_sizes: dict[str, tuple[float, float]] = {}
+    for line in completed.stdout.decode("utf-8", errors="replace").splitlines():
+        fields = line.split()
+        if len(fields) >= 6 and fields[0] == "node":
+            node_sizes[fields[1].strip('"')] = (
+                float(fields[4]) * 72.0,
+                float(fields[5]) * 72.0,
+            )
+    return node_sizes
+
+
 # DOT rewriting and presentation
 
 
-def topology_dot(dot_source: str, topology: dict[str, Any]) -> str:
-    positions = topology_positions(dot_source, topology)
+def topology_dot(
+    dot_source: str,
+    topology: dict[str, Any],
+    positions: dict[str, tuple[float, float]] | None = None,
+) -> str:
+    positions = topology_positions(dot_source, topology) if positions is None else positions
     output: list[str] = []
     for line in dot_source.splitlines():
         stripped = line.strip()
         if stripped.startswith("graph ["):
             output.append(
-                '\tgraph [layout=neato overlap=false outputorder=edgesfirst '
+                '\tgraph [layout=neato overlap=true outputorder=edgesfirst '
                 'pad=0.35 splines=curved normalize=false]'
             )
             continue
@@ -1378,7 +1494,17 @@ def render_tfg_svg(tx_hash: str, max_order: int | None = None) -> bytes:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     center = topology_center(dot_source, call_tree_path)
     topology = detect_topology(dot_source, center)
-    dot_source = presentation_dot(topology_dot(dot_source, topology))
+    positions = topology_positions(dot_source, topology)
+    initial_dot = presentation_dot(topology_dot(dot_source, topology, positions))
+    node_sizes = _measure_node_sizes(initial_dot)
+    positions = _separate_overlapping_nodes(
+        positions,
+        node_sizes,
+        center,
+    )
+    dot_source = presentation_dot(
+        topology_dot(dot_source, topology, positions)
+    )
     command = ["neato", "-n2", "-Gsplines=curved", "-Tsvg"]
     try:
         completed = subprocess.run(

@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   fetchAddressBalances,
   fetchBalanceTimeline,
-  fetchArbitrageResult,
+  fetchTfgCycleResult,
   fetchCallTreeEdgeLink,
   fetchBlockInformation,
   fetchCallTreeData,
@@ -12,7 +12,8 @@ import {
   fetchLegendData,
   fetchTfgPlaybackRelayout,
   type AfgNavigationTarget,
-  type ArbitrageCycle,
+  type TfgAtomicAddressCycle,
+  type TfgStructuralPath,
   type BlockId,
   type CallTreeEdgeLink,
   type CallTreeEntry,
@@ -55,6 +56,7 @@ type PlaybackStep = {
   currentBlockId: BlockId | null
 }
 type RelayoutState = 'idle' | 'loading' | 'active' | 'error'
+type TfgCycleView = 'address-cycles' | 'token-cycles'
 
 const edgeLinks = ref<EdgeLink[]>([])
 const callTreeLinks = ref<CallTreeEdgeLink[]>([])
@@ -117,12 +119,11 @@ const canRelayoutPlayback = computed(() => (
 ))
 
 // 套利相关状态
-const isArbitrage = ref(false)
-const arbCycles = ref<number[][]>([])
-const detailedArbCycles = ref<ArbitrageCycle[]>([])
-const arbOrders = ref<Set<number>>(new Set())
-const activeCycleIndex = ref<number | null>(null)
-const arbShowOnly = ref(false)
+const activeCycleView = ref<TfgCycleView | null>(null)
+const tfgAtomicCycles = ref<TfgAtomicAddressCycle[]>([])
+const tfgMinimalPaths = ref<TfgStructuralPath[]>([])
+const tfgCycleOrders = ref<Set<number>>(new Set())
+const activeTfgPathIndex = ref<number | null>(null)
 // 套利边经过的节点 title 集合
 const arbNodeTitles = ref<Set<string>>(new Set())
 
@@ -135,23 +136,24 @@ const nameToAddress = ref<Record<string, string>>({})
 const nameToColor = ref<Record<string, string>>({})
 const tokenAddressToName = ref<Record<string, string>>({})
 
-const cycleCount = computed(() => arbCycles.value.length)
-const activeCycleOrders = computed(() => {
-  if (activeCycleIndex.value === null) return new Set(arbOrders.value)
-  return new Set(arbCycles.value[activeCycleIndex.value] || [])
+const atomicCycleCount = computed(() => tfgAtomicCycles.value.length)
+const structuralPathCount = computed(() => tfgMinimalPaths.value.length)
+const activeTfgPath = computed(() => {
+  if (activeTfgPathIndex.value === null) return null
+  return tfgMinimalPaths.value[activeTfgPathIndex.value] || null
 })
-const activeDetailedCycle = computed(() => {
-  if (activeCycleIndex.value === null) return null
-  return detailedArbCycles.value[activeCycleIndex.value] || null
+const activeDetectionOrders = computed(() => {
+  if (activeCycleView.value === 'address-cycles') return tfgCycleOrders.value
+  if (activeCycleView.value === 'token-cycles') {
+    return new Set(activeTfgPath.value?.transfer_edge_orders || [])
+  }
+  return new Set<number>()
 })
-const displayedArbitrageAsset = computed(() => {
-  if (cycleCount.value > 1 && activeCycleIndex.value === null) return ''
-  const cycle = activeDetailedCycle.value
-  if (!cycle) return 'Unknown token'
-  const path = cycle.token_address_path || []
-  const finalToken = cycle.arbitrage_token_address || path[path.length - 1]
-  return finalToken ? displayTokenAddress(finalToken) : 'Unknown token'
-})
+const displayedArbitrageToken = computed(() => (
+  activeTfgPath.value?.arbitrage_token_address
+    ? displayTokenAddress(activeTfgPath.value.arbitrage_token_address)
+    : ''
+))
 
 // tooltip 状态
 const tooltipVisible = ref(false)
@@ -233,12 +235,11 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
   selectedEdgeId.value = null
   tooltipVisible.value = false
 
-  isArbitrage.value = false
-  arbCycles.value = []
-  detailedArbCycles.value = []
-  arbOrders.value = new Set()
-  activeCycleIndex.value = null
-  arbShowOnly.value = false
+  activeCycleView.value = null
+  tfgAtomicCycles.value = []
+  tfgMinimalPaths.value = []
+  tfgCycleOrders.value = new Set()
+  activeTfgPathIndex.value = null
   arbNodeTitles.value = new Set()
   addressBalances.value = {}
   balanceTimelineEvents.value = []
@@ -248,11 +249,11 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
   tokenAddressToName.value = {}
 
   try {
-    const [svg, links, callLinks, arb, balances, balanceTimeline, legend] = await Promise.all([
+    const [svg, links, callLinks, tfgCycles, balances, balanceTimeline, legend] = await Promise.all([
       fetchTfgSvg(txHash),
       fetchEdgeLink(txHash, cfgMode),
       fetchCallTreeEdgeLink(txHash),
-      fetchArbitrageResult(txHash),
+      fetchTfgCycleResult(txHash),
       fetchAddressBalances(txHash),
       fetchBalanceTimeline(txHash).catch(() => null),
       fetchLegendData(txHash),
@@ -265,15 +266,9 @@ async function loadAfgData(txHash: string, cfgMode: CfgMode) {
     callTreeLinks.value = callLinks
     if (requestId !== loadRequestId || props.txHash !== txHash) return
 
-    isArbitrage.value = arb.is_arbitrage
-    detailedArbCycles.value = arb.selected_cycles || []
-    arbCycles.value = detailedArbCycles.value.length > 0
-      ? detailedArbCycles.value.map(cycle => cycle.transfer_edge_orders)
-      : arb.cycles
-    arbOrders.value = new Set(
-      arb.arb_edge_orders.length > 0 ? arb.arb_edge_orders : arbCycles.value.flat(),
-    )
-    activeCycleIndex.value = arbCycles.value.length === 1 ? 0 : null
+    tfgAtomicCycles.value = tfgCycles.atomic_cycles
+    tfgMinimalPaths.value = tfgCycles.selected_paths
+    tfgCycleOrders.value = new Set(tfgCycles.cycle_edge_orders)
 
     // 地址统一转小写
     addressBalances.value = Object.fromEntries(
@@ -1050,32 +1045,50 @@ function displayTokenAddress(address: string): string {
   return address.length > 14 ? `${address.slice(0, 8)}…${address.slice(-4)}` : address
 }
 
-function selectCycle(index: number | null) {
-  activeCycleIndex.value = index
+function toggleAddressCycles() {
+  activeCycleView.value = (
+    activeCycleView.value === 'address-cycles' ? null : 'address-cycles'
+  )
+  activeTfgPathIndex.value = null
   selectedEdgeId.value = null
   mappingNotice.value = ''
-  applySelectedEdgeStyle()
   emit('graph-navigate', null)
+  applySelectedEdgeStyle()
   applyArbCycleStyles()
   nextTick(() => fitGraphToViewport())
 }
 
-function previousCycle() {
-  if (cycleCount.value === 0) return
-  const current = activeCycleIndex.value ?? 0
-  selectCycle((current - 1 + cycleCount.value) % cycleCount.value)
-}
-
-function nextCycle() {
-  if (cycleCount.value === 0) return
-  const current = activeCycleIndex.value ?? -1
-  selectCycle((current + 1) % cycleCount.value)
-}
-
-function toggleArbShowOnly() {
-  arbShowOnly.value = !arbShowOnly.value
-  activeCycleIndex.value = cycleCount.value === 1 ? 0 : null
+function toggleTokenCycles() {
+  if (structuralPathCount.value === 0) return
+  const shouldClear = activeCycleView.value === 'token-cycles'
+  activeCycleView.value = shouldClear ? null : 'token-cycles'
+  activeTfgPathIndex.value = shouldClear ? null : 0
+  selectedEdgeId.value = null
+  mappingNotice.value = ''
+  emit('graph-navigate', null)
+  applySelectedEdgeStyle()
   applyArbCycleStyles()
+  nextTick(() => fitGraphToViewport())
+}
+
+function selectTfgPath(index: number) {
+  if (structuralPathCount.value === 0) return
+  activeTfgPathIndex.value = (
+    index + structuralPathCount.value
+  ) % structuralPathCount.value
+  selectedEdgeId.value = null
+  emit('graph-navigate', null)
+  applySelectedEdgeStyle()
+  applyArbCycleStyles()
+  nextTick(() => fitGraphToViewport())
+}
+
+function previousTfgPath() {
+  selectTfgPath((activeTfgPathIndex.value ?? 0) - 1)
+}
+
+function nextTfgPath() {
+  selectTfgPath((activeTfgPathIndex.value ?? -1) + 1)
 }
 
 function applyArbCycleStyles() {
@@ -1083,8 +1096,8 @@ function applyArbCycleStyles() {
   const svg = graphContainer.value.querySelector('svg')
   if (!svg) return
 
-  const showOnly = arbShowOnly.value && isArbitrage.value
-  const highlightedOrders = activeCycleOrders.value
+  const showOnly = activeCycleView.value !== null
+  const highlightedOrders = activeDetectionOrders.value
   const highlightedNodes = new Set<string>()
 
   svg.querySelectorAll('.edge').forEach((edgeEl) => {
@@ -1289,44 +1302,54 @@ onBeforeUnmount(() => {
     </div>
 
     <div
-      v-if="status === 'success' && isArbitrage"
-      class="arb-circle-controls"
-      role="group"
-      aria-label="Arbitrage cycle controls"
+      v-if="status === 'success' && atomicCycleCount > 0"
+      class="detection-controls"
+      aria-label="Cycle detection visualization"
     >
-      <button
-        type="button"
-        class="arb-circle-button"
-        :class="{ active: arbShowOnly }"
-        :aria-pressed="arbShowOnly"
-        @click="toggleArbShowOnly"
-      >
-        <span class="arb-circle-icon" aria-hidden="true">↻</span>
-        Arbitrage circle
-      </button>
+      <div class="detection-stage-row tfg-stage-row" role="group" aria-label="Cycle type">
+        <button
+          type="button"
+          class="stage-button"
+          :class="{ active: activeCycleView === 'address-cycles' }"
+          :aria-pressed="activeCycleView === 'address-cycles'"
+          @click="toggleAddressCycles"
+        >
+          Address cycles
+        </button>
+        <button
+          type="button"
+          class="stage-button"
+          :class="{ active: activeCycleView === 'token-cycles' }"
+          :aria-pressed="activeCycleView === 'token-cycles'"
+          :disabled="structuralPathCount === 0"
+          @click="toggleTokenCycles"
+        >
+          Token cycles
+        </button>
 
-      <template v-if="arbShowOnly && cycleCount > 1">
-        <button
-          type="button"
-          class="arb-icon-button"
-          aria-label="Previous arbitrage cycle"
-          title="Previous cycle"
-          @click="previousCycle"
-        >‹</button>
-        <button
-          type="button"
-          class="arb-icon-button"
-          aria-label="Next arbitrage cycle"
-          title="Next cycle"
-          @click="nextCycle"
-        >›</button>
-        <span v-if="activeCycleIndex !== null" class="arb-cycle-position" aria-live="polite">
-          {{ activeCycleIndex + 1 }}/{{ cycleCount }}
-        </span>
-      </template>
-      <span v-if="displayedArbitrageAsset" class="arb-token" aria-live="polite">
-        Token: <strong>{{ displayedArbitrageAsset }}</strong>
-      </span>
+        <template v-if="activeCycleView === 'token-cycles' && activeTfgPath">
+          <span class="stage-divider" aria-hidden="true"></span>
+          <button
+            type="button"
+            class="arb-icon-button"
+            aria-label="Previous token cycle"
+            title="Previous token cycle"
+            :disabled="structuralPathCount <= 1"
+            @click="previousTfgPath"
+          >‹</button>
+          <button
+            type="button"
+            class="arb-icon-button"
+            aria-label="Next token cycle"
+            title="Next token cycle"
+            :disabled="structuralPathCount <= 1"
+            @click="nextTfgPath"
+          >›</button>
+          <span v-if="displayedArbitrageToken" class="arb-token" aria-live="polite">
+            Arbitrage token: <strong>{{ displayedArbitrageToken }}</strong>
+          </span>
+        </template>
+      </div>
     </div>
 
     <div v-if="isAnalyzing || status === 'loading'" class="status-overlay">
@@ -1406,15 +1429,84 @@ onBeforeUnmount(() => {
   z-index: 10;
 }
 
-.arb-circle-controls {
+.detection-controls {
   position: absolute;
   top: 36px;
   right: 8px;
   z-index: 20;
   display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: calc(100% - 16px);
+}
+
+.detection-stage-row {
+  display: flex;
   align-items: center;
   gap: 5px;
-  max-width: calc(100% - 16px);
+}
+
+.stage-button {
+  position: relative;
+  min-height: 30px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: #475569;
+  background: transparent;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.stage-button::before {
+  content: '';
+  position: absolute;
+  inset: -4px 0;
+}
+
+.stage-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.stage-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.detection-stage-row {
+  min-height: 34px;
+  max-width: 100%;
+  padding: 3px;
+  border: 1px solid rgba(15, 118, 110, 0.28);
+  border-radius: 7px;
+  background: rgba(240, 253, 250, 0.97);
+  box-shadow: 0 3px 12px rgba(15, 23, 42, 0.1);
+}
+
+.stage-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  color: #115e59;
+}
+
+.stage-button:hover:not(:disabled),
+.stage-button.active {
+  border-color: rgba(15, 118, 110, 0.35);
+  color: #134e4a;
+  background: #ccfbf1;
+}
+
+.stage-divider {
+  width: 1px;
+  height: 20px;
+  margin: 0 2px;
+  background: rgba(15, 118, 110, 0.22);
 }
 
 .graph-actions {
@@ -1493,50 +1585,28 @@ onBeforeUnmount(() => {
   text-align: center;
 }
 
-.arb-circle-button,
 .arb-icon-button {
+  width: 28px;
   height: 28px;
+  padding: 0;
   border: 1px solid rgba(194, 65, 12, 0.38);
   border-radius: 5px;
   color: #9a3412;
   background: rgba(255, 247, 237, 0.96);
-  font-size: 10px;
+  font-size: 18px;
+  line-height: 1;
   cursor: pointer;
   transition: background 150ms ease, border-color 150ms ease;
   box-shadow: 0 2px 8px rgba(124, 45, 18, 0.1);
 }
 
-.arb-circle-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 9px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.arb-circle-icon {
-  font-size: 15px;
-  line-height: 1;
-}
-
-.arb-icon-button {
-  width: 28px;
-  padding: 0;
-  font-size: 18px;
-  line-height: 1;
-}
-
-.arb-icon-button:hover:not(:disabled),
-.arb-circle-button:hover,
-.arb-circle-button.active {
+.arb-icon-button:hover:not(:disabled) {
   color: #7c2d12;
   background: rgba(255, 237, 213, 0.98);
   border-color: rgba(194, 65, 12, 0.72);
 }
 
-.arb-icon-button:focus-visible,
-.arb-circle-button:focus-visible {
+.arb-icon-button:focus-visible {
   outline: 2px solid #c2410c;
   outline-offset: 2px;
 }
@@ -1544,15 +1614,6 @@ onBeforeUnmount(() => {
 .arb-icon-button:disabled {
   cursor: not-allowed;
   opacity: 0.38;
-}
-
-.arb-cycle-position {
-  min-width: 27px;
-  color: #7c2d12;
-  font-size: 10px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  text-align: center;
 }
 
 .arb-token {

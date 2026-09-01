@@ -7,7 +7,6 @@ from utils.cfg_structure import CFG
 from typing import Any, Dict, List, Optional, Tuple
 import json
 import re
-from utils.swap_routes import detect_arbitrage
 
 THEME_FILLS = [
     "#F4B9B9",
@@ -470,7 +469,8 @@ def filter_asset_flow_user_addresses(users_addresses, paired, pending_erc20):
 def render_asset_flow(paired, node_annotations, users_addresses,
                       full_address_name_map, pending_erc20, addr_color_map,
                       output_file="asset_flow.dot",
-                      arb_edge_orders: set = None):
+                      arb_edge_orders: set = None,
+                      erc20_token_map: Optional[Dict[str, Any]] = None):
     dot = Digraph(engine="dot")
     dot.graph_attr.update({
         'rankdir': 'TB',
@@ -494,6 +494,9 @@ def render_asset_flow(paired, node_annotations, users_addresses,
     })
 
     users_set = set(users_addresses)
+    erc20_addresses = {
+        str(address).lower() for address in (erc20_token_map or {})
+    }
     user_alias_map = {addr: full_address_name_map.get(addr) for addr in users_set}
 
     # 和 legend 共用同一套 TFG 节点收集语义。
@@ -522,8 +525,8 @@ def render_asset_flow(paired, node_annotations, users_addresses,
         
         if is_user:
             shape = "diamond"
-        elif any(name for addr in addr_list for name in [full_address_name_map.get(addr, "")] if not (name.startswith("contract_") or name.startswith("User_"))):
-            shape = "ellipse" # 代币合约通常呈现为椭圆
+        elif main_addr.lower() in erc20_addresses:
+            shape = "ellipse"
         else:
             shape = "record"
 

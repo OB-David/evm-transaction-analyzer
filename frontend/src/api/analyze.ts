@@ -318,42 +318,6 @@ export interface CfgViewData {
   blockInformation?: BlockInformationMap
 }
 
-export interface PlainBlockLlmAnalysisRequest {
-  tx_hash: string
-  block_id: BlockId
-  mode: CfgMode
-  force_refresh?: boolean
-}
-
-export interface PlainBlockLlmAnalysisContent {
-  title: string
-  description: string
-}
-
-export interface PlainBlockStepRange {
-  block_id: BlockId
-  start_step: number
-  end_step: number
-}
-
-export interface PlainBlockLlmContextMeta {
-  target_block_id: BlockId
-  prev_block_id: BlockId | null
-  next_block_id: BlockId | null
-  step_ranges: {
-    prev: PlainBlockStepRange | null
-    target: PlainBlockStepRange
-    next: PlainBlockStepRange | null
-  }
-}
-
-export interface PlainBlockLlmAnalysisResponse {
-  status: 'success'
-  source: 'cache' | 'llm'
-  analysis: PlainBlockLlmAnalysisContent
-  context_meta: PlainBlockLlmContextMeta
-}
-
 export interface LegendEntry {
   name: string
   address: string
@@ -386,40 +350,6 @@ async function fetchCfgSvgByMode(txHash: string, mode: CfgMode): Promise<string>
 export async function fetchCfgViewData(txHash: string, mode: CfgMode = 'folded'): Promise<CfgViewData> {
   const svgContent = await fetchCfgSvgByMode(txHash, mode)
   return { mode, svgContent }
-}
-
-export async function fetchPlainBlockLlmAnalysis(
-  txHash: string,
-  blockId: BlockId,
-  mode: CfgMode = 'plain',
-  forceRefresh: boolean = false,
-): Promise<PlainBlockLlmAnalysisResponse> {
-  const payload: PlainBlockLlmAnalysisRequest = {
-    tx_hash: txHash,
-    block_id: blockId,
-    mode,
-    force_refresh: forceRefresh,
-  }
-
-  const res = await fetch(`${API_BASE}/api/llm/cfg-block-analysis`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-
-  let body: any = null
-  try {
-    body = await res.json()
-  } catch {
-    body = null
-  }
-
-  if (!res.ok) {
-    const detail = body?.detail || `Failed to fetch CFG block LLM analysis: ${res.status}`
-    throw new Error(detail)
-  }
-
-  return body as PlainBlockLlmAnalysisResponse
 }
 
 export interface EdgeStepEntry {
@@ -500,6 +430,9 @@ export interface CallTreePayload {
   root: {
     address: string
     name: string
+    selector?: string
+    calldata?: string[]
+    probable_text_signatures?: string[]
   }
   calls: CallTreeEntry[]
 }
@@ -516,31 +449,46 @@ export async function fetchEdgeStepMap(txHash: string, _preferredMode: CfgMode =
   return fetchJsonFile<EdgeStepMap>('edge_id-step.json', txHash)
 }
 
-export interface ArbitrageCycle {
+export interface TfgAtomicAddressCycle {
   cycle_id: string
-  ordered_swap_leg_ids: string[]
+  nodes: string[]
+  edge_orders: number[]
   token_address_path: string[]
-  arbitrage_token_address?: string
-  arbitrage_amount_delta_raw?: string
-  arbitrage_direction?: 'increase' | 'decrease' | 'unchanged'
-  transfer_edge_orders: number[]
-  swap_transfer_edge_orders?: number[]
-  connector_edge_orders?: number[]
-  route_account: string
-  start_step: number
-  end_step: number
-  closure_kind: string
-  max_amount_relative_gap?: number
-  score?: number
+  amount_raw_path: string[]
+  edge_count: number
 }
 
-export interface ArbitrageResult {
-  schema_version?: number
-  detection_basis?: string
-  is_arbitrage: boolean
-  cycles: number[][]
-  selected_cycles?: ArbitrageCycle[]
-  arb_edge_orders: number[]
+export interface TfgStructuralPath {
+  path_id: string
+  anchor_address: string
+  token_address_path: string[]
+  atomic_cycle_ids: string[]
+  address_cycle_paths: string[][]
+  cycle_edge_orders: number[][]
+  transfer_edge_orders: number[]
+  arbitrage_token_address: string
+  arbitrage_amount_delta_raw: string
+  edge_count: number
+  atomic_cycle_count: number
+}
+
+export interface TfgCycleResult {
+  schema_version: number
+  detection_basis: 'tfg_address_cycle_structure'
+  objective: ['transfer_edge_count', 'atomic_cycle_count']
+  selection_objective: [
+    'edge_disjoint',
+    'max_transfer_edge_count',
+    'min_execution_order_gap',
+    'min_path_count',
+  ]
+  has_address_cycles: boolean
+  has_structural_paths: boolean
+  atomic_cycles: TfgAtomicAddressCycle[]
+  minimal_paths: TfgStructuralPath[]
+  selected_paths: TfgStructuralPath[]
+  cycle_edge_orders: number[]
+  path_edge_orders: number[]
 }
 
 export interface SwapPatternBlock {
@@ -553,12 +501,17 @@ export interface SwapPatternResult {
   pattern_2: SwapPatternBlock[]
 }
 
-export async function fetchArbitrageResult(txHash: string): Promise<ArbitrageResult> {
-  const res = await fetch(`${API_BASE}/api/files/${txHash}/arbitrage.json`, { cache: 'no-store' })
-  if (!res.ok) {
-    throw new Error(`Failed to fetch arbitrage result: ${res.status}`)
+export async function fetchTfgCycleResult(txHash: string): Promise<TfgCycleResult> {
+  const result = await fetchJsonFile<TfgCycleResult>('tfg_cycles.json', txHash)
+  if (
+    result.schema_version !== 4
+    || !Array.isArray(result.atomic_cycles)
+    || !Array.isArray(result.minimal_paths)
+    || !Array.isArray(result.selected_paths)
+  ) {
+    throw new Error('Unsupported tfg_cycles.json schema')
   }
-  return res.json()
+  return result
 }
 
 export function normalizeAnalyzeError(message?: string | null): string {

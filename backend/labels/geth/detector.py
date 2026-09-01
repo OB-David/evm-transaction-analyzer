@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Any, Iterable
 
 from eth_abi import decode
@@ -562,19 +562,38 @@ def _shortest_route(
             return [start, end]
     if max_route_length == 2:
         return None
-    others = [swap for swap in all_swaps if swap is not start and swap not in ends]
+    end_ids = {id(end) for end in ends}
+    others = [
+        swap
+        for swap in all_swaps
+        if swap is not start and id(swap) not in end_ids
+    ]
     if not others:
         return None
-    shortest: list[Swap] | None = None
-    remaining_limit = None if max_route_length is None else max_route_length - 1
-    for next_swap in others:
-        if not _swap_outputs_match_inputs(start, next_swap):
+
+    # Route compatibility depends only on the current swap, so a breadth-first
+    # graph search finds the same shortest route without recursively enumerating
+    # every permutation. The old search becomes intractable for aggregator
+    # transactions containing tens or hundreds of swaps.
+    queue: deque[list[Swap]] = deque([[start]])
+    visited = {id(start)}
+    while queue:
+        path = queue.popleft()
+        current = path[-1]
+        if max_route_length is None or len(path) < max_route_length:
+            for end in ends:
+                if _swap_outputs_match_inputs(current, end):
+                    return [*path, end]
+        if max_route_length is not None and len(path) + 1 >= max_route_length:
             continue
-        candidate = _shortest_route(next_swap, ends, others, remaining_limit)
-        if candidate is not None and (shortest is None or len(candidate) < len(shortest)):
-            shortest = candidate
-            remaining_limit = len(candidate) - 1
-    return None if shortest is None else [start, *shortest]
+        for candidate in others:
+            candidate_id = id(candidate)
+            if candidate_id in visited:
+                continue
+            if _swap_outputs_match_inputs(current, candidate):
+                visited.add(candidate_id)
+                queue.append([*path, candidate])
+    return None
 
 
 def _swap_outputs_match_inputs(first: Swap, second: Swap) -> bool:

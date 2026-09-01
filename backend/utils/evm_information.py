@@ -1,9 +1,8 @@
 from typing import List, Dict, TypedDict, Set, Tuple, Optional
 import logging
-import json
 import time
 from web3 import Web3
-import subprocess
+import requests
 from functools import lru_cache
 
 from utils.quicknode_trace import (
@@ -11,6 +10,15 @@ from utils.quicknode_trace import (
     _memory_words,
     fetch_quicknode_trace,
 )
+
+
+def compact_extracted_name(value: object) -> str:
+    """Compact one on-chain name while preserving Uniswap's version word."""
+    words = str(value).strip().strip("\x00").split() if value is not None else []
+    if not words:
+        return ""
+    keep = 2 if words[0].casefold() == "uniswap" else 1
+    return " ".join(words[:keep])
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -232,7 +240,7 @@ class TraceFormatter:
 
     def _read_token_label(self, checksum_addr: str) -> str:
         """Prefer the ERC-20 symbol for display, falling back to its name."""
-        return (
+        return compact_extracted_name(
             self._read_token_text(checksum_addr, "symbol")
             or self._read_token_text(checksum_addr, "name")
         )
@@ -475,64 +483,74 @@ class TraceFormatter:
         trace_options: Dict,
         label: str,
     ) -> Dict:
-        cmd = [
-            "cast", "rpc",
-            "--rpc-url", self.provider_url,
-            "--rpc-timeout", str(GETH_RPC_TIMEOUT_SECONDS),
-            "debug_traceTransaction",
-            tx_hash,
-            json.dumps(trace_options, separators=(",", ":")),
-        ]
-        for attempt in range(GETH_TRACE_RETRIES + 1):
-            try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                response = json.loads(result.stdout)
-                if not isinstance(response, dict):
-                    raise TraceFetchError(f"Geth {label}返回值不是对象")
-                return response
-            except OSError as exc:
-                raise TraceFetchError(f"Geth {label}请求失败: {exc}") from exc
-            except (
-                subprocess.SubprocessError,
-                json.JSONDecodeError,
-                TraceFetchError,
-            ) as exc:
-                stderr = getattr(exc, "stderr", "") or ""
-                detail = str(stderr).strip() or str(exc)
-                normalized_detail = detail.lower()
-                historical_state_missing = any(
-                    marker in normalized_detail
-                    for marker in (
-                        "historical state is not available",
-                        "historical state unavailable",
-                        "missing trie node",
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "debug_traceTransaction",
+            "params": [tx_hash, trace_options],
+        }
+        # GETH_API normally points to a LAN node. A dedicated direct session
+        # prevents machine-wide HTTP proxies from intercepting the request and
+        # removes the runtime dependency on Foundry's `cast` executable.
+        with requests.Session() as session:
+            session.trust_env = False
+            for attempt in range(GETH_TRACE_RETRIES + 1):
+                try:
+                    response = session.post(
+                        self.provider_url,
+                        headers={"Content-Type": "application/json"},
+                        json=payload,
+                        timeout=GETH_RPC_TIMEOUT_SECONDS,
                     )
-                )
-                if historical_state_missing or attempt >= GETH_TRACE_RETRIES:
-                    raise TraceFetchError(
-                        f"Geth {label}请求失败（尝试 {attempt + 1}/"
-                        f"{GETH_TRACE_RETRIES + 1}）: {detail}"
-                    ) from exc
+                    response.raise_for_status()
+                    body = response.json()
+                    if not isinstance(body, dict):
+                        raise TraceFetchError(f"Geth {label}响应不是对象")
+                    if body.get("error") is not None:
+                        error = body["error"]
+                        detail = (
+                            error.get("message") or str(error)
+                            if isinstance(error, dict)
+                            else str(error)
+                        )
+                        raise TraceFetchError(f"Geth {label} RPC 错误: {detail}")
+                    if "result" not in body:
+                        raise TraceFetchError(f"Geth {label}响应缺少 result")
+                    result = body["result"]
+                    if not isinstance(result, dict):
+                        raise TraceFetchError(f"Geth {label}返回值不是对象")
+                    return result
+                except (requests.RequestException, ValueError, TraceFetchError) as exc:
+                    detail = str(exc)
+                    normalized_detail = detail.lower()
+                    historical_state_missing = any(
+                        marker in normalized_detail
+                        for marker in (
+                            "historical state is not available",
+                            "historical state unavailable",
+                            "missing trie node",
+                        )
+                    )
+                    if historical_state_missing or attempt >= GETH_TRACE_RETRIES:
+                        raise TraceFetchError(
+                            f"Geth {label}请求失败（尝试 {attempt + 1}/"
+                            f"{GETH_TRACE_RETRIES + 1}）: {detail}"
+                        ) from exc
 
-                wait_seconds = min(
-                    GETH_RETRY_DELAY_SECONDS * (attempt + 1),
-                    3.0,
-                )
-                logger.warning(
-                    "Geth %s临时失败，%s 秒后重试 (%d/%d): tx=%s error=%s",
-                    label,
-                    f"{wait_seconds:g}",
-                    attempt + 1,
-                    GETH_TRACE_RETRIES,
-                    tx_hash,
-                    detail,
-                )
-                time.sleep(wait_seconds)
+                    wait_seconds = min(
+                        GETH_RETRY_DELAY_SECONDS * (attempt + 1),
+                        3.0,
+                    )
+                    logger.warning(
+                        "Geth %s临时失败，%s 秒后重试 (%d/%d): tx=%s error=%s",
+                        label,
+                        f"{wait_seconds:g}",
+                        attempt + 1,
+                        GETH_TRACE_RETRIES,
+                        tx_hash,
+                        detail,
+                    )
+                    time.sleep(wait_seconds)
 
         raise AssertionError("unreachable Geth request retry state")
 
@@ -1109,7 +1127,7 @@ class TraceFormatter:
                     abi=ONLY_NAME_ABI
                 )
                 contract_name = contract.functions.name().call()
-                contract_name = str(contract_name).strip()
+                contract_name = compact_extracted_name(contract_name)
 
                 # 能拿到合法名字 → 直接用
                 if contract_name:

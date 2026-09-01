@@ -45,6 +45,22 @@ def _extract_selector(calldata_value: Any) -> str | None:
     return None
 
 
+def _normalize_calldata(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).hex()
+    if not isinstance(value, str) and hasattr(value, "hex"):
+        try:
+            value = value.hex()
+        except Exception:
+            return ""
+    text = str(value).strip().lower()
+    if text.startswith("0x"):
+        text = text[2:]
+    return text if text and not re.search(r"[^0-9a-f]", text) else ""
+
+
 def _extract_function_name(text_signature: Any) -> str | None:
     function_name = extract_function_name(text_signature)
     return f"{function_name}()" if function_name else None
@@ -59,9 +75,15 @@ def _resolve_probable_signatures(
     if cached is not None:
         return cached
 
-    ordered = signature_store.lookup_display_names(selector)
-    selector_signature_cache[selector] = ordered
-    return ordered
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for record in signature_store.lookup(selector):
+        if record.text_signature in seen:
+            continue
+        seen.add(record.text_signature)
+        ordered.append(record.text_signature)
+    selector_signature_cache[selector] = ordered[:20]
+    return selector_signature_cache[selector]
 
 
 def _format_compact_signatures(signatures: list[str], max_items: int = 2) -> str:
@@ -69,14 +91,14 @@ def _format_compact_signatures(signatures: list[str], max_items: int = 2) -> str
         return ""
     # 若命中优先函数，按需求仅展示一个并直接追加 /...
     first_signature = signatures[0]
-    if first_signature in PRIORITY_SIGNATURE_RANK:
+    if _extract_function_name(first_signature) in PRIORITY_SIGNATURE_RANK:
         return f"{first_signature}/..."
     compact = "/".join(signatures[:max_items])
     if len(signatures) > max_items:
         compact += "/..."
     return compact
 
-def build_refined_hierarchical_trace(steps):
+def build_refined_hierarchical_trace(steps, root_calldata: Any = None):
     """
     calldata断点切片:
     Primary Breakpoints (首断点): CALLDATALOAD 传入的 offset。
@@ -86,6 +108,8 @@ def build_refined_hierarchical_trace(steps):
     """
     if not steps:
         return {}
+
+    root_calldata_body = _normalize_calldata(root_calldata)
 
     # 定义常量（移到函数内部，避免外部依赖）
     CALL_OPS = {"CALL", "DELEGATECALL", "STATICCALL", "CALLCODE", "CREATE", "CREATE2"}
@@ -102,7 +126,9 @@ def build_refined_hierarchical_trace(steps):
         primary_breakpoints = set()
 
         # --- 1. 提取原始数据  ---
-        if start_index != 0:
+        if start_index == 0:
+            raw_calldata = root_calldata_body
+        else:
             prev_step = steps[start_index - 1]
             last_step_op = prev_step.get("opcode", "OUTSIDECALL")  # 适配opcode字段
             stack = prev_step.get("stack", [])
@@ -298,6 +324,7 @@ def build_call_tree_payload(
 
     root_address = str(trace_tree.get("contract") or "").strip()
     root_name = _display_contract_name(root_address, erc20_token_map, full_address_name_map)
+    root_payload: dict[str, Any] = {"address": root_address, "name": root_name}
     calls: list[dict[str, Any]] = []
     selector_signature_cache: dict[str, list[str]] = {}
 
@@ -363,6 +390,19 @@ def build_call_tree_payload(
 
     store_args = (signature_db_path,) if signature_db_path is not None else ()
     with FunctionSignatureStore(*store_args) as signature_store:
+        root_selector, root_calldata = _call_calldata(trace_tree)
+        if root_selector:
+            root_payload["selector"] = root_selector
+            root_signatures = _resolve_probable_signatures(
+                root_selector,
+                selector_signature_cache,
+                signature_store,
+            )
+            if root_signatures:
+                root_payload["probable_text_signatures"] = root_signatures
+        if root_calldata:
+            root_payload["calldata"] = root_calldata
+
         root_children = trace_tree.get("calls", [])
         if isinstance(root_children, list):
             for child in root_children:
@@ -378,7 +418,7 @@ def build_call_tree_payload(
 
     return {
         "schema_version": CALL_TREE_SCHEMA_VERSION,
-        "root": {"address": root_address, "name": root_name},
+        "root": root_payload,
         "calls": calls,
     }
 

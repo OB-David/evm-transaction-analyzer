@@ -424,8 +424,6 @@ const FULL_UI_EXPORT_CONTROL_SELECTORS = [
   '.info-card',
   '.info-card-overview',
   '.action-card',
-  '.llm-analysis-group',
-  '.llm-cache-badge',
   '.info-card-badge',
 ] as const
 

@@ -30,13 +30,7 @@ from labels.coordinator import (
     LabelCoordinator,
     MAX_API_BLOCK_RANGE,
 )
-from utils.plain_cfg_llm import (
-    PLAIN_SEMANTICS_FILENAME,
-    PlainCfgLlmServiceError,
-    analyze_cfg_block,
-    clear_plain_cfg_runtime_cache,
-)
-from utils.swap_routes import DETECTOR_SCHEMA_VERSION
+from utils.tfg_cycles import TFG_CYCLE_SCHEMA_VERSION
 from utils.tfg_layout import render_tfg_svg
 from utils.cfg_slice import build_cfg_subset_dot
 
@@ -221,39 +215,6 @@ class BlocksHeatmapResponse(BaseModel):
     error: str | None = None
 
 
-class PlainBlockAnalysisRequest(BaseModel):
-    tx_hash: str
-    block_id: int | str
-    mode: Literal["folded", "plain"] = "plain"
-    force_refresh: bool = False
-
-    @field_validator("tx_hash")
-    @classmethod
-    def validate_tx_hash(cls, v: str) -> str:
-        if not TX_HASH_RE.match(v):
-            raise ValueError("tx_hash must be 0x followed by 64 hex characters")
-        return v
-
-    @field_validator("block_id")
-    @classmethod
-    def validate_block_id(cls, v: int | str) -> int | str:
-        if isinstance(v, str) and not v.strip():
-            raise ValueError("block_id cannot be empty")
-        return v
-
-
-class LlmAnalysisResult(BaseModel):
-    title: str
-    description: str = ""
-
-
-class PlainBlockAnalysisResponse(BaseModel):
-    status: Literal["success"]
-    source: Literal["cache", "llm"]
-    analysis: LlmAnalysisResult
-    context_meta: dict[str, Any]
-
-
 def _analysis_result_dir(tx_hash: str) -> str:
     return str(analysis_directory(tx_hash))
 
@@ -281,7 +242,6 @@ def _completed_analysis_response(tx_hash: str) -> AnalyzeResponse | None:
     result_dir = _analysis_result_dir(tx_hash)
     required_files = {
         "analysis_timing.json",
-        "arbitrage.json",
         "call_tree.json",
         "edge_id-step.json",
         "folded_blocks_information.json",
@@ -291,7 +251,7 @@ def _completed_analysis_response(tx_hash: str) -> AnalyzeResponse | None:
         "plain_cfg.dot",
         "swap_in_fcfg.json",
         "swap_in_pcfg.json",
-        "swap_legs.json",
+        "tfg_cycles.json",
     }
     if not os.path.isdir(result_dir):
         return None
@@ -304,8 +264,8 @@ def _completed_analysis_response(tx_hash: str) -> AnalyzeResponse | None:
     try:
         with open(os.path.join(result_dir, "link.json"), "r", encoding="utf-8") as handle:
             link_artifact = json.load(handle)
-        with open(os.path.join(result_dir, "arbitrage.json"), "r", encoding="utf-8") as handle:
-            arbitrage_artifact = json.load(handle)
+        with open(os.path.join(result_dir, "tfg_cycles.json"), "r", encoding="utf-8") as handle:
+            tfg_cycle_artifact = json.load(handle)
     except (OSError, json.JSONDecodeError):
         return None
     edge_links = link_artifact.get("edge_links", {})
@@ -317,9 +277,7 @@ def _completed_analysis_response(tx_hash: str) -> AnalyzeResponse | None:
         # Older cached analyses must be regenerated so a TFG selection can
         # drive both CFG modes and the contract call tree.
         return None
-    if arbitrage_artifact.get("schema_version") != DETECTOR_SCHEMA_VERSION:
-        # Detector v7 recognizes prefunded venues reached through an inverse
-        # outer-venue callback while keeping unrelated sibling calls isolated.
+    if tfg_cycle_artifact.get("schema_version") != TFG_CYCLE_SCHEMA_VERSION:
         return None
     return AnalyzeResponse(
         status="success",
@@ -335,8 +293,6 @@ def _job_response(job: AnalysisJob) -> AnalyzeResponse:
         name for name in os.listdir(result_dir)
         if os.path.isfile(os.path.join(result_dir, name))
     ) if os.path.isdir(result_dir) else []
-    # main_api publishes "complete" once every graph-facing artifact exists,
-    # then keeps the subprocess alive only to warm click-only LLM semantics.
     if job.stage == "complete":
         completed = _completed_analysis_response(job.tx_hash)
         if completed is not None:
@@ -411,7 +367,7 @@ def _cleanup_analysis_job(tx_hash: str, job: AnalysisJob) -> None:
 
 
 def _cleanup_successful_analysis_job(job: AnalysisJob) -> None:
-    """Release a warmed job while retaining failed jobs for error reporting."""
+    """Release a successful job while retaining failed jobs for error reporting."""
     if job.process.returncode == 0 and not job.cancel_requested and job.error is None:
         _cleanup_analysis_job(job.tx_hash, job)
 
@@ -454,8 +410,7 @@ def _cancel_analysis_job(tx_hash: str) -> CancelAnalysisResponse:
         if job is None:
             return CancelAnalysisResponse(status="not_running", tx_hash=tx_hash, cleaned=False)
         if job.stage == "complete":
-            # Only optional low-priority warming remains. Switching away from
-            # a completed transaction must not delete its valid graph output.
+            # A completed transaction has valid graph output and must not be deleted.
             return CancelAnalysisResponse(status="not_running", tx_hash=tx_hash, cleaned=False)
         if job.process.poll() is not None:
             analysis_jobs.pop(tx_hash, None)
@@ -479,8 +434,6 @@ def _cancel_analysis_job(tx_hash: str) -> CancelAnalysisResponse:
 
 @app.post("/api/analyze", response_model=AnalyzeResponse)
 async def analyze(req: AnalyzeRequest):
-    clear_plain_cfg_runtime_cache(req.tx_hash)
-
     with analysis_jobs_lock:
         job = analysis_jobs.get(req.tx_hash)
         if job is not None:
@@ -772,63 +725,8 @@ async def get_arbitrage_transactions(from_block: int, to_block: int):
 async def get_arbitrage(tx_hash: str):
     if not TX_HASH_RE.fullmatch(tx_hash):
         raise HTTPException(status_code=400, detail="Invalid tx_hash format")
-    path = os.path.join(_analysis_result_dir(tx_hash), "arbitrage.json")
+    path = os.path.join(_analysis_result_dir(tx_hash), "tfg_cycles.json")
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Not found")
     with open(path, encoding="utf-8") as f:
         return json.load(f)
-
-
-@app.post("/api/llm/plain-block-analysis", response_model=PlainBlockAnalysisResponse)
-async def plain_block_analysis(req: PlainBlockAnalysisRequest):
-    """Compatibility endpoint retained for existing clients."""
-    req.mode = "plain"
-    return await cfg_block_analysis(req)
-
-
-@app.post("/api/llm/cfg-block-analysis", response_model=PlainBlockAnalysisResponse)
-async def cfg_block_analysis(req: PlainBlockAnalysisRequest):
-    loop = asyncio.get_event_loop()
-
-    try:
-        result = await loop.run_in_executor(
-            executor,
-            lambda: _analyze_cfg_block_when_ready(req),
-        )
-    except PlainCfgLlmServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-
-    return PlainBlockAnalysisResponse(**result)
-
-
-def _wait_for_plain_semantics(tx_hash: str) -> None:
-    """Wait only on an active post-graph warmup; graph requests never call this."""
-    semantics_path = os.path.join(_analysis_result_dir(tx_hash), PLAIN_SEMANTICS_FILENAME)
-    if os.path.isfile(semantics_path):
-        return
-
-    with analysis_jobs_lock:
-        job = analysis_jobs.get(tx_hash)
-        warmup_future = job.future if job is not None and job.stage == "complete" else None
-
-    if warmup_future is not None:
-        try:
-            warmup_future.result(timeout=120)
-        except Exception as exc:
-            raise PlainCfgLlmServiceError(503, "Plain block context warmup failed") from exc
-
-    if not os.path.isfile(semantics_path):
-        raise PlainCfgLlmServiceError(
-            503,
-            "Plain block context is unavailable because background warmup did not complete",
-        )
-
-
-def _analyze_cfg_block_when_ready(req: PlainBlockAnalysisRequest) -> dict[str, Any]:
-    _wait_for_plain_semantics(req.tx_hash)
-    return analyze_cfg_block(
-        tx_hash=req.tx_hash,
-        block_id=req.block_id,
-        mode=req.mode,
-        force_refresh=req.force_refresh,
-    )

@@ -35,6 +35,10 @@ class GethRpcClient:
         self.tracer_timeout = tracer_timeout
         self.max_attempts = max(1, max_attempts)
         self.session = session or requests.Session()
+        if session is None:
+            # GETH_API normally points to a LAN endpoint. Do not route it
+            # through the environment's public HTTP(S) proxy.
+            self.session.trust_env = False
         self._request_id = 0
 
     def request(self, method: str, params: list[Any]) -> Any:
